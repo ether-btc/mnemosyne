@@ -14,6 +14,8 @@ from datetime import datetime
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 
+from mnemosyne.core import embeddings as _embeddings
+
 # Single shared connection per thread
 _thread_local = threading.local()
 
@@ -30,11 +32,12 @@ if os.environ.get("MNEMOSYNE_DATA_DIR"):
 
 def _get_connection(db_path: Path = None) -> sqlite3.Connection:
     """Get thread-local database connection"""
-    if not hasattr(_thread_local, 'conn') or _thread_local.conn is None:
-        path = db_path or DEFAULT_DB_PATH
+    path = db_path or DEFAULT_DB_PATH
+    if not hasattr(_thread_local, 'conn') or _thread_local.conn is None or getattr(_thread_local, 'db_path', None) != str(path):
         path.parent.mkdir(parents=True, exist_ok=True)
         _thread_local.conn = sqlite3.connect(str(path), check_same_thread=False)
         _thread_local.conn.row_factory = sqlite3.Row
+        _thread_local.db_path = str(path)
     return _thread_local.conn
 
 
@@ -60,6 +63,17 @@ def init_db(db_path: Path = None):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_session ON memories(session_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON memories(timestamp)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_source ON memories(source)")
+    
+    # Embeddings table for dense retrieval
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memory_embeddings (
+            memory_id TEXT PRIMARY KEY,
+            embedding_json TEXT NOT NULL,
+            model TEXT DEFAULT 'bge-small-en-v1.5',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        )
+    """)
     
     conn.commit()
 
@@ -149,18 +163,27 @@ class Mnemosyne:
             memory_id, content, source, timestamp, self.session_id,
             importance, json.dumps(metadata or {})
         ))
-        self.conn.commit()
         
+        # Generate and store embedding if dense retrieval is available
+        if _embeddings.available():
+            vec = _embeddings.embed([content])
+            if vec is not None:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding_json, model)
+                    VALUES (?, ?, ?)
+                """, (memory_id, _embeddings.serialize(vec[0]), _embeddings._DEFAULT_MODEL))
+        
+        self.conn.commit()
         return memory_id
     
     def recall(self, query: str, top_k: int = 5) -> List[Dict]:
         """
-        Search memories with relevance scoring.
+        Search memories with hybrid relevance scoring.
         
         Uses a custom scoring algorithm combining:
-        - Keyword relevance (50%)
-        - Importance boost (30%)
-        - Recency boost (20%)
+        - Dense embedding similarity (45%)
+        - Keyword relevance (35%)
+        - Importance boost (20%)
         
         Args:
             query: Search query string
@@ -189,28 +212,47 @@ class Mnemosyne:
         """, (self.session_id,))
         
         rows = cursor.fetchall()
+        row_ids = [row['id'] for row in rows]
+        
+        # Fetch embeddings for these memories
+        query_embedding = None
+        memory_embeddings = {}
+        if _embeddings.available():
+            emb_result = _embeddings.embed([query])
+            if emb_result is not None:
+                query_embedding = emb_result[0]
+            
+            if row_ids:
+                placeholders = ','.join('?' * len(row_ids))
+                cursor.execute(f"""
+                    SELECT memory_id, embedding_json FROM memory_embeddings
+                    WHERE memory_id IN ({placeholders})
+                """, row_ids)
+                for e_row in cursor.fetchall():
+                    vec = _embeddings.deserialize(e_row['embedding_json'])
+                    if vec is not None:
+                        memory_embeddings[e_row['memory_id']] = vec
+        
         results = []
         
         for row in rows:
             relevance = calculate_relevance(query_words, row['content'])
             
-            if relevance > 0:
-                # Boost by importance
-                importance_boost = row['importance'] * 0.3
+            # Dense similarity score
+            sim_score = 0.0
+            if query_embedding is not None and row['id'] in memory_embeddings:
+                sim_score = float(_embeddings.cosine_similarity(
+                    query_embedding, memory_embeddings[row['id']].reshape(1, -1)
+                )[0])
+            
+            # Hybrid score: require at least some keyword match OR similarity > threshold
+            if relevance > 0 or sim_score > 0.65:
+                # Normalize and combine
+                keyword_component = relevance * 0.35
+                dense_component = max(0, sim_score) * 0.45
+                importance_component = row['importance'] * 0.2
                 
-                # Time decay boost
-                try:
-                    age_hours = (datetime.now() - datetime.fromisoformat(row['timestamp'])).total_seconds() / 3600
-                    if age_hours < 24:
-                        recency_boost = 0.2
-                    elif age_hours < 168:  # 1 week
-                        recency_boost = 0.1
-                    else:
-                        recency_boost = 0
-                except:
-                    recency_boost = 0
-                
-                final_score = (relevance * 0.5) + importance_boost + recency_boost
+                final_score = keyword_component + dense_component + importance_component
                 
                 results.append({
                     "id": row['id'],
@@ -219,7 +261,9 @@ class Mnemosyne:
                     "timestamp": row['timestamp'],
                     "session_id": row['session_id'],
                     "score": round(final_score, 3),
-                    "importance": row['importance']
+                    "importance": row['importance'],
+                    "keyword_score": round(relevance, 3),
+                    "dense_score": round(sim_score, 3)
                 })
         
         # Sort by score descending
