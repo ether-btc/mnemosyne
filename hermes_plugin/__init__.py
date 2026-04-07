@@ -14,8 +14,6 @@ plugin_dir = Path(__file__).parent
 sys.path.insert(0, str(plugin_dir.parent))
 
 from mnemosyne.core.memory import Mnemosyne
-from mnemosyne.core.token_counter import estimate_tokens, estimate_cost
-from mnemosyne.core.cost_log import log_cost, get_cost_stats
 from mnemosyne.core.aaak import encode as aaak_encode
 
 # Global memory instance
@@ -52,12 +50,6 @@ def register(ctx):
         toolset="mnemosyne",
         schema=tools.STATS_SCHEMA,
         handler=tools.mnemosyne_stats
-    )
-    ctx.register_tool(
-        name="mnemosyne_cost_stats",
-        toolset="mnemosyne",
-        schema=tools.COST_STATS_SCHEMA,
-        handler=tools.mnemosyne_cost_stats
     )
     ctx.register_tool(
         name="mnemosyne_triple_add",
@@ -126,18 +118,6 @@ def _on_pre_llm_call(session_id, history, **kwargs):
         context_lines.append("═══════════════════════════════════════════════════════════════")
         context_block = "\n".join(context_lines)
         full_context = f"\n\n{context_block}\n"
-        
-        # Token cost estimation
-        token_count = estimate_tokens(full_context)
-        cost_info = estimate_cost(token_count)
-        
-        log_cost(
-            session_id=str(session_id) if session_id else mem.session_id,
-            memory_count=len(context_memories),
-            token_count=token_count,
-            estimated_cost_usd=cost_info["cost_usd"],
-            model=cost_info["model"]
-        )
         
         # Return context to inject into system prompt
         return {

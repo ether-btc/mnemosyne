@@ -13,7 +13,6 @@ plugin_dir = Path(__file__).parent
 sys.path.insert(0, str(plugin_dir.parent))
 
 from mnemosyne.core.memory import Mnemosyne
-from mnemosyne.core.cost_log import get_cost_stats
 from mnemosyne.core.triples import TripleStore
 
 # Global instances
@@ -87,20 +86,6 @@ STATS_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {}
-    }
-}
-
-COST_STATS_SCHEMA = {
-    "name": "mnemosyne_cost_stats",
-    "description": "Get Mnemosyne memory injection cost statistics. Use to benchmark API token costs from memory context.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "session_id": {
-                "type": "string",
-                "description": "Optional session ID to filter costs"
-            }
-        }
     }
 }
 
@@ -190,16 +175,6 @@ def mnemosyne_stats(args: dict, **kwargs) -> str:
         
         return json.dumps(stats)
         
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-
-
-def mnemosyne_cost_stats(args: dict, **kwargs) -> str:
-    """Get memory injection cost statistics"""
-    try:
-        session_id = args.get("session_id")
-        stats = get_cost_stats(session_id=session_id)
-        return json.dumps(stats)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
