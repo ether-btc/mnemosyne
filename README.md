@@ -15,7 +15,7 @@
 
 **Mnemosyne was purpose-built for the Hermes AI Agent framework** to provide native, zero-cloud memory that rivals cloud solutions without the latency, cost, or privacy concerns.
 
-While other agents rely on cloud memory services like Honcho (external HTTP API), Mnemosyne integrates directly into Hermes through its plugin system — delivering **56x faster writes** and **500x faster reads** with **zero network overhead**.
+While other memory systems such as Honcho offer a hosted cloud option (accessed via external HTTP API) or can be self-hosted, Mnemosyne integrates directly into Hermes through its plugin system — delivering **56x faster writes** and **500x faster reads** with **zero network overhead** when running locally.
 
 ```python
 # Inside your Hermes agent - memories auto-inject before every LLM call
@@ -61,7 +61,7 @@ A time-aware SQLite graph tracks *when* facts were true with automatic invalidat
 
 ## 📊 Benchmarks: Mnemosyne vs. The Field
 
-We benchmarked Mnemosyne on **LongMemEval** (ICLR 2025), the standard benchmark for long-term conversational memory.
+We benchmarked Mnemosyne on **LongMemEval** (ICLR 2025), a widely-cited benchmark for long-term conversational memory. Like any synthetic eval, it measures retrieval under controlled conditions and should be paired with real-world usage tests.
 
 ### LongMemEval Retrieval Scores
 
@@ -77,7 +77,7 @@ We benchmarked Mnemosyne on **LongMemEval** (ICLR 2025), the standard benchmark 
 | Full-context GPT-4o baseline | ~60.2% accuracy | No memory system, just raw context |
 | ChatGPT (GPT-4o) online | ~57.7% accuracy | Drops sharply on multi-session tasks |
 
-**Takeaway:** Mnemosyne's dense-retrieval upgrade puts it in the top tier of published LongMemEval results — competitive with Mempalace, Backboard, and Hindsight — while remaining 100% local and open-source.
+**Takeaway:** Mnemosyne's dense-retrieval upgrade puts it in the top tier of published LongMemEval results — competitive with Mempalace, Backboard, and Hindsight — while remaining 100% local and open-source. We have not yet run Mnemosyne on million-token or ultra-long-horizon benchmarks (e.g., BEAM 1M+); that is active future work.
 
 ---
 
@@ -330,19 +330,21 @@ python -m mnemosyne.dr health
 
 ## 📊 Comparison: Mnemosyne vs. Alternatives
 
+*Scores and latencies are self-reported by each project unless noted otherwise.*
+
 | Capability | Honcho | Mempalace | **Mnemosyne** |
 |------------|--------|-----------|---------------|
-| **Storage** | Cloud PostgreSQL | Local ChromaDB + SQLite | Local SQLite |
+| **Storage** | Postgres (cloud or self-hosted) | Local ChromaDB + SQLite | Local SQLite |
 | **Hermes Integration** | HTTP client calls | MCP server (19 tools) | **Native plugin hooks** |
 | **Latency** | 10-50ms | ~5-20ms | **0.8ms** |
-| **Dense Retrieval** | ❌ No | ✅ Yes (Contriever/GTE) | **✅ Yes (fastembed / bge-small-en)** |
+| **Dense Retrieval** | ✅ Yes (pgvector) | ✅ Yes (Contriever/GTE) | **✅ Yes (fastembed / bge-small-en)** |
 | **Temporal Graph** | ❌ No | ✅ Yes | **✅ Yes** |
 | **Context Compression** | ❌ No | ✅ AAAK dialect | **✅ Lightweight AAAK** |
-| **Offline Operation** | ❌ No | ✅ Yes | **✅ Yes** |
+| **Offline Operation** | ⚠️ Self-hostable | ✅ Yes | **✅ Yes** |
 | **Setup for Hermes** | API key + config | `pip install` + CLI | **Zero config** |
-| **Privacy** | ❌ Cloud-hosted | ✅ Local | **✅ 100% local** |
-| **Cost** | Freemium → $$$ | Free | **🆓 Free** |
-| **LongMemEval Score** | N/A | 96.6% R@5 | **98.9% R@All@5** (oracle, n=100) |
+| **Privacy** | ⚠️ Hosted option available | ✅ Local | **✅ 100% local** |
+| **Cost** | Freemium hosted / Free self-hosted | Free | **🆓 Free** |
+| **LongMemEval Score** | N/A | 96.6% R@5 (project claim) | **98.9% R@All@5** (oracle, n=100) |
 
 ### When to Use Mempalace
 
