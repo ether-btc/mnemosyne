@@ -281,7 +281,7 @@ MNEMOSYNE MEMORY (persistent local context)
 Use this to answer questions about the user and prior work.
 
 [2026-04-05 10:23] PREF|Neovim>Vim
-[2026-04-05 09:15] PROJ|FluxSpeak AI
+[2026-04-05 09:15] PROJ|Open Source AI Tools
 [2026-04-05 08:42] LOC|America/New_York
 ════════════════════════════════════════════════════════════════
 ```

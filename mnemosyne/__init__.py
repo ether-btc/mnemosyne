@@ -11,7 +11,7 @@ Example:
 """
 
 __version__ = "1.0.0"
-__author__ = "FluxSpeak AI"
+__author__ = "Abdias J"
 __license__ = "MIT"
 
 # Lazy imports to allow mnemosyne.install to run without heavy deps

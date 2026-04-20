@@ -12,8 +12,8 @@ long_description = readme_path.read_text(encoding="utf-8") if readme_path.exists
 setup(
     name="mnemosyne-memory",
     version="1.0.0",
-    author="FluxSpeak AI",
-    author_email="aj@fluxspeak.ai",
+    author="Abdias J",
+    author_email="abdi.moya@gmail.com",
     description="The Zero-Dependency, Sub-Millisecond AI Memory System",
     long_description=long_description,
     long_description_content_type="text/markdown",
