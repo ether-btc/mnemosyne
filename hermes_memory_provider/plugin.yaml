@@ -1,7 +1,7 @@
 name: mnemosyne
 version: 2.0.0
 description: "Native local memory for Hermes — SQLite with vector search, FTS5 hybrid ranking, episodic consolidation, and temporal triples. Zero cloud. Zero latency. Deployed via plugin system."
-author: Abdias J (FluxSpeak)
+author: Abdias J
 provides_tools:
   - mnemosyne_remember
   - mnemosyne_recall
