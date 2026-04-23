@@ -8,6 +8,16 @@ given a version number **MAJOR.MINOR**, increment the:
 
 ---
 
+## 1.9.0
+
+- **PyPI release** — `pip install mnemosyne-memory` is now live: https://pypi.org/project/mnemosyne-memory/
+- **Automated releases** — GitHub Actions builds wheels + sdist, creates GitHub releases, and publishes to PyPI on every `v*` tag
+- **Trusted publishing** — PyPI publishing via OIDC (no long-lived API tokens)
+- **CI pipeline** — Tests run on Python 3.9–3.12 on every PR and push
+- **Historical releases** — Retroactively tagged and released v1.0.0, v1.5.0, v1.7.0, and v1.8.0 on GitHub
+- **Modern packaging** — Added `pyproject.toml` (PEP 517) with dynamic version from `mnemosyne/__init__.py`
+- **Test fix** — Disable LLM summarization in cross-session recall test to prevent Chinese-to-English translation during consolidation
+
 ## 1.8
 
 - Fix Hermes plugin CLI discovery: add `register(ctx)` to wire up `hermes mnemosyne stats|sleep|inspect|clear|export|import|version`
