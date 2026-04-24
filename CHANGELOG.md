@@ -13,6 +13,8 @@ given a version number **MAJOR.MINOR**, increment the:
 - **Fix `get_working_stats()`** — Now counts ALL working memories globally, not just current session. (PR #11 by @rakaarwaky)
 - **Fix `recall()` tracking UPDATE** — Global memories now correctly increment `recall_count` and `last_recalled` when recalled from other sessions. (PR #11 by @rakaarwaky)
 - **Fix column defaults** — `scope` column defaults changed from `'session'` to `'global'` for backward compatibility with pre-scope behavior. (PR #11 by @rakaarwaky)
+- **Fix sqlite-vec KNN query** — `_vec_search()` inlined LIMIT parameter because sqlite-vec's virtual table planner requires the limit at query planning time. Fixes `mnemosyne_recall` failure on systems with sqlite-vec installed. (#12)
+- **Fix triple tools in MemoryProvider** — Added missing `add_triple()` and `query_triples()` module-level functions to `mnemosyne.core.triples`. Aligned triples database path with BEAM memory so triples share the same SQLite file. (#13)
 - **Deprecate `get_global_working_stats()`** — Now aliases `get_working_stats()`. The `--global` CLI flag remains for backward compatibility.
 
 ## 1.10.0
