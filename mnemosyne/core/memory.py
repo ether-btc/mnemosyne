@@ -101,14 +101,27 @@ class Mnemosyne:
     """
     Native memory interface - no HTTP, direct SQLite.
     Now backed by BEAM architecture for scalable retrieval.
+
+    Supports memory bank isolation via the `bank` parameter.
+    Each bank is a separate SQLite database for complete isolation.
     """
 
-    def __init__(self, session_id: str = "default", db_path: Path = None):
+    def __init__(self, session_id: str = "default", db_path: Path = None, bank: str = None):
         self.session_id = session_id
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.bank = bank or "default"
+
+        # Resolve database path based on bank
+        if db_path:
+            self.db_path = db_path
+        elif bank and bank != "default":
+            from mnemosyne.core.banks import BankManager
+            self.db_path = BankManager().get_bank_db_path(bank)
+        else:
+            self.db_path = DEFAULT_DB_PATH
+
         self.conn = _get_connection(self.db_path)
         init_db(self.db_path)
-        self.beam = BeamMemory(session_id=session_id, db_path=db_path)
+        self.beam = BeamMemory(session_id=session_id, db_path=self.db_path)
 
     def remember(self, content: str, source: str = "conversation",
                  importance: float = 0.5, metadata: Dict = None,
@@ -444,14 +457,32 @@ class Mnemosyne:
 
 # Global instance for module-level convenience functions
 _default_instance = None
+_default_bank = "default"
 
 
-def _get_default():
-    """Get or create the default Mnemosyne instance"""
-    global _default_instance
-    if _default_instance is None:
-        _default_instance = Mnemosyne()
+def _get_default(bank: str = None):
+    """Get or create the default Mnemosyne instance. Supports bank switching."""
+    global _default_instance, _default_bank
+    target_bank = bank or _default_bank or "default"
+    if _default_instance is None or _default_instance.bank != target_bank:
+        _default_bank = target_bank
+        _default_instance = Mnemosyne(bank=target_bank)
     return _default_instance
+
+
+def set_bank(bank: str):
+    """
+    Switch the global default memory bank.
+    All subsequent module-level calls (remember, recall, etc.) will use this bank.
+    """
+    global _default_bank, _default_instance
+    _default_bank = bank
+    _default_instance = None  # Force re-creation on next access
+
+
+def get_bank() -> str:
+    """Get the current default bank name."""
+    return _default_bank or "default"
 
 
 # Module-level convenience functions
@@ -459,12 +490,12 @@ def remember(content: str, source: str = "conversation",
              importance: float = 0.5, metadata: Dict = None,
              scope: str = "session", valid_until: str = None,
              extract_entities: bool = False,
-             extract: bool = False) -> str:
+             extract: bool = False, bank: str = None) -> str:
     """Store a memory using the global instance"""
-    return _get_default().remember(content, source, importance, metadata,
-                                   scope=scope, valid_until=valid_until,
-                                   extract_entities=extract_entities,
-                                   extract=extract)
+    return _get_default(bank).remember(content, source, importance, metadata,
+                                       scope=scope, valid_until=valid_until,
+                                       extract_entities=extract_entities,
+                                       extract=extract)
 
 
 def recall(query: str, top_k: int = 5, *,
@@ -472,49 +503,50 @@ def recall(query: str, top_k: int = 5, *,
            source: Optional[str] = None, topic: Optional[str] = None,
            temporal_weight: float = 0.0,
            query_time: Optional[Any] = None,
-           temporal_halflife: Optional[float] = None) -> List[Dict]:
+           temporal_halflife: Optional[float] = None,
+           bank: str = None) -> List[Dict]:
     """Search memories using the global instance with temporal filtering and scoring"""
-    return _get_default().recall(query, top_k,
-                                 from_date=from_date, to_date=to_date,
-                                 source=source, topic=topic,
-                                 temporal_weight=temporal_weight,
-                                 query_time=query_time,
-                                 temporal_halflife=temporal_halflife)
+    return _get_default(bank).recall(query, top_k,
+                                     from_date=from_date, to_date=to_date,
+                                     source=source, topic=topic,
+                                     temporal_weight=temporal_weight,
+                                     query_time=query_time,
+                                     temporal_halflife=temporal_halflife)
 
 
-def get_context(limit: int = 10) -> List[Dict]:
+def get_context(limit: int = 10, bank: str = None) -> List[Dict]:
     """Get session context using the global instance"""
-    return _get_default().get_context(limit)
+    return _get_default(bank).get_context(limit)
 
 
-def get_stats() -> Dict:
+def get_stats(bank: str = None) -> Dict:
     """Get stats using the global instance"""
-    return _get_default().get_stats()
+    return _get_default(bank).get_stats()
 
 
-def forget(memory_id: str) -> bool:
+def forget(memory_id: str, bank: str = None) -> bool:
     """Delete memory using the global instance"""
-    return _get_default().forget(memory_id)
+    return _get_default(bank).forget(memory_id)
 
 
-def update(memory_id: str, content: str = None, importance: float = None) -> bool:
+def update(memory_id: str, content: str = None, importance: float = None, bank: str = None) -> bool:
     """Update memory using the global instance"""
-    return _get_default().update(memory_id, content, importance)
+    return _get_default(bank).update(memory_id, content, importance)
 
 
-def sleep(dry_run: bool = False) -> Dict:
+def sleep(dry_run: bool = False, bank: str = None) -> Dict:
     """Run consolidation sleep cycle using the global instance"""
-    return _get_default().sleep(dry_run=dry_run)
+    return _get_default(bank).sleep(dry_run=dry_run)
 
 
-def scratchpad_write(content: str) -> str:
+def scratchpad_write(content: str, bank: str = None) -> str:
     """Write to scratchpad using the global instance"""
-    return _get_default().scratchpad_write(content)
+    return _get_default(bank).scratchpad_write(content)
 
 
-def scratchpad_read() -> List[Dict]:
+def scratchpad_read(bank: str = None) -> List[Dict]:
     """Read scratchpad using the global instance"""
-    return _get_default().scratchpad_read()
+    return _get_default(bank).scratchpad_read()
 
 
 def scratchpad_clear():
