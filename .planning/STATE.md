@@ -1,39 +1,36 @@
 # Project State
 
 **Updated:** 2026-05-05
-**Current Phase:** 2 — Smarter Compression
-**Phase Status:** ✅ Complete (shipped to main)
+**Status:** ✅ All 3 phases complete
 
 ## Progress
 
-| Phase | Status | Started | Ship Date |
-|-------|--------|---------|-----------|
-| 1 | ✅ Complete | 2026-05-05 | 2026-05-05 |
-| 2 | ✅ Complete | 2026-05-05 | 2026-05-05 |
-| 3 | Planned | - | - |
+| Phase | Status | Commits |
+|-------|--------|---------|
+| 1 | ✅ Complete | `8ca39cd`, `839ced2` |
+| 2 | ✅ Complete | `4799360` |
+| 3 | ✅ Complete | `b182d66` |
 
-## Implementation Summary
+## What shipped
 
 ### Phase 1: Core Degradation Engine
-- 6 waves: schema, config, degrade_episodic(), recall weighting, sleep integration, tests
-- 39 tests passing (10 degradation tests)
+3 tiers (hot/warm/cold), LLM compression, recall weighting, sleep integration.
+39 tests.
 
 ### Phase 2: Smart Compression
-- `_extract_key_signal()`: sentence-level entity scoring
-- 12 regex patterns (proper nouns, acronyms, tech terms, security, infra, urgency, preferences)
-- Config: `MNEMOSYNE_SMART_COMPRESS=1` (on by default), `MNEMOSYNE_TIER3_MAX_CHARS=300`
-- 4 tests: entity preservation, no-sentences fallback, short content passthrough, e2e
-- 43 tests total passing
+Entity-aware `_extract_key_signal()` — sentence scoring by signal density.
+Replaces naive first-200-chars for tier 2→3.
+43 tests.
 
-### Bug Fixes
-- 🐛 `local_llm.summarize()` → `local_llm.summarize_memories()`
-- 🐛 SQLite connection conflicts in batch test
+### Phase 3: Memory Confidence
+`veracity` field (stated/inferred/tool/imported/unknown) on both memory tables.
+Recall weighting by veracity, veracity filter on recall(), get_contaminated() review queue.
+51 tests.
 
-### Commits
-- `8ca39cd` — feat: tiered episodic degradation (Phase 1, Waves 1-5)
-- `839ced2` — fix: Wave 6 — summarize_memories call + 10 tests
-- `9a00c12` — chore: remove hallucinated Phase 2 from roadmap
-- `4799360` — feat: Phase 2 — smart compression for tier 2→3 degradation
+### Bug fixes
+- `local_llm.summarize()` → `summarize_memories()` (would crash on LLM path)
+- SQLite connection conflicts in batch tests
+- Removed hallucinated Phase 2 "Dashboard Visibility" from roadmap
 
 ### Blockers
 None.
