@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Simple Versioning](https://github.com/AxDSan/mnemosyne) (MAJOR.MINOR).
 
+## [2.3] — 2026-05-05
+
+### Added
+
+**Tiered Episodic Degradation — long-term recall without unbounded growth**
+- Three degradation tiers: Tier 1 (0-30d, full detail), Tier 2 (30-180d, LLM-compressed), Tier 3 (180d+, entity-extracted signal)
+- Automatic tier promotion during `sleep()` — no manual maintenance
+- Tier multipliers in recall scoring: cold memories need 4x stronger semantic match
+- Configurable via `MNEMOSYNE_TIER2_DAYS`, `MNEMOSYNE_TIER3_DAYS`, `MNEMOSYNE_TIER*_WEIGHT`
+- Mnemonics can now truthfully claim "remembers what you told it a year ago"
+
+**Smart Compression — entity-aware tier 2→3 extraction**
+- `_extract_key_signal()` scores sentences by entity density (proper nouns, acronyms, security terms, tech stack, urgency)
+- Preserves facts buried anywhere in a long memory, not just the first sentence
+- Configurable: `MNEMOSYNE_SMART_COMPRESS=1` (default on), `MNEMOSYNE_TIER3_MAX_CHARS=300`
+
+**Memory Confidence — veracity signal for every memory**
+- New `veracity` field: `stated`, `inferred`, `tool`, `imported`, `unknown`
+- `remember(veracity="stated")` — set confidence at write time
+- `recall(veracity="stated")` — filter by confidence level
+- Recall applies veracity multiplier to scores (stated=1.0x, inferred=0.7x, tool=0.5x)
+- `get_contaminated()` — surface non-stated memories for review
+- Configurable weights via `MNEMOSYNE_*_WEIGHT` env vars
+
+### Fixed
+- `local_llm.summarize()` → `summarize_memories()` — would crash on LLM degradation path
+- SQLite connection conflicts in batch degradation tests
+- Removed hallucinated Phase 2 from roadmap
+
 ## [2.2] — 2026-05-02
 
 ### Added
