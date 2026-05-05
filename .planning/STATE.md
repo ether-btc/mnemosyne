@@ -1,7 +1,7 @@
 # Project State
 
 **Updated:** 2026-05-05
-**Current Phase:** 1 — Core Degradation Engine
+**Current Phase:** 2 — Smarter Compression
 **Phase Status:** ✅ Complete (shipped to main)
 
 ## Progress
@@ -9,30 +9,31 @@
 | Phase | Status | Started | Ship Date |
 |-------|--------|---------|-----------|
 | 1 | ✅ Complete | 2026-05-05 | 2026-05-05 |
-| 2 | Planned | - | - |
+| 2 | ✅ Complete | 2026-05-05 | 2026-05-05 |
 | 3 | Planned | - | - |
 
 ## Implementation Summary
 
-### Completed Waves
-- ✅ Wave 1: Schema migration (tier, degraded_at columns + backfill)
-- ✅ Wave 2: Config constants (TIER2_DAYS, TIER3_DAYS, TIER*_WEIGHT, DEGRADE_BATCH_SIZE)
-- ✅ Wave 3: degrade_episodic() function (LLM compression tier 1→2, text extraction tier 2→3)
-- ✅ Wave 4: Tier multiplier in recall scoring (post-processing before sort)
-- ✅ Wave 5: Sleep integration (degrade called in both sleep() and sleep_all_sessions())
-- ✅ Wave 6: Tests (10 tests: schema, transitions, dry run, batch limit, weighting, sleep integration, end-to-end recall)
+### Phase 1: Core Degradation Engine
+- 6 waves: schema, config, degrade_episodic(), recall weighting, sleep integration, tests
+- 39 tests passing (10 degradation tests)
+
+### Phase 2: Smart Compression
+- `_extract_key_signal()`: sentence-level entity scoring
+- 12 regex patterns (proper nouns, acronyms, tech terms, security, infra, urgency, preferences)
+- Config: `MNEMOSYNE_SMART_COMPRESS=1` (on by default), `MNEMOSYNE_TIER3_MAX_CHARS=300`
+- 4 tests: entity preservation, no-sentences fallback, short content passthrough, e2e
+- 43 tests total passing
 
 ### Bug Fixes
-- 🐛 Fixed `local_llm.summarize()` → `local_llm.summarize_memories()` (wrong function name, would crash on LLM path)
-- 🐛 Fixed SQLite connection conflicts in batch test
-
-### Files Changed
-- `mnemosyne/core/beam.py` (+123 lines: config, schema, degrade_episodic, recall weighting, sleep integration)
-- `tests/test_beam.py` (+262 lines: 10 new tests in TestTieredDegradation class)
+- 🐛 `local_llm.summarize()` → `local_llm.summarize_memories()`
+- 🐛 SQLite connection conflicts in batch test
 
 ### Commits
-- `8ca39cd` — feat: tiered episodic degradation (Waves 1-5)
-- *(pending)* — fix: summarize_memories call + Wave 6 tests
+- `8ca39cd` — feat: tiered episodic degradation (Phase 1, Waves 1-5)
+- `839ced2` — fix: Wave 6 — summarize_memories call + 10 tests
+- `9a00c12` — chore: remove hallucinated Phase 2 from roadmap
+- `4799360` — feat: Phase 2 — smart compression for tier 2→3 degradation
 
 ### Blockers
 None.
