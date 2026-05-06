@@ -618,6 +618,22 @@ def answer_with_memory(llm: LLMClient, beam: BeamMemory, question: str,
     else:
         # Multi-strategy retrieval for larger conversations
         memories = _multi_strategy_recall(beam, question, top_k * 3)  # Get 3x more for reranking
+
+        # If cloud extraction enabled, also search the facts table
+        if getattr(beam, 'use_cloud', False):
+            try:
+                fact_memories = beam.fact_recall(question, top_k=top_k)
+                # Convert fact dicts to same format as recall results
+                for f in fact_memories:
+                    memories.append({
+                        "content": f"FACT: {f['content']}",
+                        "score": f.get("score", 0.5) * 2.0,  # 2x weight for facts
+                        "source": "fact_extraction",
+                    })
+                # Re-sort by score
+                memories.sort(key=lambda x: x.get("score", 0), reverse=True)
+            except Exception:
+                pass  # Fact recall is best-effort
         
         # LLM RERANKING: filter noisy FTS5 results to improve precision
         if len(memories) > top_k:
@@ -997,6 +1013,8 @@ def main():
                         help="Resume from previous results file")
     parser.add_argument("--dry-run", action="store_true",
                         help="Download data and print stats, don't evaluate")
+    parser.add_argument("--use-cloud", action="store_true",
+                        help="Enable LLM fact extraction (cloud tier). Requires OPENROUTER_API_KEY.")
     args = parser.parse_args()
 
     scales = [s.strip() for s in args.scales.split(",")]
@@ -1060,7 +1078,8 @@ def main():
             with tempfile.TemporaryDirectory() as tmpdir:
                 db_path = Path(tmpdir) / f"beam_{scale}_{conv['id']}.db"
                 init_beam(db_path)
-                beam = BeamMemory(session_id=f"beam_{scale}_{conv['id']}", db_path=db_path)
+                beam = BeamMemory(session_id=f"beam_{scale}_{conv['id']}",
+                                   db_path=db_path, use_cloud=args.use_cloud)
 
                 # Ingest
                 t0 = time.perf_counter()
