@@ -200,41 +200,84 @@ def _compress_memory(content: str) -> str:
 def _on_pre_llm_call(session_id, history, **kwargs):
     """
     Inject Mnemosyne memory context into system prompt.
-    
-    This runs BEFORE every LLM call, automatically surfacing
-    relevant memories to provide conversational continuity.
-    Uses importance-weighted sorting so critical rules/bans surface reliably.
+
+    Hybrid strategy:
+    1. get_context() -- fast recent working memory (current session + global)
+    2. recall() -- semantic search across ALL sessions/episodic memory
+       using the user's last message as the query
+
+    This provides both short-term continuity AND long-term memory recall.
     """
     try:
         mem_id = f"hermes_{session_id}" if session_id else "hermes_default"
         mem = _get_memory(session_id=mem_id)
-        
-        # Get context sorted by importance then recency
-        context_memories = mem.get_context(limit=10)
-        
-        if not context_memories:
+
+        # --- Layer 1: Fast recent context (working memory) ---
+        context_memories = mem.get_context(limit=5)
+
+        # --- Layer 2: Semantic recall across all sessions ---
+        # Extract user's last message from history for targeted recall
+        recall_results = []
+        user_message = None
+        if history and isinstance(history, list):
+            # Find the last user message in history
+            for msg in reversed(history):
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    user_message = msg.get("content", "")
+                    break
+                elif isinstance(msg, str):
+                    user_message = msg
+                    break
+
+        if user_message and len(user_message) > 3:
+            # Search across ALL sessions (no session filter) for semantic matches
+            recall_results = mem.recall(
+                query=user_message,
+                top_k=5,
+                temporal_weight=0.2  # mild recency bias
+            )
+
+        # Deduplicate: remove recall results that are already in context_memories
+        context_ids = {m.get("id") for m in context_memories}
+        unique_recall = [r for r in recall_results if r.get("id") not in context_ids]
+
+        if not context_memories and not unique_recall:
             return None  # No context to inject
-        
+
         # Build context block
-        context_lines = ["═══════════════════════════════════════════════════════════════"]
-        context_lines.append("MNEMOSYNE MEMORY (importance-sorted, top 10)")
-        context_lines.append("")
-        
-        for m in context_memories:
-            imp = m.get('importance', 0)
-            raw_content = m['content'][:300] if len(m['content']) > 300 else m['content']
-            content = _compress_memory(raw_content)
-            ts = m['timestamp'][:16] if len(m['timestamp']) > 16 else m['timestamp']
-            context_lines.append(f"[{ts}] imp={imp:.1f} {content}")
-        
-        context_lines.append("═══════════════════════════════════════════════════════════════")
-        context_block = "\n".join(context_lines)
+        lines = ["═══════════════════════════════════════════════════════════════"]
+
+        if context_memories:
+            lines.append("MNEMOSYNE CONTEXT (recent, current session)")
+            lines.append("")
+            for m in context_memories:
+                imp = m.get('importance', 0)
+                raw = m['content'][:300] if len(m['content']) > 300 else m['content']
+                content = _compress_memory(raw)
+                ts = m['timestamp'][:16] if len(m['timestamp']) > 16 else m['timestamp']
+                scope = m.get('scope', 'session')
+                lines.append(f"[{ts}] imp={imp:.1f} scope={scope} {content}")
+            lines.append("")
+
+        if unique_recall:
+            lines.append("MNEMOSYNE RECALL (semantic search, all sessions)")
+            lines.append("")
+            for r in unique_recall:
+                imp = r.get('importance', 0)
+                raw = r['content'][:300] if len(r['content']) > 300 else r['content']
+                content = _compress_memory(raw)
+                ts = r.get('timestamp', '')[:16]
+                score = r.get('score', 0)
+                scope = r.get('scope', 'session')
+                lines.append(f"[{ts}] imp={imp:.1f} score={score:.2f} scope={scope} {content}")
+            lines.append("")
+
+        lines.append("═══════════════════════════════════════════════════════════════")
+        context_block = "\n".join(lines)
         full_context = f"\n\n{context_block}\n"
-        
-        return {
-            "context": full_context
-        }
-        
+
+        return {"context": full_context}
+
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(
