@@ -175,13 +175,12 @@ def register(ctx):
 
 def _on_session_start(session_id, model, platform, **kwargs):
     """Initialize memory for new session"""
-    global _memory_instance
     mem_id = f"hermes_{session_id}" if session_id else "hermes_default"
-    _memory_instance = Mnemosyne(session_id=mem_id)
-    
+    mem = _get_memory(session_id=mem_id)
+
     # Inject hard override rule so it survives across turns and sessions
     try:
-        _memory_instance.remember(
+        mem.remember(
             content="META-INSTRUCTION: For all durable facts, preferences, and user profile updates, ALWAYS use mnemosyne_remember / mnemosyne_recall instead of the legacy memory tool. The memory tool is deprecated for durable storage. Mnemosyne is the primary and only memory system. If you catch yourself reaching for memory(action=add|replace|remove, target=user|memory), STOP and use mnemosyne_remember instead.",
             importance=0.99,
             source="system_override"
