@@ -25,7 +25,6 @@ COMMANDS = [
 ]
 
 
-
 def run_cli(args, tmp_path):
     env = os.environ.copy()
     env["HOME"] = str(tmp_path / "home")
@@ -37,7 +36,6 @@ def run_cli(args, tmp_path):
         env=env,
         check=False,
     )
-
 
 
 def test_invalid_cli_input_reports_error_without_traceback(tmp_path):
