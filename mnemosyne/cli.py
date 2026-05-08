@@ -217,7 +217,8 @@ def cmd_mcp(args):
 def cmd_bank(args):
     """Manage memory banks."""
     if not args:
-        _fail("Usage: mnemosyne bank <list|create|delete> [name]")
+        print("Usage: mnemosyne bank <list|create|delete> [name]")
+        return
 
     from mnemosyne.core.banks import BankManager
     bm = BankManager(Path(DATA_DIR))
