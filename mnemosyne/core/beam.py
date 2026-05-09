@@ -2413,10 +2413,17 @@ class BeamMemory:
 
         cursor = self.conn.cursor()
         cutoff = (datetime.now() - timedelta(hours=WORKING_MEMORY_TTL_HOURS // 2)).isoformat()
+        # COALESCE(session_id, 'default') so a "default"-session beam also
+        # consolidates rows with literal NULL session_id (which can land
+        # via imports or schema migrations). Without the COALESCE these
+        # NULL-session rows are stranded — sleep_all_sessions's GROUP BY
+        # collects them as a NULL group, maps to "default" for the loop,
+        # then beam.sleep("default") would query session_id = 'default'
+        # and miss the NULL rows. See Codex /review note for C9.
         cursor.execute(f"""
             SELECT id, content, source, timestamp, importance, metadata_json, scope, valid_until
             FROM working_memory
-            WHERE session_id = ? AND timestamp < ?
+            WHERE COALESCE(session_id, 'default') = ? AND timestamp < ?
             ORDER BY timestamp ASC
             LIMIT {SLEEP_BATCH_SIZE}
         """, (self.session_id, cutoff))
@@ -2567,18 +2574,23 @@ class BeamMemory:
             if session_id is None:
                 session_id = "default"
             try:
-                # Pass through this instance's identity so the alien-session
-                # BeamMemory writes consolidated episodic rows tagged with the
-                # caller's author/channel, not None — without this propagation
-                # filtered recall (e.g. by maintenance bot's author_id) cannot
-                # find consolidations performed across session boundaries.
-                # See C9 in the memory-contract ledger.
+                # Pass author_id/author_type so the alien-session BeamMemory
+                # tags consolidated episodic rows with the caller's authorship
+                # (e.g. a maintenance bot can audit-recall its own work).
+                #
+                # channel_id is intentionally NOT propagated. BeamMemory.__init__
+                # defaults channel_id to its own session_id when None — passing
+                # self.channel_id (which may itself be the caller's defaulted
+                # session_id) would tag alien rows with the caller's channel,
+                # creating cross-session pollution where filter by
+                # channel_id=caller surfaces alien content. Letting it default
+                # to the alien session_id is the semantically correct behavior.
+                # See C9 + adversarial review in the memory-contract ledger.
                 beam = self if session_id == self.session_id else BeamMemory(
                     session_id=session_id,
                     db_path=self.db_path,
                     author_id=self.author_id,
                     author_type=self.author_type,
-                    channel_id=self.channel_id,
                 )
                 result = beam.sleep(dry_run=dry_run)
                 result = dict(result)
