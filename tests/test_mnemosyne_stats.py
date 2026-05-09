@@ -14,6 +14,15 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 
+
+def _safe_count(db, table):
+    """Mirror scripts/mnemosyne-stats.py cnt(): missing table -> 0."""
+    try:
+        return db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    except sqlite3.OperationalError:
+        return 0
+
+
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "mnemosyne-stats.py"
 DB_PATH = Path.home() / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"
 SNAP_DIR = Path.home() / ".hermes" / "mnemosyne" / "stats"
@@ -237,7 +246,7 @@ def test_db_count_matches():
     assert code == 0
     data = json.loads(out)
     db = sqlite3.connect(str(DB_PATH))
-    actual = db.execute("SELECT COUNT(*) FROM working_memory").fetchone()[0]
+    actual = _safe_count(db, "working_memory")
     db.close()
     reported = data["working_memory"]["total"]
     assert reported == actual, f"WM count mismatch: reported={reported}, actual={actual}"
@@ -248,7 +257,7 @@ def test_episodic_count_matches():
     assert code == 0
     data = json.loads(out)
     db = sqlite3.connect(str(DB_PATH))
-    actual = db.execute("SELECT COUNT(*) FROM episodic_memory").fetchone()[0]
+    actual = _safe_count(db, "episodic_memory")
     db.close()
     reported = data["episodic"]["total"]
     assert reported == actual, f"Episodic mismatch: reported={reported}, actual={actual}"
@@ -259,7 +268,7 @@ def test_triples_count_matches():
     assert code == 0
     data = json.loads(out)
     db = sqlite3.connect(str(DB_PATH))
-    actual = db.execute("SELECT COUNT(*) FROM triples").fetchone()[0]
+    actual = _safe_count(db, "triples")
     db.close()
     reported = data["triples"]["total"]
     assert reported == actual, f"Triples mismatch: reported={reported}, actual={actual}"
@@ -270,7 +279,7 @@ def test_consolidation_count_matches():
     assert code == 0
     data = json.loads(out)
     db = sqlite3.connect(str(DB_PATH))
-    actual = db.execute("SELECT COUNT(*) FROM consolidation_log").fetchone()[0]
+    actual = _safe_count(db, "consolidation_log")
     db.close()
     reported = data["consolidation"]["events"]
     assert reported == actual, f"Consolidation mismatch: reported={reported}, actual={actual}"
