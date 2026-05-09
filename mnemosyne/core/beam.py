@@ -44,6 +44,18 @@ except ImportError:
     _mib = None
     _hamming = None
 
+# Episodic graph + veracity consolidation (Phases 3-4)
+try:
+    from mnemosyne.core.episodic_graph import EpisodicGraph, GraphEdge
+except ImportError:
+    EpisodicGraph = None
+    GraphEdge = None
+try:
+    from mnemosyne.core.veracity_consolidation import VeracityConsolidator, VERACITY_WEIGHTS
+except ImportError:
+    VeracityConsolidator = None
+    VERACITY_WEIGHTS = {}
+
 try:
     import numpy as np
 except ImportError:
@@ -859,6 +871,22 @@ class BeamMemory:
         self.conn = _get_connection(self.db_path)
         init_beam(self.db_path)
 
+        # Phase 3: Episodic graph (shared connection)
+        self.episodic_graph = None
+        if EpisodicGraph is not None:
+            try:
+                self.episodic_graph = EpisodicGraph(conn=self.conn, db_path=self.db_path)
+            except Exception:
+                pass
+
+        # Phase 4: Veracity consolidator (shared connection)
+        self.veracity_consolidator = None
+        if VeracityConsolidator is not None:
+            try:
+                self.veracity_consolidator = VeracityConsolidator(conn=self.conn, db_path=self.db_path)
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------
     # Working Memory
     # ------------------------------------------------------------------
@@ -930,6 +958,8 @@ class BeamMemory:
                   memory_type,
                   existing_id, self.session_id))
             self.conn.commit()
+            # Phase 3-4: Extract graph and consolidate veracity for dedup update
+            self._ingest_graph_and_veracity(existing_id, content, source, veracity)
             return existing_id
 
         memory_id = memory_id or _generate_id(content)
@@ -956,6 +986,9 @@ class BeamMemory:
         # --- Structured fact extraction ---
         if extract:
             _extract_and_store_facts(self, memory_id, content, source)
+
+        # Phase 3-4: Extract graph and consolidate veracity for new memory
+        self._ingest_graph_and_veracity(memory_id, content, source, veracity)
 
         return memory_id
 
@@ -998,6 +1031,50 @@ class BeamMemory:
         self.conn.commit()
         self._trim_working_memory()
         return ids
+
+    def _ingest_graph_and_veracity(self, memory_id: str, content: str,
+                                    source: str, veracity: str = "unknown"):
+        """Phase 3-4: Extract gists + facts, store in graph, consolidate veracity.
+        Non-blocking — failures in graph/veracity don't affect memory storage."""
+
+        gist = None
+        facts = []
+
+        # Phase 3: Episodic graph extraction
+        if self.episodic_graph is not None:
+            try:
+                gist = self.episodic_graph.extract_gist(content, memory_id)
+                self.episodic_graph.store_gist(gist, memory_id)
+
+                facts = self.episodic_graph.extract_facts(content, memory_id)
+                for fact in facts:
+                    self.episodic_graph.store_fact(fact, memory_id)
+
+                # Link graph edges between gist and facts
+                for fact in facts:
+                    self.episodic_graph.add_edge(GraphEdge(
+                        source=gist.id,
+                        target=fact.id,
+                        edge_type="ctx",
+                        weight=fact.confidence,
+                        timestamp=datetime.now().isoformat()
+                    ))
+            except Exception:
+                pass  # Graph failures are non-blocking
+
+        # Phase 4: Veracity-weighted consolidation (reuses facts from above)
+        if self.veracity_consolidator is not None and facts:
+            try:
+                for fact in facts:
+                    self.veracity_consolidator.consolidate_fact(
+                        subject=fact.subject,
+                        predicate=fact.predicate,
+                        object=fact.object,
+                        veracity=veracity,
+                        source=memory_id
+                    )
+            except Exception:
+                pass  # Veracity failures are non-blocking
 
     def _add_temporal_triple(self, memory_id: str, timestamp: str, source: str, content: str):
         """Auto-generate temporal triple for a memory. Bridges BEAM and TripleStore."""
@@ -1199,6 +1276,10 @@ class BeamMemory:
                         pass  # Non-blocking
 
         self.conn.commit()
+
+        # Phase 3-4: Graph + veracity for consolidated episodic memory
+        self._ingest_graph_and_veracity(memory_id, summary, source, veracity="inferred")
+
         return memory_id
 
     def recall(self, query: str, top_k: int = 40, *,
@@ -1734,7 +1815,42 @@ class BeamMemory:
             # Phase 4: configurable hybrid scoring for episodic memory
             # vec_weight + fts_weight + importance_weight are normalized to sum to 1.0
             base_score = sim * vw + fts * fw + row["importance"] * iw
+
+            # Phase 5: Graph + fact voices (polyphonic recall bonus)
+            graph_bonus = 0.0
+            fact_bonus = 0.0
+            memory_id = row["id"]
+            content_lower = row["content"].lower()
+            if self.episodic_graph is not None:
+                try:
+                    # Count graph edges for this memory (well-connected = more relevant)
+                    cursor2 = self.conn.cursor()
+                    cursor2.execute(
+                        "SELECT COUNT(*) FROM graph_edges WHERE source LIKE ? OR target LIKE ?",
+                        (f"%{memory_id}%", f"%{memory_id}%"))
+                    edge_count = cursor2.fetchone()[0]
+                    graph_bonus = min(edge_count * 0.02, 0.08)
+                except Exception:
+                    pass
+            if self.episodic_graph is not None:
+                try:
+                    # Check if facts from graph match query terms
+                    cursor2 = self.conn.cursor()
+                    cursor2.execute(
+                        "SELECT subject, predicate, object FROM facts WHERE memory_id = ?",
+                        (memory_id,))
+                    query_lower_words = [w for w in query.lower().split() if len(w) > 2]
+                    match_count = 0
+                    for frow in cursor2.fetchall():
+                        fact_text = f"{frow['subject']} {frow['predicate']} {frow['object']}".lower()
+                        if any(w in fact_text for w in query_lower_words):
+                            match_count += 1
+                    fact_bonus = min(match_count * 0.04, 0.1)
+                except Exception:
+                    pass
+
             score = base_score * (0.7 + 0.3 * decay)
+            score += graph_bonus + fact_bonus  # Phase 5: polyphonic bonuses
             # Temporal boost (Phase 3)
             if temporal_weight > 0.0:
                 t_boost = _temporal_boost(row["timestamp"], parsed_query_time, th_halflife)
@@ -1791,6 +1907,33 @@ class BeamMemory:
                     rc_share = (1.0 - iw) * 0.4
                     base_score = relevance * kw_share + row["importance"] * iw
                     score = base_score * (rc_share + (1.0 - rc_share) * decay)
+
+                    # Phase 5: Graph + fact bonuses for fallback
+                    graph_b = 0.0
+                    fact_b = 0.0
+                    try:
+                        cursor2 = self.conn.cursor()
+                        cursor2.execute(
+                            "SELECT COUNT(*) FROM graph_edges WHERE source LIKE ? OR target LIKE ?",
+                            (f"%{row['id']}%", f"%{row['id']}%"))
+                        graph_b = min(cursor2.fetchone()[0] * 0.02, 0.08)
+                    except Exception:
+                        pass
+                    try:
+                        cursor2 = self.conn.cursor()
+                        cursor2.execute(
+                            "SELECT subject, predicate, object FROM facts WHERE memory_id = ?",
+                            (row["id"],))
+                        qlw = [w for w in query.lower().split() if len(w) > 2]
+                        mc = 0
+                        for frow in cursor2.fetchall():
+                            ft = f"{frow['subject']} {frow['predicate']} {frow['object']}".lower()
+                            if any(w in ft for w in qlw):
+                                mc += 1
+                        fact_b = min(mc * 0.04, 0.1)
+                    except Exception:
+                        pass
+                    score += graph_b + fact_b
                     # Temporal boost (Phase 3)
                     if temporal_weight > 0.0:
                         t_boost = _temporal_boost(row["timestamp"], parsed_query_time, th_halflife)

@@ -39,11 +39,16 @@ class BinaryVectorStore:
     No external vector DB needed. No ANN index. Just SQLite + numpy.
     """
     
-    def __init__(self, db_path: Path = None, table_name: str = "binary_vectors"):
-        self.db_path = db_path or Path.home() / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"
+    def __init__(self, db_path: Path = None, table_name: str = "binary_vectors", conn=None):
+        if conn is not None:
+            self.conn = conn
+            self.db_path = db_path or Path(":memory:")
+        else:
+            self.db_path = db_path or Path.home() / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"
+            self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.table_name = table_name
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self._owns_connection = conn is None
         self._init_table()
     
     def _init_table(self):
