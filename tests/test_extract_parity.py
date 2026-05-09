@@ -115,6 +115,45 @@ class TestWrapperExtractFactsTableParity:
         contents = " ".join(str(r.get("content", "")).lower() for r in results)
         assert "alice" in contents
 
+    def test_extract_runs_on_dedup_for_backfill(self, tmp_path, fake_extract_facts):
+        """Backfill contract: a user with pre-existing working_memory rows
+        (written before extract=True was supported) calls
+        `mem.remember(same_content, extract=True)` to populate the facts
+        table after-the-fact. Even though the dedup path fires (content
+        already exists), extraction must still run.
+
+        Pre-fix this regression scenario was silently broken: my initial
+        delegation moved extraction inside BeamMemory.remember, which has
+        an early-return on dedup that skipped both extract blocks. Locks
+        in the fix that makes the dedup branch also call
+        _extract_and_store_facts / _extract_and_store_entities.
+        """
+        from mnemosyne.core.beam import BeamMemory
+        db_path = tmp_path / "c12a.db"
+        # Pre-existing row, no extraction (simulating an old DB)
+        beam = BeamMemory(session_id="c12a", db_path=db_path)
+        first_id = beam.remember(
+            "Alice was born in Boston in 1990 and studied math at MIT.",
+            source="user",
+            extract=False,
+        )
+        # Backfill: same content, now with extract=True
+        mem = Mnemosyne(session_id="c12a", db_path=db_path)
+        second_id = mem.remember(
+            "Alice was born in Boston in 1990 and studied math at MIT.",
+            source="user",
+            extract=True,
+        )
+        assert first_id == second_id, (
+            "Dedup did not fire: backfill expectation requires the "
+            "second call to recognize the existing row"
+        )
+        assert _facts_table_count(db_path) >= 1, (
+            "Backfill failed: facts table empty after extract=True on "
+            "duplicate content. Dedup branch in BeamMemory.remember must "
+            "run extraction so the C12.a contract holds for backfill scenarios."
+        )
+
     def test_wrapper_and_direct_paths_produce_same_table_state(self, tmp_path, fake_extract_facts):
         """Wrapper path and direct-Beam path must produce equivalent
         fact-table state for the same input. Eliminates the asymmetry

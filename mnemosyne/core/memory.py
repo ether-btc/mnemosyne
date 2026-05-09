@@ -280,15 +280,12 @@ class Mnemosyne:
 
         self.conn.commit()
 
-        # BEAM write (reuse the same ID so legacy and working-memory rows
-        # stay in sync). Extract flags are intentionally NOT passed here —
-        # extraction already ran on the first call. The second call exists
-        # solely to dedup-update working_memory.
-        self.beam.remember(
-            content, source=source, importance=importance, metadata=metadata,
-            valid_until=valid_until, scope=scope, memory_id=memory_id,
-        )
-
+        # The first BEAM write already inserted the working_memory row with
+        # the correct memory_id (we used it for the legacy dual-write above).
+        # A second beam.remember call would only re-run the dedup branch and
+        # _ingest_graph_and_veracity — duplicating gist/fact graph edges and
+        # bumping mention_count for what is a single user-level remember. So
+        # this function returns directly after the legacy write.
         return memory_id
 
     def recall(self, query: str, top_k: int = 5, *,
