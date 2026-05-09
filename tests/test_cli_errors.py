@@ -74,3 +74,21 @@ def test_export_reports_actual_exported_memory_counts(tmp_path):
     assert len(exported["working_memory"]) == 1
     assert len(exported["legacy_memories"]) == 1
     assert len(exported["triples"]) == 2
+
+
+def test_import_reports_actual_imported_memory_counts(tmp_path):
+    source_dir = tmp_path / "source"
+    import_dir = tmp_path / "imported"
+
+    store_result = run_cli(["store", "imported memory", "cli", "0.7"], source_dir)
+    assert store_result.returncode == 0, store_result.stderr
+
+    export_path = tmp_path / "export.json"
+    export_result = run_cli(["export", str(export_path)], source_dir)
+    assert export_result.returncode == 0, export_result.stderr
+
+    result = run_cli(["import", str(export_path)], import_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert "Imported 1 working, 0 episodic, 1 legacy, 2 triples" in result.stdout
+    assert "Imported 0 memories" not in result.stdout

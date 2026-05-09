@@ -192,7 +192,15 @@ def cmd_import(args):
         _fail(f"Invalid JSON in import file {args[0]}: {e}")
     except ValueError as e:
         _fail(str(e))
-    print(f"Imported {result.get('count', 0)} memories from {args[0]}")
+    beam_stats = result.get("beam", {})
+    print(
+        "Imported "
+        f"{beam_stats.get('working_memory', {}).get('inserted', 0)} working, "
+        f"{beam_stats.get('episodic_memory', {}).get('inserted', 0)} episodic, "
+        f"{result.get('legacy', {}).get('inserted', 0)} legacy, "
+        f"{result.get('triples', {}).get('inserted', 0)} triples "
+        f"from {args[0]}"
+    )
 
 
 def cmd_import_hindsight(args):
