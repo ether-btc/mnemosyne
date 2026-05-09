@@ -299,13 +299,19 @@ def _handle_recall(arguments: Dict[str, Any]) -> Dict[str, Any]:
     bank = arguments.get("bank", "default")
     temporal_weight = arguments.get("temporal_weight", 0.0)
     query_time = arguments.get("query_time")
+    vec_weight = arguments.get("vec_weight")
+    fts_weight = arguments.get("fts_weight")
+    importance_weight = arguments.get("importance_weight")
 
     mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
     results = mem.recall(
         query=query,
         top_k=top_k,
         temporal_weight=temporal_weight,
-        query_time=query_time
+        query_time=query_time,
+        vec_weight=vec_weight,
+        fts_weight=fts_weight,
+        importance_weight=importance_weight,
     )
 
     # Serialize for JSON — datetime objects aren't JSON serializable
