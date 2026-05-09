@@ -2567,9 +2567,18 @@ class BeamMemory:
             if session_id is None:
                 session_id = "default"
             try:
+                # Pass through this instance's identity so the alien-session
+                # BeamMemory writes consolidated episodic rows tagged with the
+                # caller's author/channel, not None — without this propagation
+                # filtered recall (e.g. by maintenance bot's author_id) cannot
+                # find consolidations performed across session boundaries.
+                # See C9 in the memory-contract ledger.
                 beam = self if session_id == self.session_id else BeamMemory(
                     session_id=session_id,
                     db_path=self.db_path,
+                    author_id=self.author_id,
+                    author_type=self.author_type,
+                    channel_id=self.channel_id,
                 )
                 result = beam.sleep(dry_run=dry_run)
                 result = dict(result)
