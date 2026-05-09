@@ -572,7 +572,7 @@ hermes mnemosyne import --from zep --agentic
 
 The generic Hermes CLI exposes the common importer options. Provider-specific options are available through the Python importers; for example, offline Letta AgentFile imports can use `LettaImporter(agent_file_path="./agent.af")`.
 
-All importers preserve metadata, timestamps, user/agent identity, and relationships (graph edges → triples). Use `--dry-run` to validate without writing.
+Importers preserve source metadata where available. `HindsightImporter` uses a dedicated episodic import path to preserve original timestamps; other importers may store source timestamps in metadata while assigning a new Mnemosyne write timestamp. Use `--dry-run` to validate without writing.
 
 ---
 

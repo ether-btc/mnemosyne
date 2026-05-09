@@ -122,6 +122,23 @@ class TestToolHandlers:
         assert len(result["results"]) == 1
         mock_mnemosyne.recall.assert_called_once()
 
+    def test_handle_recall_forwards_scoring_weights(self, mock_mnemosyne):
+        """Schema-advertised recall weights should be forwarded to Mnemosyne.recall()."""
+        with patch("mnemosyne.mcp_tools._create_instance", return_value=mock_mnemosyne):
+            handle_tool_call("mnemosyne_recall", {
+                "query": "test query",
+                "top_k": 5,
+                "bank": "default",
+                "vec_weight": 0.6,
+                "fts_weight": 0.3,
+                "importance_weight": 0.1,
+            })
+
+        _, kwargs = mock_mnemosyne.recall.call_args
+        assert kwargs["vec_weight"] == 0.6
+        assert kwargs["fts_weight"] == 0.3
+        assert kwargs["importance_weight"] == 0.1
+
     def test_handle_sleep(self, mock_mnemosyne):
         """handle_sleep returns consolidation stats."""
         with patch("mnemosyne.mcp_tools._create_instance", return_value=mock_mnemosyne):

@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from mnemosyne.core.memory import Mnemosyne, recall as module_recall
 from mnemosyne.core.beam import (
     _normalize_weights,
     BeamMemory,
@@ -230,6 +231,43 @@ class TestRecallConfigurableWeights:
         # Should not crash; internally falls back to (0.5, 0.3, 0.2)
         results = beam.recall("content", top_k=1,
                               vec_weight=0.0, fts_weight=0.0, importance_weight=0.0)
+        assert len(results) > 0
+
+
+class TestPublicRecallConfigurableWeights:
+    """Public Mnemosyne recall wrappers should expose BeamMemory scoring weights."""
+
+    def test_mnemosyne_recall_accepts_weight_params(self, temp_db):
+        """Mnemosyne.recall() should forward scoring weights to BeamMemory.recall()."""
+        mem = Mnemosyne(session_id="test", db_path=temp_db)
+        mem.remember("Python is a programming language", importance=0.8)
+
+        results = mem.recall(
+            "programming language",
+            top_k=5,
+            vec_weight=0.6,
+            fts_weight=0.3,
+            importance_weight=0.1,
+        )
+
+        assert isinstance(results, list)
+        assert len(results) > 0
+
+    def test_module_recall_accepts_weight_params(self, temp_db, monkeypatch):
+        """mnemosyne.recall() module helper should expose the same scoring weights."""
+        monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(temp_db.parent))
+        mem = Mnemosyne(session_id="test", db_path=temp_db)
+        mem.remember("Module helper weight forwarding", importance=0.8)
+
+        results = module_recall(
+            "weight forwarding",
+            top_k=5,
+            vec_weight=0.6,
+            fts_weight=0.3,
+            importance_weight=0.1,
+        )
+
+        assert isinstance(results, list)
         assert len(results) > 0
 
 

@@ -317,13 +317,17 @@ class Mnemosyne:
                channel_id: Optional[str] = None,
                temporal_weight: float = 0.0,
                query_time: Optional[Any] = None,
-               temporal_halflife: Optional[float] = None) -> List[Dict]:
+               temporal_halflife: Optional[float] = None,
+               vec_weight: float = None,
+               fts_weight: float = None,
+               importance_weight: float = None) -> List[Dict]:
         """
         Search memories with hybrid relevance scoring.
         Uses BEAM episodic + working memory retrieval (sqlite-vec + FTS5).
         Supports temporal filtering: from_date, to_date, source, topic.
         Supports multi-agent identity filtering: author_id, author_type, channel_id.
         Supports temporal scoring: temporal_weight, query_time, temporal_halflife.
+        Supports scoring weight overrides: vec_weight, fts_weight, importance_weight.
         """
         return self.beam.recall(query, top_k=top_k,
                                 from_date=from_date, to_date=to_date,
@@ -332,7 +336,10 @@ class Mnemosyne:
                                 channel_id=channel_id,
                                 temporal_weight=temporal_weight,
                                 query_time=query_time,
-                                temporal_halflife=temporal_halflife)
+                                temporal_halflife=temporal_halflife,
+                                vec_weight=vec_weight,
+                                fts_weight=fts_weight,
+                                importance_weight=importance_weight)
 
     def get_context(self, limit: int = 10) -> List[Dict]:
         """
@@ -629,6 +636,9 @@ def recall(query: str, top_k: int = 5, *,
            temporal_weight: float = 0.0,
            query_time: Optional[Any] = None,
            temporal_halflife: Optional[float] = None,
+           vec_weight: float = None,
+           fts_weight: float = None,
+           importance_weight: float = None,
            bank: str = None) -> List[Dict]:
     """Search memories using the global instance with temporal filtering and scoring"""
     return _get_default(bank).recall(query, top_k,
@@ -636,7 +646,10 @@ def recall(query: str, top_k: int = 5, *,
                                      source=source, topic=topic,
                                      temporal_weight=temporal_weight,
                                      query_time=query_time,
-                                     temporal_halflife=temporal_halflife)
+                                     temporal_halflife=temporal_halflife,
+                                     vec_weight=vec_weight,
+                                     fts_weight=fts_weight,
+                                     importance_weight=importance_weight)
 
 
 def get_context(limit: int = 10, bank: str = None) -> List[Dict]:
