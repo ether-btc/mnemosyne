@@ -223,6 +223,59 @@ class TestSleepCycle:
         assert episodic_count == 0
         assert log_count == 0
 
+    def test_sleep_all_sessions_propagates_caller_identity(self, temp_db):
+        """[C9] sleep_all_sessions constructs a fresh BeamMemory for each
+        non-self session and previously dropped author_id/author_type/channel_id
+        on that constructor call. Result: episodic rows produced for those
+        sessions had identity=None, so filtered recall by author/channel
+        couldn't find consolidated content from cross-session sleep.
+
+        This locks in the construction-site fix: caller's identity must
+        propagate to the alien-session BeamMemory so consolidate_to_episodic
+        writes the caller's identity rather than None.
+        """
+        beam = BeamMemory(
+            session_id="caller",
+            db_path=temp_db,
+            author_id="caller_bot",
+            author_type="system",
+            channel_id="ops",
+        )
+        conn = sqlite3.connect(temp_db)
+        old_ts = (datetime.now() - timedelta(hours=20)).isoformat()
+        # Seed an old row in a session DIFFERENT from the caller's, so
+        # sleep_all_sessions will construct a fresh BeamMemory to handle it.
+        conn.execute(
+            "INSERT INTO working_memory (id, content, source, timestamp, session_id) VALUES (?, ?, ?, ?, ?)",
+            ("alien-old", "alien session task", "conversation", old_ts, "alien_session"),
+        )
+        conn.commit()
+        conn.close()
+
+        result = beam.sleep_all_sessions(dry_run=False)
+        assert result["status"] == "consolidated"
+        assert result["sessions_consolidated"] == 1
+
+        conn = sqlite3.connect(temp_db)
+        rows = conn.execute(
+            "SELECT session_id, author_id, author_type, channel_id "
+            "FROM episodic_memory WHERE session_id = ?",
+            ("alien_session",),
+        ).fetchall()
+        conn.close()
+
+        assert len(rows) == 1, (
+            f"Expected exactly one episodic row from alien_session "
+            f"consolidation, got {len(rows)}"
+        )
+        sess, author_id, author_type, channel_id = rows[0]
+        assert author_id == "caller_bot", (
+            f"author_id zeroed on alien-session consolidation: got {author_id!r}; "
+            "C9 fix requires caller's identity to propagate to the new BeamMemory"
+        )
+        assert author_type == "system"
+        assert channel_id == "ops"
+
 
 class TestMnemosyneIntegration:
     def test_legacy_and_beam_dual_write(self, temp_db):
