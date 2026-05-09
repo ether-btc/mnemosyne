@@ -55,11 +55,22 @@ from mnemosyne.core.beam import BeamMemory, init_beam, _embeddings, _vec_availab
 
 # --- Config ---
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+if not OPENROUTER_API_KEY:
+    # Try to load from file
+    _key_file = Path("/tmp/openrouter_key.txt")
+    if _key_file.exists():
+        with open(_key_file) as f:
+            _content = f.read().strip()
+        if "export" in _content:
+            OPENROUTER_API_KEY = _content.split("=", 1)[1].strip().strip('"').strip("'")
+        else:
+            OPENROUTER_API_KEY = _content
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-DEFAULT_MODEL = "google/gemini-2.5-flash"
+DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 FALLBACK_MODELS = [
-    "google/gemini-2.5-pro",  
+    "deepseek/deepseek-chat-v3:free",
+    "google/gemma-4-26b-a4b-it:free",
 ]
 DEFAULT_TOP_K = 10  # Memories to retrieve per question
 MAX_MEMORY_CONTEXT_CHARS = 8000  # Max chars of retrieved context to send to LLM
@@ -151,6 +162,8 @@ class LLMClient:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "HTTP-Referer": "https://mnemosyne.site",
+            "X-Title": "Mnemosyne Benchmark",
         }
         req = urllib.request.Request(url, data=payload, headers=headers)
         resp = urllib.request.urlopen(req, timeout=15)
@@ -283,6 +296,13 @@ def load_beam_dataset(scales: list[str], max_conversations: int = None) -> dict:
                                         "content": msg.get("content", ""),
                                         "index": len(messages),
                                     })
+                        elif isinstance(block, dict):
+                            # Flat format: chat is a list of dicts directly
+                            messages.append({
+                                "role": block.get("role", "unknown"),
+                                "content": block.get("content", ""),
+                                "index": len(messages),
+                            })
 
                     conversations.append({
                         "id": sample.get("conversation_id", str(i)),
@@ -526,10 +546,10 @@ RECENT_CONTEXT_COUNT = 12  # Last N messages to include as recent context
 MAX_MEMORY_CONTEXT_CHARS = 16000  # More context for LLM to find contradictions
 
 
-def _recall_safe(beam: BeamMemory, query: str, top_k: int) -> list:
+def _recall_safe(beam: BeamMemory, query: str, top_k: int, temporal_weight: float = 0.0) -> list:
     """Safe recall wrapper that handles errors gracefully."""
     try:
-        return beam.recall(query, top_k=top_k)
+        return beam.recall(query, top_k=top_k, temporal_weight=temporal_weight)
     except Exception:
         return []
 
@@ -573,7 +593,7 @@ def _extract_search_terms(question: str) -> list[str]:
     return unique
 
 
-def _multi_strategy_recall(beam: BeamMemory, question: str, top_k: int = DEFAULT_TOP_K) -> list:
+def _multi_strategy_recall(beam: BeamMemory, question: str, top_k: int = DEFAULT_TOP_K, ability: str = None) -> list:
     """Multi-strategy retrieval: keyword, semantic, entity, negation, temporal."""
     import re
     all_memories = []
@@ -586,8 +606,17 @@ def _multi_strategy_recall(beam: BeamMemory, question: str, top_k: int = DEFAULT
                 seen_content_keys.add(ck)
                 all_memories.append(mem)
     
+    # Detect temporal questions by ability type or keywords
+    temporal_keywords = ['when', 'date', 'deadline', 'sprint', 'day', 'week', 'month', 
+                         'april', 'march', 'february', 'january', 'may', 'june', 'july',
+                         'august', 'september', 'october', 'november', 'december',
+                         'monday', 'tuesday', 'wednesday', 'thursday', 'friday',
+                         'how many days', 'how long', 'timeline', 'schedule']
+    is_temporal = ability in ('TR', 'EO') or any(w in question.lower() for w in temporal_keywords)
+    temporal_weight = 0.3 if is_temporal else 0.0
+    
     # Strategy 1: Direct question search (mostly keyword via FTS5)
-    _add_unique(_recall_safe(beam, question, top_k * 2))
+    _add_unique(_recall_safe(beam, question, top_k * 2, temporal_weight=temporal_weight))
     
     # Strategy 2: Negation search for contradiction detection
     if any(w in question.lower() for w in ["have i", "did i", "do i", "am i", "has"]):
@@ -596,27 +625,25 @@ def _multi_strategy_recall(beam: BeamMemory, question: str, top_k: int = DEFAULT
             if negation not in negation_query.lower():
                 negation_query = re.sub(r'(?i)(have i|did i|am i)', f'I {negation}', negation_query)
                 break
-        _add_unique(_recall_safe(beam, negation_query, top_k))
+        _add_unique(_recall_safe(beam, negation_query, top_k, temporal_weight=temporal_weight))
     
     # Strategy 3: Key entity/term searches
     terms = _extract_search_terms(question)
     for term in terms[:5]:
         if len(term) > 2:
-            _add_unique(_recall_safe(beam, term, max(5, top_k // 3)))
+            _add_unique(_recall_safe(beam, term, max(5, top_k // 3), temporal_weight=temporal_weight))
     
     # Strategy 4: Temporal search for date-related questions
-    temporal_keywords = ['when', 'date', 'deadline', 'sprint', 'day', 'week', 'month', 
-                         'april', 'march', 'february', 'january', 'may', 'june', 'july',
-                         'august', 'september', 'october', 'november', 'december',
-                         'monday', 'tuesday', 'wednesday', 'thursday', 'friday']
-    if any(w in question.lower() for w in temporal_keywords):
+    if is_temporal:
+        # Stronger temporal boost for date-specific sub-queries
+        date_temporal_weight = 0.5
         # Search for dates and timelines
-        _add_unique(_recall_safe(beam, "deadline schedule timeline date", top_k))
+        _add_unique(_recall_safe(beam, "deadline schedule timeline date", top_k, temporal_weight=date_temporal_weight))
         # Search for specific months mentioned in the question
         for month in ['january', 'february', 'march', 'april', 'may', 'june',
                       'july', 'august', 'september', 'october', 'november', 'december']:
             if month in question.lower():
-                _add_unique(_recall_safe(beam, month, top_k // 2))
+                _add_unique(_recall_safe(beam, month, top_k // 2, temporal_weight=date_temporal_weight))
     
     # Sort by score and return top-k
     all_memories.sort(key=lambda x: x.get("score", 0), reverse=True)
@@ -624,7 +651,8 @@ def _multi_strategy_recall(beam: BeamMemory, question: str, top_k: int = DEFAULT
 
 
 def answer_with_memory(llm: LLMClient, beam: BeamMemory, question: str, 
-                      conversation_messages: list = None, top_k: int = DEFAULT_TOP_K) -> str:
+                      conversation_messages: list = None, top_k: int = DEFAULT_TOP_K,
+                      ability: str = None) -> str:
     """Retrieve memories and have LLM answer, with context strategy based on conversation size."""
     
     total_msgs = len(conversation_messages) if conversation_messages else 0
@@ -651,7 +679,7 @@ def answer_with_memory(llm: LLMClient, beam: BeamMemory, question: str,
         memories = []  # Not using retrieval for small convs
     else:
         # Multi-strategy retrieval for larger conversations
-        memories = _multi_strategy_recall(beam, question, top_k * 3)  # Get 3x more for reranking
+        memories = _multi_strategy_recall(beam, question, top_k * 3, ability=ability)  # Get 3x more for reranking
 
         # If cloud extraction enabled, also search the facts table
         if getattr(beam, 'use_cloud', False):
@@ -875,7 +903,8 @@ def evaluate_conversation(
         # Step 1: LLM answers using Mnemosyne memories + conversation context
         t0 = time.perf_counter()
         ai_answer = answer_with_memory(llm, beam, question, 
-                                       conversation_messages=conversation.get("messages", []))
+                                       conversation_messages=conversation.get("messages", []),
+                                       ability=ability)
         answer_time = time.perf_counter() - t0
 
         # Handle None answer (LLM timeout/error)
