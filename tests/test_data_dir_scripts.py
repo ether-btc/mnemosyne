@@ -68,3 +68,36 @@ def test_migrate_from_legacy_uses_mnemosyne_data_dir_as_canonical(tmp_path):
     assert f"Canonical DB: {data_dir / 'mnemosyne.db'}" in result.stdout
     assert (data_dir / "mnemosyne.db").exists()
     assert not (home / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db").exists()
+
+
+def test_empty_mnemosyne_data_dir_falls_back_to_default_for_scripts(tmp_path):
+    home = tmp_path / "home"
+    default_db = home / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["MNEMOSYNE_DATA_DIR"] = ""
+    _store_memory(env)
+
+    backfill = subprocess.run(
+        [sys.executable, str(BACKFILL_SCRIPT), "--dry-run"],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert backfill.returncode == 0, backfill.stdout + backfill.stderr
+    assert f"Database: {default_db}" in backfill.stdout
+
+    migrate = subprocess.run(
+        [sys.executable, str(MIGRATE_SCRIPT), "--dry-run"],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert migrate.returncode == 0, migrate.stdout + migrate.stderr
+    assert f"Canonical DB: {default_db}" in migrate.stdout
+    assert default_db.exists()
+    assert not (ROOT / "mnemosyne.db").exists()
