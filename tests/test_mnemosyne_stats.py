@@ -117,6 +117,39 @@ def test_json_mode_uses_mnemosyne_data_dir(tmp_path):
     assert "error" not in payload
     assert payload["working_memory"]["total"] == 1
 
+
+def test_json_mode_empty_mnemosyne_data_dir_falls_back_to_default(tmp_path):
+    home = tmp_path / "home"
+    default_db = home / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["MNEMOSYNE_DATA_DIR"] = ""
+
+    store = subprocess.run(
+        [sys.executable, "-m", "mnemosyne.cli", "store", "stats empty data dir probe"],
+        cwd=str(SCRIPT.parent.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert store.returncode == 0, store.stderr
+    assert default_db.exists()
+
+    stats = subprocess.run(
+        [sys.executable, str(SCRIPT), "--json"],
+        cwd=str(SCRIPT.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert stats.returncode == 0, stats.stderr
+    payload = json.loads(stats.stdout)
+    assert "error" not in payload
+    assert payload["working_memory"]["total"] == 1
+    assert not (SCRIPT.parent / "mnemosyne.db").exists()
+
 def test_save_snapshot():
     code, out, err = run("--save-snapshot")
     assert code == 0, f"Exit code {code}: {err}"

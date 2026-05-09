@@ -19,10 +19,8 @@ from pathlib import Path
 from datetime import datetime
 
 DB_PATH = Path(
-    os.environ.get(
-        "MNEMOSYNE_DATA_DIR",
-        Path.home() / ".hermes" / "mnemosyne" / "data",
-    )
+    os.environ.get("MNEMOSYNE_DATA_DIR")
+    or Path.home() / ".hermes" / "mnemosyne" / "data"
 ) / "mnemosyne.db"
 WIKI_PATH = Path.home() / "wiki"
 SNAPSHOT_DIR = Path.home() / ".hermes" / "mnemosyne" / "stats"

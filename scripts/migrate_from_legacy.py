@@ -32,10 +32,8 @@ from pathlib import Path
 # NOTE: On Fly.io and other ephemeral VMs, ~/.hermes is the only persisted path
 # unless MNEMOSYNE_DATA_DIR explicitly points elsewhere.
 CANONICAL_DATA_DIR = Path(
-    os.environ.get(
-        "MNEMOSYNE_DATA_DIR",
-        Path.home() / ".hermes" / "mnemosyne" / "data",
-    )
+    os.environ.get("MNEMOSYNE_DATA_DIR")
+    or Path.home() / ".hermes" / "mnemosyne" / "data"
 )
 CANONICAL_DB = CANONICAL_DATA_DIR / "mnemosyne.db"
 

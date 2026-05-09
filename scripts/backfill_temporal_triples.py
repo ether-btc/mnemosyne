@@ -22,9 +22,8 @@ from typing import Tuple
 
 def get_db_path() -> Path:
     """Resolve Mnemosyne database path."""
-    default_dir = os.environ.get(
-        "MNEMOSYNE_DATA_DIR",
-        Path.home() / ".hermes" / "mnemosyne" / "data",
+    default_dir = os.environ.get("MNEMOSYNE_DATA_DIR") or (
+        Path.home() / ".hermes" / "mnemosyne" / "data"
     )
     return Path(default_dir) / "mnemosyne.db"
 
