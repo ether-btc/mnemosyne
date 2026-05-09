@@ -99,17 +99,17 @@ class EpisodicGraph:
             )
         """)
         
-        # Facts table
+        # Facts table (compatible with beam.py schema)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS facts (
-                id TEXT PRIMARY KEY,
+                fact_id TEXT PRIMARY KEY,
+                session_id TEXT DEFAULT 'default',
                 subject TEXT NOT NULL,
                 predicate TEXT NOT NULL,
                 object TEXT NOT NULL,
                 timestamp TEXT,
+                source_msg_id TEXT,
                 confidence REAL DEFAULT 0.5,
-                temporal_qualifier TEXT,
-                memory_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
