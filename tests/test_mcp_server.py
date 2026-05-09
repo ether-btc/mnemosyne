@@ -5,6 +5,9 @@ Run with: pytest tests/test_mcp_server.py -v
 """
 
 import json
+import os
+import subprocess
+import sys
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -202,6 +205,57 @@ class TestMCPIntegration:
         assert len(tools) == 6
         names = [t["name"] for t in tools]
         assert "mnemosyne_remember" in names
+
+    def test_top_level_cli_forwards_mcp_arguments(self, tmp_path):
+        """`mnemosyne mcp ...` must pass subcommand args to the MCP parser."""
+        env = os.environ.copy()
+        env["HOME"] = str(tmp_path / "home")
+        env["MNEMOSYNE_DATA_DIR"] = str(tmp_path / "mnemosyne-data")
+        script = """
+import json
+import sys
+import mnemosyne.mcp_server
+
+def fake_main(argv):
+    print(json.dumps({"argv": argv}))
+
+mnemosyne.mcp_server.main = fake_main
+sys.argv = [
+    "mnemosyne",
+    "mcp",
+    "--transport",
+    "sse",
+    "--port",
+    "19090",
+    "--bank",
+    "work",
+]
+from mnemosyne.cli import run_cli
+run_cli()
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {
+            "argv": ["--transport", "sse", "--port", "19090", "--bank", "work"]
+        }
+
+    def test_mcp_server_main_accepts_explicit_argv(self):
+        """MCP server parser should parse caller-provided argv, not global sys.argv."""
+        from mnemosyne.mcp_server import main
+
+        with patch("mnemosyne.mcp_server.run_mcp_server") as run_mcp_server:
+            main(["--transport", "sse", "--port", "19090", "--bank", "work"])
+
+        run_mcp_server.assert_called_once_with(
+            transport="sse", port=19090, bank="work"
+        )
 
 
 class TestImportGuard:
