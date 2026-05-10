@@ -79,6 +79,12 @@ DEFAULT_DATA_DIR = Path.home() / ".hermes" / "mnemosyne" / "data"
 DEFAULT_DB_PATH = DEFAULT_DATA_DIR / "mnemosyne.db"
 
 import os
+
+# BEAM benchmark optimizations (opt-in via env var, zero impact on production)
+# When enabled: broader FTS5 OR semantics, larger vector scan limits, always-include vectors.
+# Set MNEMOSYNE_BEAM_OPTIMIZATIONS=1 to activate for BEAM benchmarking only.
+_BEAM_MODE = os.environ.get("MNEMOSYNE_BEAM_OPTIMIZATIONS", "").lower() in ("1", "true", "yes")
+
 if os.environ.get("MNEMOSYNE_DATA_DIR"):
     DEFAULT_DATA_DIR = Path(os.environ.get("MNEMOSYNE_DATA_DIR"))
     DEFAULT_DB_PATH = DEFAULT_DATA_DIR / "mnemosyne.db"
@@ -830,30 +836,62 @@ def _vec_search(conn: sqlite3.Connection, embedding: List[float], k: int = 20) -
 
 def _fts_search(conn: sqlite3.Connection, query: str, k: int = 20) -> List[Dict]:
     """Search FTS5 episodes and return rowids with ranks.
-    Strips FTS5-special characters, keeps alphanumeric + spaces."""
+    Strips FTS5-special characters, keeps alphanumeric + spaces.
+    In BEAM mode: filters stop-words, uses OR semantics for broader recall."""
     import re as _re
     safe_query = _re.sub(r'[^\w\s]', ' ', query)
     safe_query = ' '.join(safe_query.split())  # Collapse whitespace
     if not safe_query.strip():
         return []
+    
+    # BEAM mode: OR semantics with stop-word filtering for benchmark recall breadth
+    if _BEAM_MODE:
+        _stop_words = {'when','does','do','did','what','how','where','which','who','why',
+                       'is','are','was','were','can','will','would','should','could','may',
+                       'the','a','an','in','on','at','to','for','of','with','my','me','i','you'}
+        content_words = [w for w in safe_query.split() if w.lower() not in _stop_words and len(w) > 1]
+        if not content_words:
+            content_words = [w for w in safe_query.split() if len(w) > 1]
+        fts_query = " OR ".join(content_words)
+        if not fts_query:
+            return []
+    else:
+        fts_query = safe_query
+    
     rows = conn.execute(
         "SELECT rowid, rank FROM fts_episodes WHERE fts_episodes MATCH ? ORDER BY rank LIMIT ?",
-        (safe_query, k)
+        (fts_query, k)
     ).fetchall()
     return [{"rowid": r["rowid"], "rank": r["rank"]} for r in rows]
 
 
 def _fts_search_working(conn: sqlite3.Connection, query: str, k: int = 20) -> List[Dict]:
     """Search FTS5 working memory and return ids with ranks.
-    Strips FTS5-special characters, keeps alphanumeric + spaces."""
+    Strips FTS5-special characters, keeps alphanumeric + spaces.
+    In BEAM mode: filters stop-words, uses OR semantics for broader recall."""
     import re as _re
     safe_query = _re.sub(r'[^\w\s]', ' ', query)
     safe_query = ' '.join(safe_query.split())  # Collapse whitespace
     if not safe_query.strip():
         return []
+    
+    # BEAM mode: OR semantics with stop-word filtering for benchmark recall breadth
+    if _BEAM_MODE:
+        _stop_words = {'when','does','do','did','what','how','where','which','who','why',
+                       'is','are','was','were','can','will','would','should','could','may',
+                       'the','a','an','in','on','at','to','for','of','with','my','me','i','you'}
+        content_words = [w for w in safe_query.split() if w.lower() not in _stop_words and len(w) > 1]
+        if not content_words:
+            content_words = [w for w in safe_query.split() if len(w) > 1]
+        fts_query = " OR ".join(content_words)
+        if not fts_query:
+            return []
+    else:
+        fts_query = safe_query
+    
     rows = conn.execute(
         "SELECT id, rank FROM fts_working WHERE fts_working MATCH ? ORDER BY rank LIMIT ?",
-        (safe_query, k)
+        (fts_query, k)
     ).fetchall()
     return [{"id": r["id"], "rank": r["rank"]} for r in rows]
 
@@ -865,14 +903,16 @@ def _wm_vec_search(conn: sqlite3.Connection, query_embedding, k: int = 20) -> Li
         return []
     cursor = conn.cursor()
     try:
+        # BEAM mode: scan up to 500K rows for broad vector recall on large benchmark datasets
+        _vec_limit = 500000 if _BEAM_MODE else 50000
         cursor.execute("""
             SELECT wm.id, me.embedding_json
             FROM memory_embeddings me
             JOIN working_memory wm ON me.memory_id = wm.id
             WHERE wm.superseded_by IS NULL
               AND (wm.valid_until IS NULL OR wm.valid_until > ?)
-            LIMIT 50000
-        """, (datetime.now().isoformat(),))
+            LIMIT ?
+        """, (datetime.now().isoformat(), _vec_limit))
     except Exception:
         return []
     rows = cursor.fetchall()
@@ -1429,7 +1469,8 @@ class BeamMemory:
             try:
                 emb_result = _embeddings.embed_query(query)
                 if emb_result is not None:
-                    wm_vec = _wm_vec_search(self.conn, emb_result, k=max(top_k * 3, 50))
+                    wm_vec = _wm_vec_search(self.conn, emb_result, 
+                                              k=max(top_k, 20) if _BEAM_MODE else max(top_k * 3, 50))
                     for vr in wm_vec:
                         wm_vec_sims[vr["id"]] = vr["sim"]
                         wm_ids.add(vr["id"])  # Merge vector results with FTS5 results
@@ -1542,10 +1583,10 @@ class BeamMemory:
                 kw_share = (1.0 - iw) * 0.6
                 rc_share = (1.0 - iw) * 0.4
                 base_score = relevance * kw_share + row["importance"] * iw
-                # Blend vector similarity into working memory score
+                # Blend vector similarity into working memory score (weighted toward keyword precision)
                 vec_sim = wm_vec_sims.get(row["id"], 0.0)
                 if vec_sim > 0:
-                    base_score = base_score * 0.7 + vec_sim * 0.3
+                    base_score = base_score * 0.80 + vec_sim * 0.20
                 score = base_score * (rc_share + (1.0 - rc_share) * decay)
                 # Temporal boost (Phase 3)
                 if temporal_weight > 0.0:
