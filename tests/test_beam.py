@@ -223,6 +223,122 @@ class TestSleepCycle:
         assert episodic_count == 0
         assert log_count == 0
 
+    def test_sleep_writes_dense_embedding_for_consolidated_row(self, temp_db, monkeypatch):
+        """[C5] State-level companion to the FTS recallability test. Verifies
+        sleep populates a dense-recall store (sqlite-vec's vec_episodes when
+        loaded, otherwise the memory_embeddings fallback) for each consolidated
+        episodic row. A regression that broke the embed→write call (e.g.
+        embed() returning None silently, or a missing INSERT into the
+        fallback table) would leave dense recall empty even though FTS keeps
+        working.
+
+        Skipped when fastembed isn't installed; the dense path is gated on
+        _embeddings.available() and a model load. CI runs with fastembed."""
+        from mnemosyne.core import embeddings as _embeddings
+
+        if not _embeddings.available():
+            pytest.skip("fastembed not available — dense-recall path inactive")
+
+        beam = BeamMemory(session_id="s1", db_path=temp_db)
+        conn = sqlite3.connect(temp_db)
+        old_ts = (datetime.now() - timedelta(hours=20)).isoformat()
+        conn.executemany(
+            "INSERT INTO working_memory (id, content, source, timestamp, session_id) VALUES (?, ?, ?, ?, ?)",
+            [
+                ("old0", "deploy plan for falcon kickoff", "conversation", old_ts, "s1"),
+                ("old1", "retro notes from beta release", "conversation", old_ts, "s1"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        beam.sleep(dry_run=False)
+
+        # Post-sleep, exactly one episodic row should exist (one consolidated
+        # summary for the session). Dense store should hold a row for it.
+        from mnemosyne.core.beam import _vec_available
+
+        conn = sqlite3.connect(temp_db)
+        ep_ids = [r[0] for r in conn.execute("SELECT id FROM episodic_memory").fetchall()]
+        assert len(ep_ids) == 1, f"expected 1 consolidated episodic row, got {len(ep_ids)}"
+
+        if _vec_available(conn):
+            vec_count = conn.execute("SELECT COUNT(*) FROM vec_episodes").fetchone()[0]
+            conn.close()
+            assert vec_count >= 1, (
+                "sleep consolidated an episodic row but vec_episodes is "
+                "empty — the embed→_vec_insert path did not run. Likely "
+                "cause: _embeddings.embed() returned None silently, or "
+                "_vec_insert raised and was swallowed."
+            )
+        else:
+            mem_count = conn.execute(
+                "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", (ep_ids[0],)
+            ).fetchone()[0]
+            conn.close()
+            assert mem_count >= 1, (
+                "sleep consolidated an episodic row but memory_embeddings "
+                "fallback is empty — the embed→INSERT path did not run."
+            )
+
+    def test_sleep_consolidated_content_is_recallable_via_fts(self, temp_db, monkeypatch):
+        """[C5] End-to-end recallability check. Existing sleep tests assert
+        counts (items_consolidated, episodic_count) but never verify the
+        consolidated content is actually findable through the public recall
+        API. A regression that broke the FTS5 trigger / write path during
+        sleep would slip through every existing sleep test.
+
+        Locks: after sleep, recall(unique_token_from_seeded_wm) returns at
+        least one episodic-tier hit whose content contains that token.
+
+        Uses deterministic concat path (LLM disabled) so seeded tokens
+        survive into episodic content — same precedent as test_beam.py:372
+        and the cross-session recall test."""
+        monkeypatch.setattr("mnemosyne.core.local_llm.llm_available", lambda: False)
+
+        beam = BeamMemory(session_id="s1", db_path=temp_db)
+        conn = sqlite3.connect(temp_db)
+        old_ts = (datetime.now() - timedelta(hours=20)).isoformat()
+        # Three distinct unique tokens — one per seeded memory.
+        # Pick tokens that won't collide with FTS stop-words or the deterministic
+        # concat header text.
+        conn.executemany(
+            "INSERT INTO working_memory (id, content, source, timestamp, session_id) VALUES (?, ?, ?, ?, ?)",
+            [
+                ("old0", "wm contains marker zorblax kickoff plan", "conversation", old_ts, "s1"),
+                ("old1", "wm contains marker quetzelfin retro notes", "conversation", old_ts, "s1"),
+                ("old2", "wm contains marker xanadush deploy log", "conversation", old_ts, "s1"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        result = beam.sleep(dry_run=False)
+        assert result["status"] == "consolidated"
+        assert result["items_consolidated"] == 3
+
+        # Each unique token must surface an episodic-tier result.
+        for token in ("zorblax", "quetzelfin", "xanadush"):
+            results = beam.recall(token, top_k=10)
+            assert results, (
+                f"recall({token!r}) returned 0 results — the sleep path "
+                f"consolidated working_memory but the episodic row is not "
+                f"reachable via FTS. Likely cause: FTS5 trigger missed the "
+                f"insert, or the consolidated content does not contain the "
+                f"original token (LLM summarization path active despite "
+                f"monkeypatch?)."
+            )
+            assert any(r.get("tier") == "episodic" for r in results), (
+                f"recall({token!r}) returned {len(results)} hits but none "
+                f"are episodic-tier: {[(r.get('tier'), r.get('content', '')[:50]) for r in results]}"
+            )
+            assert any(token in (r.get("content") or "").lower() for r in results), (
+                f"recall({token!r}) returned hits but the token does not "
+                f"appear in any returned content — FTS may be matching on "
+                f"trigram noise rather than the seeded token: "
+                f"{[r.get('content') for r in results]}"
+            )
+
 
 class TestMnemosyneIntegration:
     def test_legacy_and_beam_dual_write(self, temp_db):
