@@ -2404,8 +2404,16 @@ class BeamMemory:
             return results
 
         # --- Degrade tier 1 → tier 2: LLM summarization ---
+        # Each row's UPDATE + embedding refresh runs inside a SAVEPOINT so
+        # a refresh failure rolls back the content mutation too. Without
+        # this the broad except below would swallow the refresh exception
+        # while leaving the UPDATE staged in the implicit transaction,
+        # which then commits at the end of degrade_episodic — producing
+        # the very content/embedding drift this fix exists to prevent
+        # (caught by /review for C18.b).
         from mnemosyne.core import local_llm
         for row in tier1_rows:
+            cursor.execute("SAVEPOINT degrade_row")
             try:
                 compressed = row["content"]
                 if local_llm.llm_available() and len(row["content"]) > 300:
@@ -2423,12 +2431,18 @@ class BeamMemory:
                 # call would be wasted.
                 if final_content != row["content"]:
                     self._refresh_episodic_embedding(row["id"], row["rowid"], final_content)
+                cursor.execute("RELEASE degrade_row")
                 results["tier1_to_tier2"] += 1
             except Exception:
-                pass
+                try:
+                    cursor.execute("ROLLBACK TO degrade_row")
+                    cursor.execute("RELEASE degrade_row")
+                except Exception:
+                    pass
 
         # --- Degrade tier 2 → tier 3: smart extraction (keep key entities) ---
         for row in tier2_rows:
+            cursor.execute("SAVEPOINT degrade_row")
             try:
                 content = row["content"]
                 if SMART_COMPRESS and len(content) > TIER3_MAX_CHARS:
@@ -2443,9 +2457,14 @@ class BeamMemory:
                 )
                 if compressed != row["content"]:
                     self._refresh_episodic_embedding(row["id"], row["rowid"], compressed)
+                cursor.execute("RELEASE degrade_row")
                 results["tier2_to_tier3"] += 1
             except Exception:
-                pass
+                try:
+                    cursor.execute("ROLLBACK TO degrade_row")
+                    cursor.execute("RELEASE degrade_row")
+                except Exception:
+                    pass
 
         self.conn.commit()
         return results
