@@ -281,19 +281,30 @@ class TestSleepCycle:
                 "fallback is empty — the embed→INSERT path did not run."
             )
 
-    def test_sleep_consolidated_content_is_recallable_via_fts(self, temp_db, monkeypatch):
+    def test_sleep_consolidated_content_is_recallable(self, temp_db, monkeypatch):
         """[C5] End-to-end recallability check. Existing sleep tests assert
         counts (items_consolidated, episodic_count) but never verify the
         consolidated content is actually findable through the public recall
-        API. A regression that broke the FTS5 trigger / write path during
-        sleep would slip through every existing sleep test.
+        API. A regression that took the consolidated row off-recall via ALL
+        recall paths simultaneously (FTS5 trigger broken AND dense store
+        skipped AND fallback substring match unreachable) would slip through
+        every existing sleep test.
 
         Locks: after sleep, recall(unique_token_from_seeded_wm) returns at
         least one episodic-tier hit whose content contains that token.
 
-        Uses deterministic concat path (LLM disabled) so seeded tokens
-        survive into episodic content — same precedent as test_beam.py:372
-        and the cross-session recall test."""
+        Note: this is NOT an FTS-isolated assertion. recall() unions vec
+        and FTS rowids (beam.py:1751) and falls back to substring scan
+        (beam.py:1880) when both are empty, so this test locks recallability
+        by *any* path — not the FTS path specifically. Stronger isolation
+        would require calling _fts_search directly; that lives in a follow-up
+        if the union/fallback layers shift.
+
+        Uses LLM-disabled deterministic AAAK-encoded summary path
+        (beam.py:2483 — `compressed = aaak_encode(combined)`). AAAK is
+        phrase-substitution + compaction; uncommon literal tokens like
+        the ones seeded below survive intact. Same monkeypatch pattern as
+        test_beam.py:297, :488, :691, :938, :961."""
         monkeypatch.setattr("mnemosyne.core.local_llm.llm_available", lambda: False)
 
         beam = BeamMemory(session_id="s1", db_path=temp_db)
@@ -323,8 +334,9 @@ class TestSleepCycle:
             assert results, (
                 f"recall({token!r}) returned 0 results — the sleep path "
                 f"consolidated working_memory but the episodic row is not "
-                f"reachable via FTS. Likely cause: FTS5 trigger missed the "
-                f"insert, or the consolidated content does not contain the "
+                f"reachable through ANY recall path (FTS, vec, fallback "
+                f"substring scan). Likely cause: FTS5 trigger missed AND "
+                f"dense store missed AND content does not contain the "
                 f"original token (LLM summarization path active despite "
                 f"monkeypatch?)."
             )
