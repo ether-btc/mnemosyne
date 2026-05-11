@@ -1,7 +1,7 @@
 # Mnemosyne BEAM Benchmark
 
 **Evaluated against ICLR 2026 BEAM dataset (Tavakoli et al.)**
-**Date:** 2026-05-06 | **Version:** Mnemosyne 0.3.2 | **Model:** Gemini 2.5 Flash via OpenRouter
+**Date:** 2026-05-06 | **Version:** Mnemosyne 2.5 | **Model:** Gemini 2.5 Flash via OpenRouter
 
 ---
 
