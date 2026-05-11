@@ -32,19 +32,28 @@ def temp_db():
 
 def _content_to_vec(text: str, dim: int = 384) -> np.ndarray:
     """Deterministic content-encoding 'embedding'. Different content
-    produces different vectors. Two scalars at the front carry length
-    and first-char info so an assertion can detect change."""
+    produces different vectors AND different sign patterns, so the
+    sign-bit binarizer in binary_vectors.py also produces different
+    bytes. Without sign-pattern variation, two distinct strings would
+    binarize to identical bytes and the binary_vector regeneration
+    assertion couldn't tell whether refresh ran."""
     v = np.zeros(dim, dtype=np.float32)
     if not text:
         return v
-    v[0] = float(len(text))
-    v[1] = float(ord(text[0]))
-    # Light hash spread so identical-length, identical-first-char strings
-    # still produce different vectors (covers truncation that preserves
-    # both signals).
-    h = hash(text) & 0xFFFF
-    v[2] = float(h % 256)
-    v[3] = float((h >> 8) % 256)
+    # Spread 32 bits of the content hash across the leading dims as
+    # signed ±1.0 — one sign per hash bit. Two distinct strings produce
+    # two distinct hashes → ~16 differing sign bits → distinct binary
+    # vectors after sign-bit binarization. (Python's hash() is salted
+    # per process by PYTHONHASHSEED but stable within a process, which
+    # is all we need here.)
+    h = hash(text) & 0xFFFFFFFF
+    for i in range(32):
+        v[i] = 1.0 if (h >> i) & 1 else -1.0
+    # Length and first-char in dims past the sign-bit block so the
+    # float-embedding-differs assertions still see length/content
+    # signal layered on top of the hash-driven sign pattern.
+    v[32] = float(len(text))
+    v[33] = float(ord(text[0]))
     return v
 
 
