@@ -156,10 +156,17 @@ class TestSleepCycle:
         assert result["status"] == "consolidated"
         assert result["items_consolidated"] == 1
 
+        # E3: source rows remain after sleep. s1's row gains
+        # consolidated_at; s2's stays untouched (different session).
         conn = sqlite3.connect(temp_db)
-        remaining = conn.execute("SELECT session_id FROM working_memory ORDER BY session_id").fetchall()
+        rows = conn.execute(
+            "SELECT session_id, consolidated_at FROM working_memory ORDER BY session_id"
+        ).fetchall()
         conn.close()
-        assert remaining == [("s2",)]
+        assert len(rows) == 2
+        by_session = dict(rows)
+        assert by_session["s1"] is not None, "s1 row should be marked consolidated"
+        assert by_session["s2"] is None, "s2 row should be untouched by s1's sleep"
 
     def test_sleep_all_sessions_consolidates_inactive_sessions(self, temp_db):
         beam = BeamMemory(session_id="s1", db_path=temp_db)
@@ -185,13 +192,22 @@ class TestSleepCycle:
         assert result["summaries_created"] == 2
         assert result["errors"] == 0
 
+        # E3: source rows remain. Old rows have consolidated_at set;
+        # the fresh row (timestamp > cutoff) stays NULL because sleep
+        # never picked it up.
         conn = sqlite3.connect(temp_db)
-        remaining = conn.execute("SELECT id, session_id FROM working_memory").fetchall()
+        rows = conn.execute(
+            "SELECT id, session_id, consolidated_at FROM working_memory ORDER BY id"
+        ).fetchall()
         logs = conn.execute("SELECT session_id, items_consolidated FROM consolidation_log ORDER BY session_id").fetchall()
         episodic_count = conn.execute("SELECT COUNT(*) FROM episodic_memory").fetchone()[0]
         conn.close()
 
-        assert remaining == [("s2-fresh", "s2")]
+        assert len(rows) == 3
+        by_id = {r[0]: (r[1], r[2]) for r in rows}
+        assert by_id["s1-old"][1] is not None, "s1-old should be marked consolidated"
+        assert by_id["s2-old"][1] is not None, "s2-old should be marked consolidated"
+        assert by_id["s2-fresh"][1] is None, "s2-fresh wasn't eligible — must stay NULL"
         assert logs == [("s1", 1), ("s2", 1)]
         assert episodic_count == 2
 
@@ -723,13 +739,23 @@ class TestTokenAwareConsolidation:
         assert result["status"] == "consolidated"
         assert result["summaries_created"] >= 1
 
-        # Verify no working memory left for this session
+        # E3: originals remain; sleep marks them consolidated_at instead of deleting.
         conn = sqlite3.connect(temp_db)
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM working_memory WHERE session_id = ?", ("test-chunking",))
+        cursor.execute(
+            "SELECT COUNT(*) FROM working_memory WHERE session_id = ?",
+            ("test-chunking",),
+        )
         count = cursor.fetchone()[0]
+        cursor.execute(
+            "SELECT COUNT(*) FROM working_memory "
+            "WHERE session_id = ? AND consolidated_at IS NOT NULL",
+            ("test-chunking",),
+        )
+        marked = cursor.fetchone()[0]
         conn.close()
-        assert count == 0
+        assert count == 30
+        assert marked == 30
 
     def test_chunk_memories_by_budget_single_oversized(self, monkeypatch):
         """A single memory exceeding the budget should be skipped from LLM chunking."""
