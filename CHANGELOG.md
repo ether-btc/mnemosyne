@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Simple Versioning](https://github.com/AxDSan/mnemosyne) (MAJOR.MINOR).
 
+## [Unreleased]
+
+### Security
+
+**C25 — DeltaSync hardening (table allowlist, opt-in column allowlist, qualified SQL, per-table checkpoints)**
+- `compute_delta` / `apply_delta` / `sync_to` / `sync_from` validate the `table` kwarg via `_validate_table` with a **strict `type(table) is str`** check (not `isinstance`) against `ALLOWED_DELTA_TABLES = {"working_memory", "episodic_memory"}`. The strict check defeats a `str`-subclass bypass where `__eq__` / `__hash__` compare-equal to an allowlisted value while the f-string interpolates a different payload (caught by `/review` adversarial pass — verified exploit demonstrating subquery-in-FROM-position SQL injection).
+- All SQL operations use `main.` schema qualification (`UPDATE "main"."working_memory" SET ...`) so a same-connection temp table named `working_memory` cannot shadow the real one. Pre-fix `PRAGMA table_info({table})` resolved unqualified to whichever schema came first (SQLite prefers temp), letting a hostile component with same-connection access redirect both schema reads and writes.
+- Column filtering on apply is now **opt-in via static allowlist** (intersected with live schema), not opt-out via reserved set:
+  - `_DELTA_UPDATABLE_COLUMNS` (UPDATE path): only `content`, `importance`, `metadata_json`, `veracity`, `memory_type`, `binary_vector`, `source`, `summary_of` may be mutated by a peer. Identity (`id`), scope (`session_id`, `scope`), lifecycle (`valid_until`, `superseded_by`, `created_at`, `timestamp`, `recall_count`, `last_recalled`, `consolidated_at`, `degraded_at`, `tier`), and authorship (`author_id`, `author_type`, `channel_id`) are all destination-controlled. Pre-fix `session_id` and `superseded_by` were schema columns NOT in the reserved-update set — a peer could re-route victim rows into the attacker's session or soft-delete arbitrary rows via UPDATE.
+  - `_DELTA_INSERTABLE_COLUMNS` (INSERT path): only `id` + the same content/metadata fields + `timestamp` are accepted from the peer. Pre-fix INSERT reserved only `rowid`, letting a peer backdate `created_at`, forge `timestamp`, plant rows directly in the destination's session, or pre-tombstone.
+- SQL identifiers (column names) are now quoted (`"col" = ?` / `INSERT INTO t ("c1", "c2") ...`) for defense-in-depth against schema poisoning. Static allowlist intersection with the live schema is the primary gate; identifier quoting is the secondary.
+- **Checkpoints scoped by `(peer_id, table)`** — pre-fix a single per-peer checkpoint covered all tables, so peer syncing `working_memory` to rowid=100 then `compute_delta(peer, table="episodic_memory")` skipped episodic rows at rowid < 100 (rowid namespaces are table-local). New filename: `checkpoint_<peer>__<table>.json`. Legacy `checkpoint_<peer>.json` files load as the `working_memory` checkpoint for backward compat.
+- `_allowed_columns` self-validates via `_validate_table` for defense-in-depth — direct calls bypassing the public methods can't reach the PRAGMA path with unvalidated input.
+- Maintainer just wired streaming emit live in commit `b2a7fae` (issue #64), raising the practical relevance of the hardening: production callers now have real reasons to construct deltas across the wire.
+
+### Changed
+
+**DeltaSync stats output now includes `filtered_keys`**
+- `apply_delta` return shape: `{"inserted": N, "updated": N, "skipped": N, "filtered_keys": N}`. New `filtered_keys` counter exposes peer-supplied keys that were rejected by the schema column allowlist. Operators can spot a misconfigured peer (typo'd column names) or a hostile peer (injection attempts) by watching this counter.
+
+### Documentation
+
+**`docs/api-reference.md`: corrected MemoryStream and DeltaSync examples** (originally PR #49 by @kohai-ut, rolled in here)
+- `MemoryStream`: examples now use the real API — `emit(MemoryEvent(...))`, `on(event_type, callback)`, `on_any(callback)`, `listen()` iterator. Pre-fix the docs showed `push(...)`, `on_event(...)`, and direct iteration — none of which exist.
+- `DeltaSync`: examples now show the peer_id-based call shape (`compute_delta(peer_id)`, `apply_delta(peer_id, delta)`, `sync_to(peer_id)`, `sync_from(peer_id, delta)`). Pre-fix the docs showed `compute_delta()` / `apply_delta(delta)` / `sync_to(other_mnemosyne)` — wrong signatures.
+- New section on the `ALLOWED_DELTA_TABLES` allowlist + column filtering on apply (the security hardening above).
+
 ## [2.5] — 2026-05-10
 
 ### Added
