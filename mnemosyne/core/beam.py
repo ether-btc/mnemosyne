@@ -304,6 +304,54 @@ def init_beam(db_path: Path = None):
     except sqlite3.OperationalError:
         pass
 
+    # --- E3 additive sleep migration ---
+    # Working memories that sleep() has consolidated into an episodic
+    # summary get this timestamp set. Pre-E3 sleep() DELETEd those rows;
+    # post-E3 the originals remain so they're still recallable, and
+    # consolidated_at IS NULL is the predicate sleep uses to find
+    # not-yet-consolidated rows.
+    #
+    # Naming note: episodic_memory.metadata_json["consolidated_at"]
+    # (introduced in 2.5 by the heal-quality pipeline) records when a
+    # summary row was finalized; this column records when a SOURCE row
+    # was marked done by sleep. Same concept, different angle.
+    _e3_column_added = False
+    try:
+        cursor.execute("ALTER TABLE working_memory ADD COLUMN consolidated_at TEXT")
+        _e3_column_added = True
+    except sqlite3.OperationalError as exc:
+        # Only swallow "duplicate column" — every other OperationalError
+        # (database locked, disk I/O, readonly, missing table) must
+        # surface so callers don't proceed with a broken schema.
+        if "duplicate column" not in str(exc).lower():
+            raise
+
+    if _e3_column_added:
+        # Pre-E3 backfill: existing rows are treated as already-consolidated.
+        # Without this, the first post-upgrade sleep would treat the entire
+        # pre-existing backlog as "not yet consolidated" and try to summarize
+        # everything at once — including rows pre-E3 sleep would have already
+        # DELETEd. The backfill preserves the pre-E3 expectation that "old
+        # rows are gone." Cost: a single UPDATE on existing rows at upgrade
+        # time. Idempotent: this branch only fires when the column was just
+        # added, so re-running init_beam is a no-op.
+        cursor.execute(
+            "UPDATE working_memory SET consolidated_at = ? "
+            "WHERE consolidated_at IS NULL",
+            (datetime.now().isoformat(),),
+        )
+
+    # Partial index for the sleep eligibility predicate. Sleep scans
+    # WHERE session_id = ? AND timestamp < ? AND consolidated_at IS NULL
+    # on every cycle; once consolidated rows accumulate the predicate
+    # becomes the dominant filter. The partial index lets the planner
+    # skip already-consolidated rows in O(eligible) instead of O(session).
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wm_unconsolidated "
+        "ON working_memory(session_id, timestamp) "
+        "WHERE consolidated_at IS NULL"
+    )
+
     # --- SCRATCHPAD ---
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS scratchpad (
@@ -376,8 +424,15 @@ def init_beam(db_path: Path = None):
             DELETE FROM fts_working WHERE id = old.id;
         END
     """)
+    # The wm_au trigger restricts to UPDATE OF content so sleep's
+    # consolidated_at marker writes don't churn the FTS index. Pre-E3
+    # this trigger fired on every UPDATE — fine when UPDATEs were rare;
+    # post-E3 sleep marks SLEEP_BATCH_SIZE rows per cycle and would
+    # otherwise generate 2*N FTS round-trips per sleep with no content
+    # delta. SQLite column-list triggers handle the perf concern.
+    cursor.execute("DROP TRIGGER IF EXISTS wm_au")
     cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS wm_au AFTER UPDATE ON working_memory BEGIN
+        CREATE TRIGGER IF NOT EXISTS wm_au AFTER UPDATE OF content ON working_memory BEGIN
             DELETE FROM fts_working WHERE id = old.id;
             INSERT INTO fts_working(id, content) VALUES (new.id, new.content);
         END
@@ -1135,6 +1190,13 @@ class BeamMemory:
         existing_id = self._find_duplicate(content)
         if existing_id:
             cursor = self.conn.cursor()
+            # Dedup-update clears consolidated_at so a re-remembered row
+            # becomes eligible for sleep again. Without this, an already-
+            # consolidated row that the user reasserts is permanently
+            # skipped — its fresher timestamp/source/scope never produces
+            # a fresh summary. Pre-E3 this scenario didn't exist because
+            # consolidated rows were deleted; the additive design has to
+            # opt back in.
             cursor.execute("""
                 UPDATE working_memory
                 SET importance = MAX(importance, ?), timestamp = ?, source = ?,
@@ -1143,7 +1205,8 @@ class BeamMemory:
                     author_id = COALESCE(?, author_id),
                     author_type = COALESCE(?, author_type),
                     channel_id = COALESCE(?, channel_id),
-                    memory_type = COALESCE(?, memory_type)
+                    memory_type = COALESCE(?, memory_type),
+                    consolidated_at = NULL
                 WHERE id = ? AND session_id = ?
             """, (importance, datetime.now().isoformat(), source,
                   valid_until, scope,
@@ -1395,19 +1458,29 @@ class BeamMemory:
             pass
 
     def _trim_working_memory(self):
-        """Keep working_memory within size/time limits."""
+        """Keep working_memory within size/time limits.
+
+        Post-E3: consolidated rows (consolidated_at IS NOT NULL) are
+        exempt from trim. The "originals stay" contract means they
+        remain queryable until explicit forget(); the TTL window only
+        bounds NOT-YET-consolidated content. Without this exemption,
+        the additive promise expires at WORKING_MEMORY_TTL_HOURS and
+        the experiment Arm B's "ADD-only" guarantee collapses at 24h.
+        """
         cutoff = (datetime.now() - timedelta(hours=WORKING_MEMORY_TTL_HOURS)).isoformat()
         self.conn.execute("""
             DELETE FROM working_memory
-            WHERE session_id = ? AND (
+            WHERE session_id = ?
+              AND consolidated_at IS NULL
+              AND (
                 timestamp < ? OR
                 id NOT IN (
                     SELECT id FROM working_memory
-                    WHERE session_id = ?
+                    WHERE session_id = ? AND consolidated_at IS NULL
                     ORDER BY timestamp DESC
                     LIMIT ?
                 )
-            )
+              )
         """, (self.session_id, cutoff, self.session_id, WORKING_MEMORY_MAX_ITEMS))
         self.conn.commit()
 
@@ -3285,6 +3358,11 @@ class BeamMemory:
         compression if the model is missing or inference fails.
         Returns summary of what was done.
 
+        Post-E3 (additive): the source working_memory rows are NOT
+        deleted. Instead they're marked with consolidated_at = NOW
+        so the next sleep cycle skips them. Originals remain
+        recallable alongside the new episodic summary.
+
         Note: this method intentionally remains session-scoped. Use
         sleep_all_sessions() for maintenance that consolidates eligible old
         working memories across inactive sessions.
@@ -3301,16 +3379,68 @@ class BeamMemory:
         # collects them as a NULL group, maps to "default" for the loop,
         # then beam.sleep("default") would query session_id = 'default'
         # and miss the NULL rows. See Codex /review note for C9.
+        # consolidated_at IS NULL filters out rows already processed by
+        # a prior sleep so we don't re-summarize the same originals.
         cursor.execute(f"""
             SELECT id, content, source, timestamp, importance, metadata_json, scope, valid_until
             FROM working_memory
-            WHERE COALESCE(session_id, 'default') = ? AND timestamp < ?
+            WHERE COALESCE(session_id, 'default') = ?
+              AND timestamp < ?
+              AND consolidated_at IS NULL
             ORDER BY timestamp ASC
             LIMIT {SLEEP_BATCH_SIZE}
         """, (self.session_id, cutoff))
         rows = cursor.fetchall()
         if not rows:
             return {"status": "no_op", "message": "No old working memories to consolidate"}
+
+        # Atomic claim: mark rows consolidated_at BEFORE writing the
+        # episodic summary, gated on consolidated_at IS STILL NULL.
+        # This serves two roles at once:
+        # (1) concurrent sleep() callers — a second process that also
+        #     SELECTed the same rows finds rowcount=0 on its claim and
+        #     bails before producing a duplicate summary
+        # (2) crash safety — if the process dies after the claim but
+        #     before episodic INSERT, the next sleep cycle finds
+        #     consolidated_at set and skips them rather than producing
+        #     a duplicate. The flip side is a possible orphan claim
+        #     (marker set, no summary) — acceptable; the originals
+        #     remain recallable and a manual "reclaim" can clear
+        #     consolidated_at if needed.
+        # The dry_run branch skips the claim entirely so it stays
+        # side-effect-free.
+        if not dry_run:
+            now_iso = datetime.now().isoformat()
+            ids_to_claim = [row["id"] for row in rows]
+            placeholders = ",".join("?" * len(ids_to_claim))
+            cursor.execute(
+                f"UPDATE working_memory SET consolidated_at = ? "
+                f"WHERE id IN ({placeholders}) AND consolidated_at IS NULL",
+                (now_iso, *ids_to_claim),
+            )
+            claimed_ids = set()
+            if cursor.rowcount == len(ids_to_claim):
+                # Fast path: we got all of them.
+                claimed_ids = set(ids_to_claim)
+            else:
+                # Slow path: at least one row was claimed concurrently
+                # by another sleep. Re-read which ones we actually own
+                # so we only summarize those.
+                cursor.execute(
+                    f"SELECT id FROM working_memory "
+                    f"WHERE id IN ({placeholders}) AND consolidated_at = ?",
+                    (*ids_to_claim, now_iso),
+                )
+                claimed_ids = {r["id"] for r in cursor.fetchall()}
+
+            if not claimed_ids:
+                # Lost the race entirely.
+                self.conn.commit()
+                return {"status": "no_op", "message": "All eligible rows claimed by concurrent sleep"}
+
+            # Filter rows to only those we successfully claimed.
+            rows = [r for r in rows if r["id"] in claimed_ids]
+            self.conn.commit()
 
         grouped: Dict[str, List[Dict]] = {}
         for row in rows:
@@ -3372,6 +3502,11 @@ class BeamMemory:
                 summary = f"[{source}] {compressed}"
 
             if not dry_run:
+                # Originals are already claimed (consolidated_at set above).
+                # Just write the summary. If consolidate_to_episodic raises
+                # the claim survives — the rows show as consolidated but
+                # without a summary. That's preferable to a phantom-summary-
+                # without-claim race the previous ordering allowed.
                 self.consolidate_to_episodic(
                     summary=summary,
                     source_wm_ids=ids,
@@ -3385,9 +3520,6 @@ class BeamMemory:
                         "llm_used": llm_succeeded
                     }
                 )
-                placeholders = ",".join("?" * len(ids))
-                cursor.execute(f"DELETE FROM working_memory WHERE id IN ({placeholders})", ids)
-                self.conn.commit()
             consolidated_ids.extend(ids)
             summaries_created += 1
 
@@ -3422,10 +3554,13 @@ class BeamMemory:
         """
         cursor = self.conn.cursor()
         cutoff = (datetime.now() - timedelta(hours=WORKING_MEMORY_TTL_HOURS // 2)).isoformat()
+        # Mirror sleep()'s filter: only count rows that haven't been
+        # consolidated yet, so we don't redo work on every maintenance pass.
         cursor.execute("""
             SELECT session_id, COUNT(*) AS eligible
             FROM working_memory
             WHERE timestamp < ?
+              AND consolidated_at IS NULL
             GROUP BY session_id
             ORDER BY MIN(timestamp) ASC
         """, (cutoff,))
@@ -3538,14 +3673,17 @@ class BeamMemory:
         # applies to working_memory hits), so it must survive
         # backup/restore. Without it, restored rows collapse to
         # 'unknown' and lose their per-row trust signal.
+        # post-E3: consolidated_at carries the sleep marker; without it
+        # on the export, restored DBs would re-summarize every already-
+        # slept row on next sleep.
         # NOTE: the recall multiplier at beam.py::recall (the
-        # `if r.get("tier") == "working":` block) depends on this
-        # column being in the row dict; do not drop it from this
+        # `if r.get("tier") == "working":` block) depends on veracity
+        # being in the row dict; do not drop it from this
         # SELECT without updating the multiplier path.
         cursor.execute("""
             SELECT id, content, source, timestamp, session_id, importance,
                    metadata_json, valid_until, superseded_by, scope,
-                   recall_count, last_recalled, created_at, veracity
+                   recall_count, last_recalled, created_at, veracity, consolidated_at
             FROM working_memory
             ORDER BY session_id, timestamp
         """)
@@ -3637,8 +3775,8 @@ class BeamMemory:
                 INSERT INTO working_memory
                 (id, content, source, timestamp, session_id, importance, metadata_json,
                  valid_until, superseded_by, scope, recall_count, last_recalled, created_at,
-                 veracity)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 veracity, consolidated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 mid, item.get("content"), item.get("source"), item.get("timestamp"),
                 item.get("session_id", "default"), item.get("importance", 0.5),
@@ -3646,6 +3784,10 @@ class BeamMemory:
                 item.get("superseded_by"), item.get("scope", "session"),
                 item.get("recall_count", 0), item.get("last_recalled"), item.get("created_at"),
                 item.get("veracity"),
+                # consolidated_at: pre-E3 exports (no key) get NULL —
+                # treated as "not yet consolidated" so the next sleep
+                # cycle on the importing DB processes them normally.
+                item.get("consolidated_at"),
             ))
         self.conn.commit()
 
