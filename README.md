@@ -164,6 +164,10 @@ hermes mnemosyne stats     # Shows working + episodic memory counts
 - **Cross-provider importers** -- Migrate from Mem0, Letta, Zep, Cognee, Honcho, SuperMemory, **Hindsight**
 - **Cross-session scope** -- `remember(..., scope="global")` makes facts visible everywhere
 - **Configurable compression** -- `int8` (default), `float32`, or `bit` (32x smaller) vectors
+- **Binary vectors** -- Information-theoretic binarization (MIB) for 32x memory reduction with deterministic Hamming-distance retrieval
+- **Streaming & DeltaSync** -- Real-time memory event stream (push/pull) and checkpoint-based incremental sync between instances
+- **Configurable auto-sleep** -- Automatically triggers consolidation when working memory exceeds `sleep_threshold`; configurable via `config.yaml` or env var
+- **ignore_patterns** -- Regex-based content filtering to exclude shell commands, stack traces, and boilerplate from memory storage
 
 ---
 
@@ -482,6 +486,30 @@ mnemosyne mcp --transport sse --port 8080
 | `mnemosyne_scratchpad_write` | Write to scratchpad |
 | `mnemosyne_get_stats` | Memory statistics |
 
+### Hermes Plugin
+
+When registered as a Hermes plugin, Mnemosyne exposes **15 tools** to the agent, providing full memory lifecycle management directly from the conversation:
+
+| # | Tool | Description |
+|---|------|-------------|
+| 1 | `mnemosyne_remember` | Store a memory with importance, source, expiry, and cross-session scope |
+| 2 | `mnemosyne_recall` | Hybrid vector + FTS5 search across working and episodic memory with configurable scoring weights |
+| 3 | `mnemosyne_stats` | Get BEAM tier statistics (working, episodic, scratchpad counts) |
+| 4 | `mnemosyne_triple_add` | Add a temporal triple to the knowledge graph with validity dates |
+| 5 | `mnemosyne_triple_query` | Query the temporal knowledge graph with `as_of` historical lookback |
+| 6 | `mnemosyne_sleep` | Run the consolidation cycle — summarize old working memories into episodic tier |
+| 7 | `mnemosyne_scratchpad_write` | Write a temporary note to the scratchpad reasoning workspace |
+| 8 | `mnemosyne_scratchpad_read` | Read all current scratchpad entries |
+| 9 | `mnemosyne_scratchpad_clear` | Clear all scratchpad entries |
+| 10 | `mnemosyne_invalidate` | Mark a memory as expired or superseded by a replacement |
+| 11 | `mnemosyne_export` | Export all memories to a portable JSON file for backup or migration |
+| 12 | `mnemosyne_update` | Update the content or importance of an existing memory by ID |
+| 13 | `mnemosyne_forget` | Permanently delete a memory by ID |
+| 14 | `mnemosyne_import` | Import from JSON file, Mem0, Letta, Zep, Cognee, Honcho, SuperMemory, or Hindsight |
+| 15 | `mnemosyne_diagnose` | Run PII-safe diagnostics (dependencies, DB state, vector readiness) — never exposes memory content |
+
+The plugin also registers three lifecycle hooks (`pre_llm_call`, `on_session_start`, `post_tool_call`) for automatic context injection before every LLM call.
+
 ---
 
 ## Architecture
@@ -510,6 +538,9 @@ mnemosyne mcp --transport sse --port 8080
 - `working_memory` -- Hot context, auto-injected before LLM calls, TTL-based eviction
 - `episodic_memory` -- Long-term storage with sqlite-vec + FTS5 hybrid search
 - `scratchpad` -- Temporary agent reasoning workspace
+
+**Binary Vectors** (MIB — Maximally Informative Binarization):
+Mnemosyne uses information-theoretic binarization (building on Moorcheh ITS, arXiv:2601.11557) to compress 384-dimensional float32 embeddings into 48-byte binary vectors — a 32× reduction. Retrieval uses Hamming distance (XOR + popcount) for deterministic, CPU-efficient ranking without ANN indices or external vector databases. This enables sub-millisecond search over millions of vectors entirely within SQLite.
 
 ---
 
@@ -637,6 +668,117 @@ remote shape.
 | `MNEMOSYNE_HOST_LLM_N_CTX` | `32000` | Prompt-budget when host is the chosen path (TinyLlama-calibrated `LLM_N_CTX=2048` is too small for Codex/GPT-class) |
 
 When the host call fails, the adapter falls back to the local GGUF model rather than the remote URL. See [docs/hermes-llm-integration.md](docs/hermes-llm-integration.md) for the full behavior model and session-shutdown semantics.
+
+---
+
+## Configuration (config.yaml)
+
+In addition to environment variables, Mnemosyne supports configuration via Hermes' `config.yaml` file. This is the recommended approach for plugin-level settings, keeping all Hermes configuration in one place.
+
+Place the `memory.mnemosyne` block under the top-level `memory` key:
+
+```yaml
+memory:
+  mnemosyne:
+    # Enable automatic consolidation on session boundaries
+    auto_sleep: true
+
+    # Minimum working memory count before auto-sleep triggers.
+    # Prevents consolidation on trivial sessions. Default: 50
+    sleep_threshold: 50
+
+    # Vector storage type: float32 (full precision), int8 (default, good balance), or bit (32x smaller)
+    vector_type: int8
+
+    # Regex patterns to filter BEFORE memory storage.
+    # Content matching any pattern is silently skipped (not stored).
+    # Useful for excluding shell commands, stack traces, and boilerplate.
+    ignore_patterns:
+      - "^pip install"
+      - "^npm install"
+      - "^sudo "
+      - "^Traceback \\(most recent call last\\)"
+      - "^Error:"
+      - "^git "
+```
+
+### Configuration Keys
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `auto_sleep` | `bool` | `false` | Auto-run `sleep()` consolidation on session boundaries. Also settable via `MNEMOSYNE_AUTO_SLEEP_ENABLED` env var. |
+| `sleep_threshold` | `int` | `50` | Minimum working memory entries before auto-sleep triggers. Skips consolidation on sessions with few memories. |
+| `vector_type` | `str` | `int8` | Vector storage type: `float32` (1,536 bytes/vector), `int8` (384 bytes, default), `bit` (48 bytes, 32× smaller). |
+| `ignore_patterns` | `list[str]` | `[]` | Regex patterns applied via Python `re.search()`. Memories matching any pattern are discarded before storage. |
+
+### ignore_patterns
+
+`ignore_patterns` filters content **before** it enters memory storage. It uses Python's `re.search()` with `re.IGNORECASE` to match patterns against the content string. If any pattern matches, the memory is silently skipped — it will never appear in working memory or recall results.
+
+Common use cases:
+- **Shell commands**: `"^pip "`, `"^npm "`, `"^git "`, `"^sudo "`, `"^apt "`
+- **Stack traces**: `"^Traceback \\(most recent call last\\)"`, `"^Error:"`, `"^\\s+at "`
+- **Boilerplate**: `"^---BEGIN"`, `"^#include"`, `"^#!/"`
+- **System noise**: Any pattern matching low-signal operational chatter
+
+Patterns can be specified as a YAML list (one per line) or as a comma-separated string. They are applied at `remember()` time and logged at `DEBUG` level when matched.
+
+Example:
+```yaml
+memory:
+  mnemosyne:
+    ignore_patterns:
+      - "^pip "
+      - "^npm "
+      - "^Traceback \\(most recent call last\\)"
+      - "^Error:"
+      - "^\\s+at "
+```
+
+---
+
+## Streaming & DeltaSync
+
+Mnemosyne includes a real-time memory event system for reactive and distributed memory architectures.
+
+### MemoryStream
+
+An event-driven stream supporting both push (callbacks) and pull (iterator) patterns. Thread-safe, with a configurable buffer for late-connecting iterators.
+
+```python
+from mnemosyne.core.streaming import MemoryStream, MemoryEvent, EventType
+
+stream = MemoryStream(max_buffer=100)
+
+# Push: register callbacks
+stream.on(EventType.MEMORY_ADDED, lambda e: print(f"New: {e.memory_id}"))
+
+# Pull: iterate over events as they occur
+for event in stream.listen([EventType.MEMORY_ADDED, EventType.MEMORY_CONSOLIDATED]):
+    process(event)
+```
+
+Supported event types: `MEMORY_ADDED`, `MEMORY_RECALLED`, `MEMORY_INVALIDATED`, `MEMORY_CONSOLIDATED`, `MEMORY_UPDATED`.
+
+### DeltaSync
+
+Checkpoint-based incremental synchronization between Mnemosyne instances. Computes diffs (only changed memories since last sync) and applies them with insert/update/skip tracking.
+
+```python
+from mnemosyne.core.streaming import DeltaSync
+
+ds = DeltaSync(mnemosyne)
+
+# Push: compute and send delta since last sync
+result = ds.sync_to("peer_b", "working_memory")
+# result = {"delta": [...], "count": 3, "checkpoint": "..."}
+
+# Pull: receive and apply remote delta
+stats = ds.sync_from("peer_a", remote_delta, "working_memory")
+# stats = {"inserted": 3, "updated": 0, "skipped": 0}
+```
+
+Checkpoints are persisted per-peer, enabling incremental sync without re-sending already-synchronized memories. Ideal for multi-agent setups and backup/restore workflows.
 
 ---
 
