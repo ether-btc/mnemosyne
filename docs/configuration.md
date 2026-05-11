@@ -110,6 +110,73 @@ When the host call fails, the adapter falls back to the local GGUF model rather 
 3. AAAK encoding (keyword-based, no LLM required)
 ```
 
+## Config File (config.yaml)
+
+In addition to environment variables, Mnemosyne supports configuration via a `config.yaml` file. This is the recommended approach when running Mnemosyne as a Hermes plugin, as it allows configuring memory behavior in the same file as other Hermes settings.
+
+### memory.mnemosyne
+
+Place this section in your `config.yaml` under the top-level `memory` key:
+
+```yaml
+memory:
+  mnemosyne:
+    # Enable automatic memory consolidation on session start/end
+    auto_sleep: true
+
+    # Minimum number of working memories required before auto-sleep triggers.
+    # Prevents consolidation on trivial sessions. Default: 20
+    sleep_threshold: 20
+
+    # Regex patterns for content that should NOT be stored in memory.
+    # Each pattern is matched against the content string using Python's re.search().
+    # Useful for filtering out technical noise, stack traces, boilerplate, etc.
+    ignore_patterns:
+      - "^pip install"
+      - "^npm install"
+      - "^sudo "
+      - "^Traceback \\(most recent call last\\)"
+```
+
+### auto_sleep
+
+**Type:** `bool` | **Default:** `true`
+
+When `true`, Mnemosyne automatically runs the sleep consolidation cycle (`consolidate_to_episodic()`) on session start and end. This offloads working memories into the episodic tier for long-term storage. Set to `false` if you only want to trigger sleep manually via the `mnemosyne_sleep` tool.
+
+### sleep_threshold
+
+**Type:** `int` | **Default:** `20`
+
+The minimum number of working memory entries required before auto-sleep triggers. This prevents consolidation from running on sessions that barely generated any memories. If the working memory count is below the threshold, the sleep cycle is skipped.
+
+### ignore_patterns
+
+**Type:** `list[str]` | **Default:** `[]`
+
+A list of regex patterns (Python `re` syntax) that filter content **before** it enters memory storage. If any pattern matches `re.search(pattern, content)`, the content is silently skipped — it will not be stored in working memory and will not appear in recalls.
+
+This is useful for excluding:
+
+- Shell commands (`^pip install`, `^npm run`, `^git `)
+- Error stack traces (`^Traceback`, `^Error:`, `^\s+at `)
+- Boilerplate text (`^---BEGIN`, `^#include`)
+- System-level chatter that pollutes memory
+
+**Example:**
+```yaml
+memory:
+  mnemosyne:
+    ignore_patterns:
+      - "^pip "
+      - "^npm "
+      - "^Traceback \\(most recent call last\\)"
+      - "^Error:"
+      - "^\\s+at "
+```
+
+Patterns are applied at `remember()` time. Content that matches any pattern is discarded with a debug-level log.
+
 ## Optional Dependencies
 
 ```bash
