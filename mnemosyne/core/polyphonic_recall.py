@@ -21,7 +21,14 @@ Building on:
 - Our novel deterministic combination
 """
 
+# Postponed annotation evaluation: lets us reference np.ndarray in type
+# hints without breaking module import when numpy is unavailable.
+# /review (E5.a commit 2) caught the earlier `try: import np` guard
+# being defeated by `np.ndarray = None` evaluation at class-body load.
+from __future__ import annotations
+
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
@@ -142,11 +149,12 @@ class PolyphonicRecallEngine:
 
         Queries the production-canonical dense embedding store
         (`memory_embeddings`) — the same source the linear recall path
-        uses via `_wm_vec_search` / `_in_memory_vec_search` in beam.py.
-        Pre-fix this voice queried the standalone `binary_vectors` table
-        which production never wrote to (NAI-4 wrote binary vectors as a
-        column on episodic_memory, NOT to that table); the result was a
-        silently-empty vector voice and a 3-voice polyphonic engine.
+        uses via `_wm_vec_search` / `_in_memory_vec_search` (the
+        numpy-cosine fallback layer in beam.py). Pre-fix this voice
+        queried the standalone `binary_vectors` table which production
+        never wrote to (NAI-4 wrote binary vectors as a column on
+        episodic_memory, NOT to that table); the result was a silently
+        empty vector voice and a 3-voice polyphonic engine.
 
         Returning to a single source of truth across the recall stack
         matches the cross-system convergence pattern (Hindsight, mem0,
@@ -154,13 +162,19 @@ class PolyphonicRecallEngine:
         retrieval path) and makes polyphonic-vs-linear comparisons
         apples-to-apples for the BEAM-recovery experiment.
 
+        Future work (E5.a follow-up): the linear path additionally
+        uses sqlite-vec's `vec_episodes` virtual table when available
+        (`beam._vec_search`); this voice currently only uses the
+        numpy-cosine fallback layer. Wiring sqlite-vec acceleration is
+        a separate change.
+
         Reads both WM and EM tiers, filters out invalidated /
-        superseded rows (mirror of `_wm_vec_search` WHERE clauses), and
-        ranks by cosine similarity computed in numpy. Performance is
-        bounded by linear cosine over the joined memory_embeddings rows
-        (same shape as the existing linear fallback); on databases
-        sized for the BEAM benchmark we expect this to land in the
-        same order of magnitude as the linear path's WM/EM vec search.
+        superseded / expired rows (mirror of `_wm_vec_search` WHERE
+        clauses for both tiers), and ranks by cosine similarity
+        computed in numpy. Dedups across WM/EM by `memory_id` keeping
+        the higher-similarity occurrence — without this, a memory that
+        exists in both tiers post-E3 would be double-counted in RRF
+        and silently cap unique candidates below `top_k=20`.
         """
         if query_embedding is None or np is None:
             return []
@@ -172,6 +186,15 @@ class PolyphonicRecallEngine:
         if query_norm == 0.0:
             return []
         query_unit = query_embedding / query_norm
+
+        # Match the linear path's BEAM-mode scan budget so this voice
+        # doesn't silently truncate against a benchmark-scale corpus
+        # that the linear scorer would have seen entirely (beam.py
+        # `_wm_vec_search` uses `_vec_limit = 500000 if _BEAM_MODE else
+        # 50000`). The env var read mirrors the existing flag without
+        # creating an import cycle on beam.py.
+        beam_mode = os.environ.get("MNEMOSYNE_BEAM_MODE", "").lower() in ("1", "true", "yes")
+        vec_limit = 500000 if beam_mode else 50000
 
         if self.conn is not None:
             conn = self.conn
@@ -189,28 +212,52 @@ class PolyphonicRecallEngine:
             # invalidated / superseded rows so vector voice never
             # surfaces ghost rows the linear path would have hidden.
             try:
-                wm_rows = conn.execute("""
+                wm_rows = conn.execute(
+                    """
                     SELECT wm.id AS memory_id, me.embedding_json
                     FROM memory_embeddings me
                     JOIN working_memory wm ON me.memory_id = wm.id
                     WHERE wm.superseded_by IS NULL
                       AND (wm.valid_until IS NULL OR wm.valid_until > ?)
-                    LIMIT 50000
-                """, (now_iso,)).fetchall()
+                    LIMIT ?
+                    """,
+                    (now_iso, vec_limit),
+                ).fetchall()
             except sqlite3.OperationalError:
                 wm_rows = []
 
             # --- EM tier ---
+            # EM also has superseded_by + valid_until columns and the
+            # linear path filters them out at row-fetch time
+            # (beam.py:_polyphonic_row_passes_filters). Filtering at
+            # SQL avoids spending cosine compute on rows that will be
+            # dropped anyway, and keeps the `LIMIT` budget pointed at
+            # valid candidates instead of starving them under a dense
+            # cluster of invalidated rows.
             try:
-                em_rows = conn.execute("""
+                em_rows = conn.execute(
+                    """
                     SELECT em.id AS memory_id, me.embedding_json
                     FROM memory_embeddings me
                     JOIN episodic_memory em ON me.memory_id = em.id
-                    LIMIT 50000
-                """).fetchall()
+                    WHERE em.superseded_by IS NULL
+                      AND (em.valid_until IS NULL OR em.valid_until > ?)
+                    LIMIT ?
+                    """,
+                    (now_iso, vec_limit),
+                ).fetchall()
             except sqlite3.OperationalError:
                 em_rows = []
 
+            # Dedup keyed by memory_id, keeping the higher similarity
+            # tier. Post-E3 consolidation an id can exist in both WM
+            # (original row, consolidated_at set) and EM (summary row);
+            # without dedup, the duplicate flows into _combine_voices
+            # where the second occurrence overwrites the first's
+            # voice-rank AND the for-loop double-counts the RRF
+            # contribution. /review (Claude adversarial C1) caught the
+            # silent rank corruption + sub-20 unique-candidate cap.
+            by_id: Dict[str, RecallResult] = {}
             for tier, rows in (("working", wm_rows), ("episodic", em_rows)):
                 for row in rows:
                     try:
@@ -225,18 +272,32 @@ class PolyphonicRecallEngine:
                         if vec_norm == 0.0:
                             continue
                         sim = float(np.dot(query_unit, vec / vec_norm))
-                        results.append(RecallResult(
-                            memory_id=memory_id,
-                            score=sim,
-                            voice="vector",
-                            metadata={"similarity": sim, "tier": tier},
-                        ))
+                        existing = by_id.get(memory_id)
+                        if existing is None or sim > existing.score:
+                            by_id[memory_id] = RecallResult(
+                                memory_id=memory_id,
+                                score=sim,
+                                voice="vector",
+                                # `embedding_tier` instead of `tier` —
+                                # avoid colliding with the `tier` key
+                                # _polyphonic_row_to_dict (beam.py)
+                                # writes meaning "working"/"episodic"
+                                # row-source label AND with
+                                # `degradation_tier` for episodic 1→2→3
+                                # content tiers.
+                                metadata={
+                                    "similarity": sim,
+                                    "embedding_tier": tier,
+                                },
+                            )
                     except (ValueError, TypeError, json.JSONDecodeError):
                         # Defensive: bad / unparseable embedding_json
                         # rows shouldn't break the voice.
                         continue
 
-            results.sort(key=lambda r: r.score, reverse=True)
+            results = sorted(
+                by_id.values(), key=lambda r: r.score, reverse=True
+            )
             return results[:20]
         finally:
             if own_conn:
@@ -499,14 +560,33 @@ class PolyphonicRecallEngine:
         """Get engine statistics."""
         # vector voice now queries memory_embeddings directly; surface
         # the count of embedded rows as the vector-voice signal-of-life.
+        # /review caught the pre-fix behavior of returning 0 whenever
+        # self.conn was None (standalone engines / CLI self-test);
+        # mirror _vector_voice's own_conn fallback so the stat is
+        # accurate regardless of construction mode.
         vec_count = 0
         if self.conn is not None:
+            conn = self.conn
+            own_conn = False
+        else:
             try:
-                vec_count = self.conn.execute(
-                    "SELECT COUNT(*) FROM memory_embeddings"
-                ).fetchone()[0]
+                conn = sqlite3.connect(str(self.db_path))
+                conn.row_factory = sqlite3.Row
+                own_conn = True
             except sqlite3.OperationalError:
-                vec_count = 0
+                conn = None
+                own_conn = False
+        try:
+            if conn is not None:
+                try:
+                    vec_count = conn.execute(
+                        "SELECT COUNT(*) FROM memory_embeddings"
+                    ).fetchone()[0]
+                except sqlite3.OperationalError:
+                    vec_count = 0
+        finally:
+            if own_conn and conn is not None:
+                conn.close()
         return {
             "voice_weights": self.voice_weights,
             "vector_stats": {"embedded_rows": vec_count},
