@@ -162,17 +162,18 @@ class PolyphonicRecallEngine:
         retrieval path) and makes polyphonic-vs-linear comparisons
         apples-to-apples for the BEAM-recovery experiment.
 
-        Future work (E5.a follow-up): the linear path additionally
-        uses sqlite-vec's `vec_episodes` virtual table when available
-        (`beam._vec_search`); this voice currently only uses the
-        numpy-cosine fallback layer. Wiring sqlite-vec acceleration is
-        a separate change.
+        EM tier prefers sqlite-vec's `vec_episodes` virtual table when
+        available (same fast-path the linear scorer uses via
+        `beam._vec_search`); falls through to numpy cosine over
+        `memory_embeddings` on any failure. WM tier uses numpy cosine
+        (matches the linear path — no sqlite-vec WM index exists
+        today).
 
         Reads both WM and EM tiers, filters out invalidated /
         superseded / expired rows (mirror of `_wm_vec_search` WHERE
-        clauses for both tiers), and ranks by cosine similarity
-        computed in numpy. Dedups across WM/EM by `memory_id` keeping
-        the higher-similarity occurrence — without this, a memory that
+        clauses for both tiers), and ranks by cosine similarity.
+        Dedups across WM/EM by `memory_id` keeping the
+        higher-similarity occurrence — without this, a memory that
         exists in both tiers post-E3 would be double-counted in RRF
         and silently cap unique candidates below `top_k=20`.
         """
@@ -204,62 +205,134 @@ class PolyphonicRecallEngine:
             conn.row_factory = sqlite3.Row
             own_conn = True
         try:
-            results: List[RecallResult] = []
             now_iso = datetime.now().isoformat()
-
-            # --- WM tier ---
-            # Same WHERE clause shape as beam._wm_vec_search: skip
-            # invalidated / superseded rows so vector voice never
-            # surfaces ghost rows the linear path would have hidden.
-            try:
-                wm_rows = conn.execute(
-                    """
-                    SELECT wm.id AS memory_id, me.embedding_json
-                    FROM memory_embeddings me
-                    JOIN working_memory wm ON me.memory_id = wm.id
-                    WHERE wm.superseded_by IS NULL
-                      AND (wm.valid_until IS NULL OR wm.valid_until > ?)
-                    LIMIT ?
-                    """,
-                    (now_iso, vec_limit),
-                ).fetchall()
-            except sqlite3.OperationalError:
-                wm_rows = []
-
-            # --- EM tier ---
-            # EM also has superseded_by + valid_until columns and the
-            # linear path filters them out at row-fetch time
-            # (beam.py:_polyphonic_row_passes_filters). Filtering at
-            # SQL avoids spending cosine compute on rows that will be
-            # dropped anyway, and keeps the `LIMIT` budget pointed at
-            # valid candidates instead of starving them under a dense
-            # cluster of invalidated rows.
-            try:
-                em_rows = conn.execute(
-                    """
-                    SELECT em.id AS memory_id, me.embedding_json
-                    FROM memory_embeddings me
-                    JOIN episodic_memory em ON me.memory_id = em.id
-                    WHERE em.superseded_by IS NULL
-                      AND (em.valid_until IS NULL OR em.valid_until > ?)
-                    LIMIT ?
-                    """,
-                    (now_iso, vec_limit),
-                ).fetchall()
-            except sqlite3.OperationalError:
-                em_rows = []
-
-            # Dedup keyed by memory_id, keeping the higher similarity
-            # tier. Post-E3 consolidation an id can exist in both WM
-            # (original row, consolidated_at set) and EM (summary row);
-            # without dedup, the duplicate flows into _combine_voices
-            # where the second occurrence overwrites the first's
-            # voice-rank AND the for-loop double-counts the RRF
-            # contribution. /review (Claude adversarial C1) caught the
-            # silent rank corruption + sub-20 unique-candidate cap.
             by_id: Dict[str, RecallResult] = {}
-            for tier, rows in (("working", wm_rows), ("episodic", em_rows)):
-                for row in rows:
+
+            # --- EM tier — prefer sqlite-vec ANN, fall back to numpy ---
+            #
+            # The linear path uses sqlite-vec's `vec_episodes` virtual
+            # table via beam._vec_search for fast O(log N) ANN on EM
+            # when sqlite-vec is loaded. Without mirroring that path,
+            # the polyphonic engine would do a linear O(N) JSON-decode
+            # + cosine over every embedded EM row — strictly slower
+            # than the linear scorer at benchmark scale (~250K rows).
+            # That confounds the BEAM-recovery experiment's
+            # polyphonic-vs-linear latency comparison.
+            em_consumed_via_vec_episodes = False
+            try:
+                # Lazy import: avoids any module-load circular import
+                # with beam.py (which lazily imports
+                # PolyphonicRecallEngine inside _get_polyphonic_engine).
+                # Both directions are runtime-only.
+                from mnemosyne.core.beam import (
+                    _vec_available,
+                    _effective_vec_type,
+                )
+
+                if _vec_available(conn):
+                    vec_type = _effective_vec_type(conn)
+                    emb_json = json.dumps(
+                        query_embedding.astype(np.float32).tolist()
+                    )
+                    # sqlite-vec's MATCH planner needs LIMIT to be a
+                    # literal at planning time AND enforces a hard max
+                    # of 4096 (raises OperationalError: "k value in knn
+                    # query too large" above that). The fast path is a
+                    # top-K lookup, not a full scan, so we only need
+                    # enough candidates to survive post-fetch filter
+                    # dropouts (~50 buffer above the top-20 the engine
+                    # ultimately returns). vec_limit (which controls
+                    # the numpy fallback's full-scan budget under
+                    # BEAM_MODE) is irrelevant here.
+                    k_inline = 60
+                    if vec_type == "bit":
+                        rank_sql = (
+                            "SELECT rowid, distance FROM vec_episodes "
+                            "WHERE embedding MATCH vec_quantize_binary(?) "
+                            f"ORDER BY distance LIMIT {k_inline}"
+                        )
+                    elif vec_type == "int8":
+                        rank_sql = (
+                            "SELECT rowid, distance FROM vec_episodes "
+                            "WHERE embedding MATCH vec_quantize_int8(?, 'unit') "
+                            f"ORDER BY distance LIMIT {k_inline}"
+                        )
+                    else:
+                        rank_sql = (
+                            "SELECT rowid, distance FROM vec_episodes "
+                            "WHERE embedding MATCH ? "
+                            f"ORDER BY distance LIMIT {k_inline}"
+                        )
+                    vec_rows = conn.execute(rank_sql, (emb_json,)).fetchall()
+                    if vec_rows:
+                        rowid_to_dist = {
+                            r["rowid"]: r["distance"] for r in vec_rows
+                        }
+                        # Map rowid → memory_id and apply WHERE-clause
+                        # parity with the numpy EM fallback. JOIN
+                        # ensures rows orphaned from episodic_memory
+                        # (e.g., deleted post-vec_episodes-insert) drop
+                        # out cleanly.
+                        rowid_list = list(rowid_to_dist.keys())
+                        placeholders = ",".join("?" * len(rowid_list))
+                        em_rows_via_vec = conn.execute(
+                            f"""
+                            SELECT em.rowid AS rowid, em.id AS memory_id
+                            FROM episodic_memory em
+                            WHERE em.rowid IN ({placeholders})
+                              AND em.superseded_by IS NULL
+                              AND (em.valid_until IS NULL OR em.valid_until > ?)
+                            """,
+                            (*rowid_list, now_iso),
+                        ).fetchall()
+                        for row in em_rows_via_vec:
+                            mid = row["memory_id"]
+                            dist = rowid_to_dist.get(row["rowid"])
+                            if dist is None:
+                                continue
+                            # 1.0 - distance yields cosine-style
+                            # similarity for int8/bit (after the
+                            # quantize). Bit-Hamming returns a count;
+                            # we don't try to normalize across types
+                            # here — ordering within a single voice
+                            # call is preserved because vec_type
+                            # doesn't change mid-call. Downstream RRF
+                            # uses rank position, not score magnitude.
+                            sim = 1.0 - float(dist)
+                            existing = by_id.get(mid)
+                            if existing is None or sim > existing.score:
+                                by_id[mid] = RecallResult(
+                                    memory_id=mid,
+                                    score=sim,
+                                    voice="vector",
+                                    metadata={
+                                        "similarity": sim,
+                                        "embedding_tier": "episodic",
+                                        "backend": "sqlite-vec",
+                                    },
+                                )
+                        em_consumed_via_vec_episodes = True
+            except (ImportError, sqlite3.OperationalError, ValueError):
+                # Any failure in the fast path: fall through to numpy.
+                em_consumed_via_vec_episodes = False
+
+            # --- EM tier — numpy fallback (or when sqlite-vec absent) ---
+            if not em_consumed_via_vec_episodes:
+                try:
+                    em_rows = conn.execute(
+                        """
+                        SELECT em.id AS memory_id, me.embedding_json
+                        FROM memory_embeddings me
+                        JOIN episodic_memory em ON me.memory_id = em.id
+                        WHERE em.superseded_by IS NULL
+                          AND (em.valid_until IS NULL OR em.valid_until > ?)
+                        LIMIT ?
+                        """,
+                        (now_iso, vec_limit),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    em_rows = []
+                for row in em_rows:
                     try:
                         memory_id = row["memory_id"]
                         embedding_json = row["embedding_json"]
@@ -278,22 +351,60 @@ class PolyphonicRecallEngine:
                                 memory_id=memory_id,
                                 score=sim,
                                 voice="vector",
-                                # `embedding_tier` instead of `tier` —
-                                # avoid colliding with the `tier` key
-                                # _polyphonic_row_to_dict (beam.py)
-                                # writes meaning "working"/"episodic"
-                                # row-source label AND with
-                                # `degradation_tier` for episodic 1→2→3
-                                # content tiers.
                                 metadata={
                                     "similarity": sim,
-                                    "embedding_tier": tier,
+                                    "embedding_tier": "episodic",
+                                    "backend": "memory_embeddings",
                                 },
                             )
                     except (ValueError, TypeError, json.JSONDecodeError):
-                        # Defensive: bad / unparseable embedding_json
-                        # rows shouldn't break the voice.
                         continue
+
+            # --- WM tier — numpy cosine (no sqlite-vec WM index today) ---
+            # Same WHERE clause shape as beam._wm_vec_search: skip
+            # invalidated / superseded rows so vector voice never
+            # surfaces ghost rows the linear path would have hidden.
+            try:
+                wm_rows = conn.execute(
+                    """
+                    SELECT wm.id AS memory_id, me.embedding_json
+                    FROM memory_embeddings me
+                    JOIN working_memory wm ON me.memory_id = wm.id
+                    WHERE wm.superseded_by IS NULL
+                      AND (wm.valid_until IS NULL OR wm.valid_until > ?)
+                    LIMIT ?
+                    """,
+                    (now_iso, vec_limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                wm_rows = []
+            for row in wm_rows:
+                try:
+                    memory_id = row["memory_id"]
+                    embedding_json = row["embedding_json"]
+                    if not embedding_json:
+                        continue
+                    vec = np.asarray(
+                        json.loads(embedding_json), dtype=np.float32
+                    )
+                    vec_norm = float(np.linalg.norm(vec))
+                    if vec_norm == 0.0:
+                        continue
+                    sim = float(np.dot(query_unit, vec / vec_norm))
+                    existing = by_id.get(memory_id)
+                    if existing is None or sim > existing.score:
+                        by_id[memory_id] = RecallResult(
+                            memory_id=memory_id,
+                            score=sim,
+                            voice="vector",
+                            metadata={
+                                "similarity": sim,
+                                "embedding_tier": "working",
+                                "backend": "memory_embeddings",
+                            },
+                        )
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    continue
 
             results = sorted(
                 by_id.values(), key=lambda r: r.score, reverse=True

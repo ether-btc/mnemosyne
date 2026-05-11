@@ -566,6 +566,122 @@ class TestReviewHardening:
             "lazy and never reached on the linear path"
         )
 
+    def test_em_sqlite_vec_fast_path_metadata_backend(self, temp_db):
+        """When sqlite-vec is available + vec_episodes is populated,
+        EM results carry `backend="sqlite-vec"` in metadata. The fast
+        path uses the C-extension ANN index, matching the linear
+        scorer's _vec_search behavior — closes the EM-tier latency
+        gap that would otherwise confound polyphonic-vs-linear
+        comparisons at benchmark scale."""
+        from mnemosyne.core.beam import _vec_available, _vec_insert
+
+        beam = BeamMemory(session_id="e5a-vec-fast", db_path=temp_db)
+
+        # Skip cleanly if sqlite-vec isn't installed in the test
+        # environment. This guards against false test failures in
+        # numpy-only CI configurations.
+        if not _vec_available(beam.conn):
+            pytest.skip("sqlite-vec not available in this environment")
+
+        # Seed an EM row + its vec_episodes entry. The linear path
+        # writes both at consolidation; tests pre-stage them manually.
+        beam.conn.execute(
+            "INSERT INTO episodic_memory (id, content, source, timestamp, importance) "
+            "VALUES ('em-vec-fast', 'fast path target', 'test', datetime('now'), 0.5)"
+        )
+        em_rowid = beam.conn.execute(
+            "SELECT rowid FROM episodic_memory WHERE id = ?",
+            ("em-vec-fast",),
+        ).fetchone()[0]
+        target_vec = _unit_vec(seed=900)
+        _seed_embedding(beam.conn, "em-vec-fast", target_vec)
+        _vec_insert(beam.conn, em_rowid, target_vec.tolist())
+        beam.conn.commit()
+
+        engine = PolyphonicRecallEngine(db_path=temp_db, conn=beam.conn)
+        results = engine._vector_voice(target_vec)
+        em_results = [r for r in results if r.memory_id == "em-vec-fast"]
+        assert em_results, "EM target not surfaced via sqlite-vec path"
+        # Backend tag pins which retrieval primitive served the row —
+        # operators can confirm the fast path actually fired without
+        # running ad-hoc timing experiments.
+        assert em_results[0].metadata.get("backend") == "sqlite-vec", (
+            f"expected sqlite-vec backend tag, got "
+            f"{em_results[0].metadata.get('backend')!r}"
+        )
+        assert em_results[0].metadata.get("embedding_tier") == "episodic"
+
+    def test_em_falls_back_to_numpy_when_sqlite_vec_absent(
+        self, temp_db, monkeypatch
+    ):
+        """When sqlite-vec is unavailable (or vec_episodes is empty),
+        the EM path falls through cleanly to the numpy fallback.
+        Result metadata carries `backend="memory_embeddings"`."""
+        beam = BeamMemory(session_id="e5a-vec-fb", db_path=temp_db)
+        beam.conn.execute(
+            "INSERT INTO episodic_memory (id, content, source, timestamp, importance) "
+            "VALUES ('em-fb', 'fallback target', 'test', datetime('now'), 0.5)"
+        )
+        target_vec = _unit_vec(seed=901)
+        _seed_embedding(beam.conn, "em-fb", target_vec)
+        # Intentionally do NOT insert into vec_episodes so the fast
+        # path returns no rowids and we exercise the numpy fallback.
+
+        # Force the fast-path check to report unavailable, so we
+        # don't depend on whether sqlite-vec is installed in CI.
+        import mnemosyne.core.beam as beam_mod
+        monkeypatch.setattr(
+            beam_mod, "_vec_available", lambda conn: False
+        )
+
+        engine = PolyphonicRecallEngine(db_path=temp_db, conn=beam.conn)
+        results = engine._vector_voice(target_vec)
+        em_results = [r for r in results if r.memory_id == "em-fb"]
+        assert em_results, "EM target not surfaced via numpy fallback"
+        assert em_results[0].metadata.get("backend") == "memory_embeddings"
+        assert em_results[0].metadata.get("embedding_tier") == "episodic"
+
+    def test_em_sqlite_vec_filter_parity_superseded(self, temp_db):
+        """The sqlite-vec fast path joins to episodic_memory by rowid
+        AND applies the same superseded_by/valid_until filters as the
+        numpy fallback — so doomed rows that vec_episodes still has
+        an index entry for don't slip into results."""
+        from mnemosyne.core.beam import _vec_available, _vec_insert
+
+        beam = BeamMemory(session_id="e5a-vec-filter", db_path=temp_db)
+        if not _vec_available(beam.conn):
+            pytest.skip("sqlite-vec not available in this environment")
+
+        # Insert a superseded EM row + its vec_episodes entry. The
+        # fast-path SQL filter must drop it even though vec_episodes
+        # has no superseded_by column of its own.
+        beam.conn.execute(
+            "INSERT INTO episodic_memory (id, content, source, timestamp, "
+            "importance, superseded_by) "
+            "VALUES ('em-sup-vec', 'doomed', 'test', datetime('now'), 0.5, 'em-live')"
+        )
+        beam.conn.execute(
+            "INSERT INTO episodic_memory (id, content, source, timestamp, importance) "
+            "VALUES ('em-live-vec', 'fresh', 'test', datetime('now'), 0.5)"
+        )
+        for memory_id in ("em-sup-vec", "em-live-vec"):
+            rowid = beam.conn.execute(
+                "SELECT rowid FROM episodic_memory WHERE id = ?",
+                (memory_id,),
+            ).fetchone()[0]
+            v = _unit_vec(seed=902)
+            _seed_embedding(beam.conn, memory_id, v)
+            _vec_insert(beam.conn, rowid, v.tolist())
+        beam.conn.commit()
+
+        engine = PolyphonicRecallEngine(db_path=temp_db, conn=beam.conn)
+        results = engine._vector_voice(_unit_vec(seed=902))
+        ids = {r.memory_id for r in results}
+        assert "em-sup-vec" not in ids, (
+            "sqlite-vec fast path leaked a superseded EM row"
+        )
+        assert "em-live-vec" in ids
+
     def test_module_import_works_when_numpy_absent(self):
         """`from __future__ import annotations` should let
         polyphonic_recall.py import even if numpy fails to load —
