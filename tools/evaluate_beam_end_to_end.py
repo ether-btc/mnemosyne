@@ -56,22 +56,21 @@ from mnemosyne.core.beam import BeamMemory, init_beam, _embeddings, _vec_availab
 # --- Config ---
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 if not OPENROUTER_API_KEY:
-    # Try to load from file
-    _key_file = Path("/tmp/openrouter_key.txt")
-    if _key_file.exists():
-        with open(_key_file) as f:
-            _content = f.read().strip()
-        if "export" in _content:
-            OPENROUTER_API_KEY = _content.split("=", 1)[1].strip().strip('"').strip("'")
-        else:
-            OPENROUTER_API_KEY = _content
+    # Try to load from file — check opencode first, then openrouter
+    for _kf in ["/tmp/opencode_key.txt", "/tmp/openrouter_key.txt"]:
+        _key_file = Path(_kf)
+        if _key_file.exists():
+            with open(_key_file) as f:
+                _content = f.read().strip()
+            if "export" in _content:
+                OPENROUTER_API_KEY = _content.split("=", 1)[1].strip().strip('"').strip("'")
+            else:
+                OPENROUTER_API_KEY = _content
+            break
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
-FALLBACK_MODELS = [
-    "google/gemini-2.5-flash-lite:free",
-    "google/gemma-4-26b-a4b-it:free",  
-]
+DEFAULT_MODEL = "deepseek-v4-pro"
+FALLBACK_MODELS = []  # Disabled — fallback cascade burned $30 in credits
 DEFAULT_TOP_K = 10  # Memories to retrieve per question
 MAX_MEMORY_CONTEXT_CHARS = 8000  # Max chars of retrieved context to send to LLM
 BENCHMARK_QUERIES_PER_CONV = 50  # Max probing questions per conversation
@@ -146,24 +145,25 @@ class LLMClient:
         return f"[LLM_ERROR: all models failed. Last: {last_error}]"
 
     def _call_api(self, model: str, messages: list, temperature: float, max_tokens: int) -> str:
-        """Single API call via urllib."""
+        """Single API call via requests (urllib blocked by Cloudflare on some providers)."""
         import json as _json
+        import requests as _requests
         url = f"{self.base_url}/chat/completions"
-        payload = _json.dumps({
+        payload = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-        }).encode()
+        }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://mnemosyne.site",
             "X-Title": "Mnemosyne Benchmark",
         }
-        req = urllib.request.Request(url, data=payload, headers=headers)
-        resp = urllib.request.urlopen(req, timeout=15)
-        data = _json.loads(resp.read())
+        resp = _requests.post(url, json=payload, headers=headers, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
         self.call_count += 1
         return data["choices"][0]["message"]["content"]
 
@@ -819,6 +819,84 @@ def _build_tr_timeline_prompt(timeline: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _compute_tr_python(question: str, timeline: list[dict]) -> str | None:
+    """Compute TR answer in pure Python (date math, no LLM). Returns answer string or None."""
+    import re as _re
+    from datetime import timedelta as _td
+    
+    q_lower = question.lower()
+    
+    # Detect question type: "how many days between X and Y"
+    # Extract event keywords from question
+    event_keywords = []
+    # Look for "end of first sprint", "start of second sprint" type phrases
+    phrases = _re.findall(r'(?:end|start|beginning|completion|finish|launch|release|deploy|merge|push|commit|sprint|milestone|phase|wave|beta|alpha|MVP|demo|presentation|meeting|call|review|audit|test|benchmark)[a-z]*\s+(?:of\s+)?(?:the\s+)?(?:my\s+)?(?:first|second|third|\d+(?:st|nd|rd|th)?)?\s*[a-z]+(?:\s+[a-z]+){0,3}', q_lower)
+    event_keywords.extend(phrases)
+    
+    # Also try simpler: extract noun phrases from question
+    q_words = q_lower.replace('?', '').split()
+    
+    # Score each timeline entry against the question
+    scored = []
+    for t in timeline:
+        event = t['event_text'].lower()
+        score = 0
+        # Direct substring match bonus
+        for phrase in event_keywords:
+            if phrase in event or any(w in event for w in phrase.split() if len(w) > 3):
+                score += 3
+        # Word overlap
+        for w in q_words:
+            if len(w) > 3 and w in event:
+                score += 1
+        # Date proximity bonus (prefer dates with event context)
+        if len(t['event_text']) > 20:
+            score += 2
+        scored.append((score, t))
+    
+    scored.sort(key=lambda x: x[0], reverse=True)
+    
+    # Try to find two distinct events
+    if len(scored) >= 2 and scored[0][0] > 0 and scored[1][0] > 0:
+        t1 = scored[0][1]
+        t2 = scored[1][1]
+        d1 = t1['date_obj']
+        d2 = t2['date_obj']
+        diff = abs((d2 - d1).days)
+        
+        # Determine which is earlier/later based on question
+        if 'between' in q_lower:
+            evt_a = t1['date_str'] if d1 <= d2 else t2['date_str']
+            evt_b = t2['date_str'] if d1 <= d2 else t1['date_str']
+            d_a = d1 if d1 <= d2 else d2
+            d_b = d2 if d1 <= d2 else d1
+        else:
+            evt_a, evt_b = t1['date_str'], t2['date_str']
+            d_a, d_b = d1, d2
+            diff = abs((d_b - d_a).days)
+        
+        answer = (
+            f"Between {evt_a} ({d_a.strftime('%B %d, %Y')}) and "
+            f"{evt_b} ({d_b.strftime('%B %d, %Y')}), "
+            f"there are {diff} days."
+        )
+        return answer
+    
+    # Fallback: just take the two most relevant dates by word overlap
+    if len(scored) >= 2:
+        best = [t for s, t in scored if s > 0][:2]
+        if len(best) >= 2:
+            d1, d2 = best[0]['date_obj'], best[1]['date_obj']
+            diff = abs((d2 - d1).days)
+            return (
+                f"Based on the conversation timeline, the time between "
+                f"{best[0]['date_str']} and {best[1]['date_str']} is {diff} days."
+            )
+    
+    return None  # Can't compute, let LLM handle it
+
+
+
 def _compute_tr_answer(question: str, timeline: list[dict]) -> str | None:
     """Compute temporal reasoning answer from conversation dates. Returns None if can't compute."""
     if not timeline or len(timeline) < 2:
@@ -935,25 +1013,24 @@ def answer_with_memory(llm: LLMClient, beam: BeamMemory, question: str,
     
     # ---- PER-ABILITY BYPASSES (zero-LLM or augmented) ----
     
-    # TR (Temporal Reasoning): compute answer in Python from extracted dates
+    # TR (Temporal Reasoning): compute answer from extracted dates
     if ability == 'TR' and conversation_messages:
         timeline = _extract_timeline_from_conversation(conversation_messages)
         print(f"    [TR-bypass] extracted {len(timeline)} dates from {len(conversation_messages)} msgs")
-        if timeline:
+        if timeline and len(timeline) >= 2:
             tr_prompt = _compute_tr_answer(question, timeline)
             if tr_prompt:
-                # Send the timeline+question prompt to the LLM for computation
                 messages = [
-                    {"role": "system", "content": "You are a precise date calculator. Use ONLY the dates from the provided timeline."},
+                    {"role": "system", "content": "You are a precise date calculator. Use ONLY the dates from the provided timeline. Output ONLY the answer, no explanation."},
                     {"role": "user", "content": tr_prompt},
                 ]
-                answer = llm.chat(messages, temperature=0.0, max_tokens=512)
+                answer = llm.chat(messages, temperature=0.0, max_tokens=4096)
                 print(f"    [TR-bypass] LLM answer: {answer[:150]}")
                 return answer
             else:
-                print(f"    [TR-bypass] _compute_tr_answer returned None (timeline too short)")
+                print(f"    [TR-bypass] _compute_tr_answer returned None")
         else:
-            print(f"    [TR-bypass] no timeline extracted")
+            print(f"    [TR-bypass] no timeline extracted or too few dates")
     
     # CR (Contradiction Resolution): detect contradictory statements
     _cr_context = None
