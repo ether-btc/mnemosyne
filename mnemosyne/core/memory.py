@@ -363,6 +363,28 @@ class Mnemosyne:
         beam_ep = self.beam.get_episodic_stats(author_id=author_id, author_type=author_type,
                                                 channel_id=channel_id)
 
+        # Triples count — table is created lazily by TripleStore.init_triples;
+        # if it does not exist yet (no triple has ever been written), report 0.
+        # Narrow the suppression to the missing-table case so DB locks, I/O
+        # errors, and corruption are not silently turned into "0 triples".
+        triple_total = 0
+        try:
+            cursor.execute("SELECT COUNT(*) FROM triples")
+            triple_total = cursor.fetchone()[0]
+        except sqlite3.OperationalError as e:
+            if "no such table" not in str(e).lower():
+                raise
+
+        # Bank list — scoped to the same data dir as this Mnemosyne instance so
+        # a per-bank or per-tmp-dir caller does not get bank names from the
+        # default ~/.hermes tree. Banks live at <data_dir>/banks/, where
+        # data_dir is the parent of self.db_path.
+        try:
+            from mnemosyne.core.banks import BankManager
+            banks = BankManager(data_dir=Path(self.db_path).parent).list_banks()
+        except Exception:
+            banks = ["default"]
+
         return {
             "total_memories": total_legacy,
             "total_sessions": sessions,
@@ -370,9 +392,11 @@ class Mnemosyne:
             "last_memory": last[0] if last else None,
             "database": str(self.db_path),
             "mode": "beam",
+            "banks": banks,
             "beam": {
                 "working_memory": beam_wm,
-                "episodic_memory": beam_ep
+                "episodic_memory": beam_ep,
+                "triples": {"total": triple_total},
             }
         }
 
