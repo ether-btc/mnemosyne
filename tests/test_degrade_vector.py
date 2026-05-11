@@ -32,19 +32,22 @@ def temp_db():
 
 def _content_to_vec(text: str, dim: int = 384) -> np.ndarray:
     """Deterministic content-encoding 'embedding'. Different content
-    produces different vectors. Two scalars at the front carry length
-    and first-char info so an assertion can detect change."""
-    v = np.zeros(dim, dtype=np.float32)
-    if not text:
-        return v
-    v[0] = float(len(text))
-    v[1] = float(ord(text[0]))
-    # Light hash spread so identical-length, identical-first-char strings
-    # still produce different vectors (covers truncation that preserves
-    # both signals).
-    h = hash(text) & 0xFFFF
-    v[2] = float(h % 256)
-    v[3] = float((h >> 8) % 256)
+    produces different vectors. Spreads signal across many dimensions
+    so binarization (sign-based) and other compression schemes can
+    detect content changes.
+
+    Uses a seeded RNG so different texts produce observably different
+    vectors while identical texts remain identical."""
+    rng = np.random.RandomState(hash(text) & 0x7FFFFFFF)
+    # Base signal: spread text-derived hash across full dimension range
+    v = rng.randn(dim).astype(np.float32) * 0.1
+    # Anchor dimensions with stronger content-specific signal
+    if text:
+        v[0] = float(len(text)) * 0.01
+        v[1] = float(ord(text[0])) * 0.01
+        h = hash(text) & 0xFFFF
+        v[2] = float(h % 256) * 0.01
+        v[3] = float((h >> 8) % 256) * 0.01
     return v
 
 
