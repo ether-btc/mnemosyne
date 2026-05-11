@@ -369,21 +369,39 @@ The checkpoint system handles these edge cases automatically. When any are detec
 
 ### From May 11, 2026 Audit:
 
-1. **Never use sed with pipe characters in search strings.** The `|` in markdown tables conflicts with sed's `|` delimiter. Use Python's `str.replace()` or the `patch` tool instead.
+#### Tooling Pain Points
 
-2. **The patch tool is the safest edit method.** It does fuzzy matching and won't corrupt files. The `sed` command can silently fail or corrupt files when special characters are involved.
+1. **Never use sed with special characters in search strings.** The `|` in markdown tables conflicts with sed's `|` delimiter. Parentheses in file paths like `src/app/(docs)/` break shell parsing. **Solution:** Use Python's `str.replace()` for multi-file batch edits, or the `patch` tool for single-file targeted edits. `patch` does fuzzy matching and handles special characters natively.
 
-3. **Mirror files are a trap.** `content/` and `src/app/(docs)/` are separate copies. If you only fix one, the other remains stale. Always sync both. Better yet: fix the build system to use one source of truth.
+2. **The patch tool is the safest edit method.** It does fuzzy matching (9 strategies) and won't corrupt files. `sed` can silently fail or corrupt files when special characters, newlines, or unicode are involved. **Rule:** Always reach for `patch` first, Python `str.replace` second, `sed` never.
 
-4. **The configuration page was the worst rot.** It had zero correspondence with actual code. This happened because config systems are the hardest to keep in sync — they have no type checking and vary across environments.
+3. **Mirror files are a trap.** `content/` and `src/app/(docs)/` are separate copies with no build-time sync. If you fix one and not the other, the live site shows stale content. 4 mirrors were found drifted during this audit. **Solution:** Always sync mirrors after content edits. Checkpoint now detects mirror drift automatically.
 
-5. **Subagent timeouts on large scans.** When auditing 67 pages, a single subagent timed out at 600s. Break the work into chunks: one subagent for codebase mapping, separate subagents for page groups.
+#### Process Pain Points
 
-6. **Don't assume documentation is accurate.** Some pages were clearly generated from assumptions. Always verify against source code, not other documentation.
+4. **The configuration page was the worst rot.** It had zero correspondence with actual code — fictional env vars (`MNEMOSYNE_DB_PATH`), wrong class name (`Memory`), wrong config file (`mnemosyne.yaml`), wrong embedding model (`text-embedding-3-small`). **Root cause:** Config systems have no type checking and vary across environments. They're the hardest to keep in sync. **Solution:** The audit now prioritizes config pages. Verify every env var name against `grep os.getenv` in source.
 
-7. **subagent `read_file` can drop data.** When reading files with `read_file` and rewriting with `write_file`, frontmatter/export blocks can be lost. Use the `patch` tool for all edits, or verify content integrity after writes.
+5. **Subagent timeouts on large scans.** A single subagent cataloging 67 pages timed out at 600 seconds (18 API calls). **Solution:** Break work into chunks — one subagent for codebase mapping, separate subagents for page groups of ~15-20 pages each. 3 concurrent max.
 
-8. **The checkpoint file eliminates redundant work.** Without it, every audit is a full scan of 67+ pages. With it, only pages that changed get re-audited. This is the single biggest time/token saver in the workflow.
+6. **Don't assume documentation is accurate.** Some pages (configuration, system design) were clearly generated from assumptions, not from reading source code. **Solution:** Always verify claims against source code, not against other documentation pages. Trust `grep` over prose.
+
+7. **subagent `read_file` can drop data.** When subagents read files with `read_file` and rewrite with `write_file`/`open()`, frontmatter export blocks and metadata can be lost. **Solution:** Use the `patch` tool for all edits. For full rewrites, verify content integrity by checking line counts before and after.
+
+8. **The checkpoint file eliminates redundant work.** Without it, every audit is a full scan of 67+ pages (~2 hours, ~$3 in tokens). With it, only changed pages get re-audited. **Solution:** The `.audit-state.json` checkpoint stores per-page git blob hashes. Phase 0 diffs and skips unchanged pages.
+
+9. **Shell escaping in execute_code is fragile.** Using `terminal()` from inside `execute_code` to run sed commands with dynamic strings caused repeated failures from unescaped characters. **Solution:** When inside `execute_code`, use Python's native `open()/read()/write()` for file operations. Reserve `terminal()` for git commands and system calls.
+
+10. **Gitignored directories block saving artifacts.** The `.planning/` directory was gitignored in mnemosyne-docs, so the audit report couldn't be committed there. **Solution:** Save reports to the main mnemosyne repo's `docs/` directory, which is tracked.
+
+11. **Version drift across comparison pages.** All 8 comparison pages referenced v2.3.0 while codebase was v2.5.0. These are high-visibility marketing pages. **Solution:** Comparison pages are now part of the critical audit list, checked every cycle.
+
+12. **The docs-mapping subagent timed out.** 18 API calls across 67 pages in 600s was too much. **Solution:** For Phase 2 (page cataloging), split into 4 subagents by section (API pages, Architecture pages, Comparison pages, Everything else). Each gets ~15-20 pages.
+
+#### Fixes-Introducing-Bugs Pain Points
+
+13. **sed corrupted comparison files.** Running sed on files with pipe characters in table rows produced massive diffs (1355 insertions, 1361 deletions) from line ending changes. Required `git checkout` to restore and redo with `patch`. **Solution:** Never use sed for markdown files. Use `patch` tool exclusively.
+
+14. **Mirror drift went undetected for 4 files.** During the main audit pass, `content/` pages were fixed but their `src/app/(docs)/` mirrors weren't synced. Caught during edge case hardening. **Solution:** The mirror sync step is now mandatory between Phase 4 and Phase 5.
 
 ---
 
