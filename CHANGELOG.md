@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Simple Versioning](https://github.com/AxDSan/mnemosyne) (MAJOR.MINOR).
 
+## [Unreleased]
+
+### Changed
+
+**E3 — Additive sleep (kill summarize-and-delete)**
+- `BeamMemory.sleep()` no longer DELETEs source `working_memory` rows after writing the consolidated summary to `episodic_memory`. Originals are marked with a new `consolidated_at` timestamp and remain queryable through recall.
+- Maintainer decision (2026-05-10): "Originals stay. Summaries become enrichment on top. Storage cost is fine — it's the lowest-cost tradeoff." Unblocks experiment Arm B (ADD-only ingest) of the BEAM-recovery experiment.
+- No feature flag — additive is the only mode going forward.
+
+### Added
+
+**E3 schema migration**
+- `working_memory.consolidated_at TEXT` column (nullable). Added idempotently in `init_beam()` for existing databases. NULL means "not yet processed by sleep"; sleep filters on `consolidated_at IS NULL` so each row is consolidated at most once.
+
+### Migration notes
+
+- Existing databases pick up the new column automatically on the next `BeamMemory` construction. No manual step required.
+- Pre-E3 databases have empty `working_memory` for any session that has been through sleep (because pre-E3 sleep deleted those rows). That's the expected pre-migration state — nothing to backfill; future sleep cycles populate `consolidated_at` going forward.
+- The new column name `consolidated_at` is intentionally aligned with the existing `metadata_json["consolidated_at"]` key on `episodic_memory` (introduced in 2.5 by the heal-quality pipeline). Same concept, different angle — episodic's key records when a summary row was finalized; working_memory's column records when the source row was marked done by sleep.
+
 ## [2.5] — 2026-05-10
 
 ### Added

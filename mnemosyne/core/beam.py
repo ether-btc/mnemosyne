@@ -263,6 +263,17 @@ def init_beam(db_path: Path = None):
     except sqlite3.OperationalError:
         pass
 
+    # --- E3 additive sleep migration ---
+    # Working memories that sleep() has consolidated into an episodic
+    # summary get this timestamp set. Pre-E3 sleep() DELETEd those rows;
+    # post-E3 the originals remain so they're still recallable, and
+    # consolidated_at IS NULL is the predicate sleep uses to find
+    # not-yet-consolidated rows.
+    try:
+        cursor.execute("ALTER TABLE working_memory ADD COLUMN consolidated_at TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     # --- SCRATCHPAD ---
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS scratchpad (
@@ -2752,6 +2763,11 @@ class BeamMemory:
         compression if the model is missing or inference fails.
         Returns summary of what was done.
 
+        Post-E3 (additive): the source working_memory rows are NOT
+        deleted. Instead they're marked with consolidated_at = NOW
+        so the next sleep cycle skips them. Originals remain
+        recallable alongside the new episodic summary.
+
         Note: this method intentionally remains session-scoped. Use
         sleep_all_sessions() for maintenance that consolidates eligible old
         working memories across inactive sessions.
@@ -2768,10 +2784,14 @@ class BeamMemory:
         # collects them as a NULL group, maps to "default" for the loop,
         # then beam.sleep("default") would query session_id = 'default'
         # and miss the NULL rows. See Codex /review note for C9.
+        # consolidated_at IS NULL filters out rows already processed by
+        # a prior sleep so we don't re-summarize the same originals.
         cursor.execute(f"""
             SELECT id, content, source, timestamp, importance, metadata_json, scope, valid_until
             FROM working_memory
-            WHERE COALESCE(session_id, 'default') = ? AND timestamp < ?
+            WHERE COALESCE(session_id, 'default') = ?
+              AND timestamp < ?
+              AND consolidated_at IS NULL
             ORDER BY timestamp ASC
             LIMIT {SLEEP_BATCH_SIZE}
         """, (self.session_id, cutoff))
@@ -2852,8 +2872,17 @@ class BeamMemory:
                         "llm_used": llm_succeeded
                     }
                 )
+                # E3: mark originals as consolidated instead of deleting
+                # them. Sleep's query filter (consolidated_at IS NULL)
+                # excludes them from the next cycle so we don't produce
+                # duplicate summaries on subsequent runs.
                 placeholders = ",".join("?" * len(ids))
-                cursor.execute(f"DELETE FROM working_memory WHERE id IN ({placeholders})", ids)
+                now_iso = datetime.now().isoformat()
+                cursor.execute(
+                    f"UPDATE working_memory SET consolidated_at = ? "
+                    f"WHERE id IN ({placeholders})",
+                    (now_iso, *ids),
+                )
                 self.conn.commit()
             consolidated_ids.extend(ids)
             summaries_created += 1
@@ -2889,10 +2918,13 @@ class BeamMemory:
         """
         cursor = self.conn.cursor()
         cutoff = (datetime.now() - timedelta(hours=WORKING_MEMORY_TTL_HOURS // 2)).isoformat()
+        # Mirror sleep()'s filter: only count rows that haven't been
+        # consolidated yet, so we don't redo work on every maintenance pass.
         cursor.execute("""
             SELECT session_id, COUNT(*) AS eligible
             FROM working_memory
             WHERE timestamp < ?
+              AND consolidated_at IS NULL
             GROUP BY session_id
             ORDER BY MIN(timestamp) ASC
         """, (cutoff,))
