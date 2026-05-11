@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Simple Versioning](https://github.com/AxDSan/mnemosyne) (MAJOR.MINOR).
 
+## [Unreleased]
+
+### Added
+
+**C4 — Recall path provenance diagnostics**
+- New `mnemosyne.core.recall_diagnostics` module exposes a process-global `RecallDiagnostics` instance. Pre-C4 `BeamMemory.recall` had silent fallback layers per tier: WM (FTS + vec wrapped in `try/except`, falling through to substring scoring on recent items) and EM (vec + FTS, falling through to substring scoring on the most-recent 500 episodic rows when both produced nothing). Operators saw results but had no signal which path produced them — FTS-ranked good signal looked identical to substring-on-recent weak signal.
+- `BeamMemory.recall()` now instruments each decision point: WM FTS hit count, WM vec-only hit count, WM fallback fired (boolean per call + scanned-row count), EM FTS hit count, EM vec-only hit count, EM fallback fired + scanned count. Plus an outer `record_call(truly_empty=...)` that distinguishes "fallback fired but returned weak hits" from "literally no results from any path."
+- New module-level helpers: `get_recall_diagnostics()` returns a JSON-serializable snapshot; `reset_recall_diagnostics()` zeroes the counters (useful for tests + operators starting a fresh measurement window before a benchmark run).
+- Snapshot exposes `totals.wm_fallback_rate` and `totals.em_fallback_rate` — the fraction of calls where the fallback layer fired. Operators monitoring a BEAM experiment alarm if these rise above an expected baseline (corpus + query distribution dependent).
+
+### Notes for callers
+
+- Diagnostics are **read-only signal** — they never alter recall behavior. The fallback still fires when FTS/vec produce nothing (legitimate no-match case); diagnostics expose WHEN and HOW OFTEN.
+- Thread-safe: single `threading.Lock` gates all mutations.
+- API: `from mnemosyne.core.recall_diagnostics import get_recall_diagnostics, reset_recall_diagnostics, get_diagnostics, RecallDiagnostics`.
+- **For the BEAM experiment**: after running an arm, snapshot the diagnostics. If `wm_fallback_rate` or `em_fallback_rate` is high (>0.2 ish), recall scores in that arm are dominated by the weak-signal substring path. Arm-vs-arm comparisons need similar rates across arms to be interpretable.
+
 ## [2.5] — 2026-05-10
 
 ### Added
