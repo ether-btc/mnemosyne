@@ -852,7 +852,13 @@ def _fts_search(conn: sqlite3.Connection, query: str, k: int = 20) -> List[Dict]
         content_words = [w for w in safe_query.split() if w.lower() not in _stop_words and len(w) > 1]
         if not content_words:
             content_words = [w for w in safe_query.split() if len(w) > 1]
-        fts_query = " OR ".join(content_words)
+        # BEAM mode: if stop-word filtering leaves only 1 word, include ALL original
+        # non-stop-word tokens (not just content_words) to broaden recall
+        original_words = [w for w in query.split() if w.lower() not in _stop_words and len(w) > 1]
+        if len(content_words) <= 1 and len(original_words) > 1:
+            fts_query = " OR ".join(original_words)
+        else:
+            fts_query = " OR ".join(content_words)
         if not fts_query:
             return []
     else:
@@ -1855,6 +1861,15 @@ class BeamMemory:
                         "fact_match": True
                     })
 
+        # ---- Pre-compute query binary vector (Phase 5 binary voice) ----
+        query_bv = None
+        query_emb_for_bv = None
+        if _embeddings.available() and _mib is not None:
+            emb_result = _embeddings.embed_query(query)
+            if emb_result is not None:
+                query_emb_for_bv = emb_result
+                query_bv = _mib(emb_result)
+
         # ---- Episodic memory (vec + FTS5 hybrid) ----
         vec_results = {}
         max_distance = 0.0
@@ -1953,8 +1968,10 @@ class BeamMemory:
             # Phase 5: Graph + fact voices (polyphonic recall bonus)
             graph_bonus = 0.0
             fact_bonus = 0.0
+            binary_bonus = 0.0
             memory_id = row["id"]
             content_lower = row["content"].lower()
+            bv = row["binary_vector"]
             if self.episodic_graph is not None:
                 try:
                     # Count graph edges for this memory (well-connected = more relevant)
@@ -1968,23 +1985,26 @@ class BeamMemory:
                     pass
             if self.episodic_graph is not None:
                 try:
-                    # Check if facts from graph match query terms
+                    # Check if facts from graph match query terms via set-overlap
                     cursor2 = self.conn.cursor()
                     cursor2.execute(
                         "SELECT subject, predicate, object FROM facts WHERE source_msg_id = ?",
                         (memory_id,))
-                    query_lower_words = [w for w in query.lower().split() if len(w) > 2]
+                    query_word_set = {w for w in query.lower().split() if len(w) > 2}
                     match_count = 0
                     for frow in cursor2.fetchall():
-                        fact_text = f"{frow['subject']} {frow['predicate']} {frow['object']}".lower()
-                        if any(w in fact_text for w in query_lower_words):
+                        fact_tokens = {t.lower() for t in (f"{frow['subject']} {frow['predicate']} {frow['object']}").split() if len(t) > 2}
+                        if query_word_set & fact_tokens:
                             match_count += 1
                     fact_bonus = min(match_count * 0.04, 0.1)
                 except Exception:
                     pass
+            # Binary vector voice (Phase 5): disabled — ITS scores cluster too tightly (0.53-0.63)
+            # for discriminative ranking at small top-k. Re-enable once batched ANN index is wired.
+            binary_bonus = 0.0
 
             score = base_score * (0.7 + 0.3 * decay)
-            score += graph_bonus + fact_bonus  # Phase 5: polyphonic bonuses
+            score += graph_bonus + fact_bonus + binary_bonus  # Phase 5: polyphonic bonuses
             # Temporal boost (Phase 3)
             if temporal_weight > 0.0:
                 t_boost = _temporal_boost(row["timestamp"], parsed_query_time, th_halflife)
@@ -2042,9 +2062,10 @@ class BeamMemory:
                     base_score = relevance * kw_share + row["importance"] * iw
                     score = base_score * (rc_share + (1.0 - rc_share) * decay)
 
-                    # Phase 5: Graph + fact bonuses for fallback
+                    # Phase 5: Graph + fact + binary bonuses for fallback
                     graph_b = 0.0
                     fact_b = 0.0
+                    binary_b = 0.0
                     try:
                         cursor2 = self.conn.cursor()
                         cursor2.execute(
@@ -2058,16 +2079,18 @@ class BeamMemory:
                         cursor2.execute(
                             "SELECT subject, predicate, object FROM facts WHERE source_msg_id = ?",
                             (row["id"],))
-                        qlw = [w for w in query.lower().split() if len(w) > 2]
+                        q_word_set = {w for w in query.lower().split() if len(w) > 2}
                         mc = 0
                         for frow in cursor2.fetchall():
-                            ft = f"{frow['subject']} {frow['predicate']} {frow['object']}".lower()
-                            if any(w in ft for w in qlw):
+                            f_tokens = {t.lower() for t in (f"{frow['subject']} {frow['predicate']} {frow['object']}").split() if len(t) > 2}
+                            if q_word_set & f_tokens:
                                 mc += 1
                         fact_b = min(mc * 0.04, 0.1)
                     except Exception:
                         pass
-                    score += graph_b + fact_b
+                    # Binary vector bonus disabled (same reason as main path — ITS clustering)
+                    binary_b = 0.0
+                    score += graph_b + fact_b + binary_b
                     # Temporal boost (Phase 3)
                     if temporal_weight > 0.0:
                         t_boost = _temporal_boost(row["timestamp"], parsed_query_time, th_halflife)
