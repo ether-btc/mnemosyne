@@ -1142,8 +1142,8 @@ def answer_with_memory(llm: LLMClient, beam: BeamMemory, question: str,
     # from raw `FULL CONVERSATION:` regardless of arm).
     if _full_context and _pure_recall:
         _full_context = False
-    # DEBUG
-    if os.environ.get("FULL_CONTEXT_MODE"):
+    # DEBUG (use _env_truthy so `FULL_CONTEXT_MODE=0` doesn't fire the print)
+    if _env_truthy("FULL_CONTEXT_MODE"):
         print(f"    [DEBUG full-context] env={_full_context}, msgs={bool(conversation_messages)}, count={len(conversation_messages) if conversation_messages else 0} (pure_recall={_pure_recall})")
     if _full_context and conversation_messages:
         # ---- Phase 1: Try context→value matching for factual questions ----
