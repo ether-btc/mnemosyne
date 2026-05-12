@@ -200,8 +200,15 @@ def _on_session_start(session_id, model, platform, **kwargs):
             importance=0.99,
             source="system_override"
         )
-    except:
-        pass
+    except Exception as e:
+        # C27: surface session-start failures at WARNING. Pre-fix this was a
+        # bare except: pass that hid every kind of init issue (DB locked,
+        # missing schema column, permissions, embedding failure, etc.).
+        import logging
+        logging.getLogger(__name__).warning(
+            "Mnemosyne session-start meta-instruction inject failed "
+            "(session=%s): %s", session_id, e,
+        )
 
 
 def _compress_memory(content: str) -> str:
@@ -331,5 +338,13 @@ def _on_post_tool_call(tool_name, args, result, **kwargs):
                 source="tool_execution",
                 importance=0.1
             )
-    except:
-        pass  # Fail silently
+    except Exception as e:
+        # C27: log at DEBUG rather than swallow. This hook is opt-in via
+        # MNEMOSYNE_LOG_TOOLS=1, so the operator already wants the data --
+        # if it's failing silently the opt-in is broken without their
+        # knowledge.
+        import logging
+        logging.getLogger(__name__).debug(
+            "Mnemosyne post-tool-call hook failed for tool=%s: %s",
+            tool_name, e,
+        )
