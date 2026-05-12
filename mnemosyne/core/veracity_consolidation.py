@@ -180,6 +180,70 @@ def clamp_veracity(raw, *, context: str = "veracity") -> str:
     return "unknown"
 
 
+def aggregate_veracity(source_veracities) -> str:
+    """E4.a.1: aggregate per-source veracity labels into one summary label.
+
+    Used at consolidation time when a `sleep()` summarizes N working_memory
+    rows into one episodic_memory row. Pre-fix the episodic INSERT didn't
+    set the veracity column, so it defaulted to 'unknown' (0.8 multiplier)
+    even when every source row was 'stated' (1.0). That destroys the
+    trust signal `remember_batch` had populated per-row.
+
+    Aggregation rule:
+        - Empty / no-valid-labels input → 'unknown' (matches schema default)
+        - 'unknown' is treated as low-priority: only counted when NO
+          non-'unknown' canonical labels are present in the source set.
+          Rationale: the column default is 'unknown', so legacy rows that
+          never had veracity explicitly set store the literal 'unknown'
+          string. The aggregator can't distinguish "operator marked unknown"
+          from "nobody set it" — letting 'unknown' dilute confident
+          signals systematically deflates summaries from mixed-vintage
+          sessions (review H1, 2026-05-11).
+        - Within the candidates (non-'unknown' if any, else all-'unknown'):
+            * Single distinct label → that label
+            * Clear majority → the majority label
+            * Multi-way tie → the label with the LOWEST weight (most
+              conservative; e.g. {stated, tool} ties resolve to 'tool')
+
+    Rationale: a summary inherits confidence of its sources collectively.
+    Homogeneous-stated sources should produce stated summaries (don't
+    deflate). Mixed sources reflect the most-common signal. Tied multi-way
+    sources resolve toward caution rather than overclaiming.
+
+    Non-canonical labels in input (e.g., raw LLM output bleeding through
+    a caller's clamp) are silently dropped from the count — operators
+    rely on `clamp_veracity()` at the trust boundary; the aggregator is
+    not a clamp, it's a reducer.
+
+    Args:
+        source_veracities: iterable of veracity strings (typically from
+            a SELECT on working_memory.veracity for source rows).
+
+    Returns:
+        One canonical veracity label (member of VERACITY_ALLOWED).
+    """
+    if not source_veracities:
+        return "unknown"
+    # Filter to canonical labels; non-canonical values don't vote.
+    valid = [v for v in source_veracities if v in VERACITY_ALLOWED]
+    if not valid:
+        return "unknown"
+    # H1 review fix: 'unknown' is the schema default — treat as
+    # low-priority so legacy rows don't dilute confident signals.
+    non_unknown = [v for v in valid if v != "unknown"]
+    candidates = non_unknown if non_unknown else valid
+    # Mode (most-frequent label) among candidates.
+    counts: Dict[str, int] = {}
+    for v in candidates:
+        counts[v] = counts.get(v, 0) + 1
+    max_count = max(counts.values())
+    most_common = [v for v, c in counts.items() if c == max_count]
+    if len(most_common) == 1:
+        return most_common[0]
+    # Tie: pick the most conservative (lowest weight).
+    return min(most_common, key=lambda v: VERACITY_WEIGHTS[v])
+
+
 @dataclass
 class ConsolidatedFact:
     """A fact that has been through consolidation."""
