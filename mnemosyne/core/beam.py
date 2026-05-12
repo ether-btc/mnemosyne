@@ -162,12 +162,19 @@ DEGRADE_BATCH_SIZE = int(os.environ.get("MNEMOSYNE_DEGRADE_BATCH", "100"))
 SMART_COMPRESS = os.environ.get("MNEMOSYNE_SMART_COMPRESS", "1") not in ("0", "false", "no")
 TIER3_MAX_CHARS = int(os.environ.get("MNEMOSYNE_TIER3_MAX_CHARS", "300"))
 
-# Veracity weighting (memory confidence)
-STATED_WEIGHT = float(os.environ.get("MNEMOSYNE_STATED_WEIGHT", "1.0"))
-INFERRED_WEIGHT = float(os.environ.get("MNEMOSYNE_INFERRED_WEIGHT", "0.7"))
-TOOL_WEIGHT = float(os.environ.get("MNEMOSYNE_TOOL_WEIGHT", "0.5"))
-IMPORTED_WEIGHT = float(os.environ.get("MNEMOSYNE_IMPORTED_WEIGHT", "0.6"))
-UNKNOWN_WEIGHT = float(os.environ.get("MNEMOSYNE_UNKNOWN_WEIGHT", "0.8"))
+# Veracity weighting (memory confidence). C29: defaults come from the
+# canonical VERACITY_WEIGHTS dict in veracity_consolidation.py so the
+# consolidator's Bayesian compounding and recall's veracity multiplier
+# share a single source of truth. Env-var overrides remain so operators
+# can tune ranking, but the drift risk is documented: if an operator
+# sets a *_WEIGHT env var, recall scoring diverges from consolidation
+# confidence math (consolidator doesn't honor env overrides).
+from mnemosyne.core.veracity_consolidation import VERACITY_WEIGHTS as _VW_DEFAULTS
+STATED_WEIGHT = float(os.environ.get("MNEMOSYNE_STATED_WEIGHT", str(_VW_DEFAULTS["stated"])))
+INFERRED_WEIGHT = float(os.environ.get("MNEMOSYNE_INFERRED_WEIGHT", str(_VW_DEFAULTS["inferred"])))
+TOOL_WEIGHT = float(os.environ.get("MNEMOSYNE_TOOL_WEIGHT", str(_VW_DEFAULTS["tool"])))
+IMPORTED_WEIGHT = float(os.environ.get("MNEMOSYNE_IMPORTED_WEIGHT", str(_VW_DEFAULTS["imported"])))
+UNKNOWN_WEIGHT = float(os.environ.get("MNEMOSYNE_UNKNOWN_WEIGHT", str(_VW_DEFAULTS["unknown"])))
 
 # Vector compression: float32 | int8 | bit
 VEC_TYPE = os.environ.get("MNEMOSYNE_VEC_TYPE", "int8").lower()
