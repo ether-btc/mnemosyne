@@ -1423,7 +1423,9 @@ class BeamMemory:
     def remember_batch(self, items: List[Dict],
                        *,
                        veracity: Optional[str] = None,
-                       force_veracity: bool = False) -> List[str]:
+                       force_veracity: bool = False,
+                       extract_entities: bool = False,
+                       extract: bool = False) -> List[str]:
         """
         Batch insert into working_memory for high-throughput ingestion.
         Each item dict should have keys: content, source, importance,
@@ -1464,9 +1466,47 @@ class BeamMemory:
         scorer at beam.py::recall now applies the multiplier to
         working_memory hits too, so per-row veracity differentiates
         scores at the experiment level.
+
+        E2 — Enrichment parity with `remember()`:
+            Post-E2 this method runs the same post-insert enrichment
+            pipeline `remember()` runs unconditionally:
+              - `_add_temporal_triple` writes the row's date as an
+                `occurred_on` annotation + the source kind as a
+                `has_source` annotation (zero-LLM, just date string
+                slicing).
+              - `_ingest_graph_and_veracity` runs pattern-based gist +
+                fact extraction via `EpisodicGraph` and consolidates
+                the extracted facts into `consolidated_facts` weighted
+                by per-row veracity (`VeracityConsolidator`). Zero LLM
+                — rule-based / regex pattern matching only.
+
+            Without this fix any high-throughput ingest path bypassed
+            the enrichment layer entirely, leaving the polyphonic
+            engine's `graph` and `fact` voices with no data to fuse —
+            E5's RRF over 4 voices collapsed to 2 voices in practice.
+
+        extract_entities (default False): opt-in regex entity scan
+            via `_extract_and_store_entities`. Cheap but generates
+            additional annotation rows; off by default to keep batch
+            ingest stable for non-experiment callers.
+
+        extract (default False): opt-in LLM-based structured fact
+            extraction via `_extract_and_store_facts`. Real cloud-API
+            cost per row; off by default. The BEAM-recovery experiment
+            arm that tests LLM enrichment sets this True.
+
+        New behavior change for existing batch callers: the always-on
+        pattern-based enrichment now adds ~ms-per-row CPU cost (regex
+        + a few SQLite inserts). For typical importers (10k-100k
+        rows) this is a few seconds of additional latency; for the
+        BEAM benchmark's 250k-message ingest, ~minutes. Documented in
+        CHANGELOG.
         """
         cursor = self.conn.cursor()
         ids = []
+        # Carry per-row source + veracity through to enrichment so we
+        # don't re-derive them post-insert.
+        per_row_meta: List[Tuple[str, str, str]] = []  # (memory_id, source, veracity)
         timestamp = datetime.now().isoformat()
         # Clamp the method-level default once, not per row — operators
         # who pass a bad default should see one warning, not N.
@@ -1505,6 +1545,8 @@ class BeamMemory:
                 )
             else:
                 item_veracity = default_veracity
+            item_source = item.get("source", "conversation")
+            per_row_meta.append((memory_id, item_source, item_veracity))
             cursor.execute("""
                 INSERT INTO working_memory (id, content, source, timestamp, session_id, importance, metadata_json,
                 author_id, author_type, channel_id, memory_type, veracity)
@@ -1512,7 +1554,7 @@ class BeamMemory:
             """, (
                 memory_id,
                 item["content"],
-                item.get("source", "conversation"),
+                item_source,
                 timestamp,
                 self.session_id,
                 item.get("importance", 0.5),
@@ -1524,7 +1566,7 @@ class BeamMemory:
                 item_veracity,
             ))
         self.conn.commit()
-        
+
         # Generate vector embeddings for working memory hybrid search
         if _embeddings.available():
             try:
@@ -1540,7 +1582,36 @@ class BeamMemory:
                         )
             except Exception:
                 pass  # Vector embedding is best-effort, non-blocking
-        
+
+        # E2: per-row enrichment pipeline. Mirrors remember()'s
+        # post-insert sequence at beam.py:1406 + 1417. Always-on
+        # rule-based parts plus opt-in entity/LLM-extraction paths.
+        # Run AFTER the bulk INSERT + commit so a failure in any
+        # single row's enrichment doesn't roll back the whole batch.
+        # Each helper already handles its own exceptions internally;
+        # they're best-effort by design.
+        for memory_id, item, (mid_check, src, ver) in zip(
+            ids, items, per_row_meta
+        ):
+            # Defensive parity check — should never diverge but pin it
+            # so a future refactor that reorders the lists fails loudly
+            # instead of silently writing annotations with wrong
+            # source / veracity.
+            assert mid_check == memory_id, (
+                "remember_batch: per_row_meta out of sync with ids"
+            )
+            content = item["content"]
+            # Always-on: temporal annotations + graph + veracity
+            # consolidation. Zero-LLM. Mirrors remember() exactly.
+            self._add_temporal_triple(memory_id, timestamp, src, content)
+            self._ingest_graph_and_veracity(memory_id, content, src, ver)
+            # Opt-in: regex entity extraction.
+            if extract_entities:
+                _extract_and_store_entities(self, memory_id, content)
+            # Opt-in: LLM-based fact extraction.
+            if extract:
+                _extract_and_store_facts(self, memory_id, content, src)
+
         self._trim_working_memory()
         return ids
 
