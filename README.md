@@ -636,7 +636,7 @@ Importers preserve source metadata where available. `HindsightImporter` uses a d
 |---|---|---|
 | `MNEMOSYNE_LLM_ENABLED` | `true` | Enable LLM summarization in sleep cycle |
 | `MNEMOSYNE_LLM_N_CTX` | `2048` | Context window size for local model |
-| `MNEMOSYNE_LLM_MAX_TOKENS` | `256` | Max output tokens per summary |
+| `MNEMOSYNE_LLM_MAX_TOKENS` | `2048` | Max output tokens per summary |
 | `MNEMOSYNE_LLM_N_THREADS` | `4` | CPU threads for local inference |
 | `MNEMOSYNE_LLM_REPO` | `TheBloke/TinyLlama...` | HuggingFace repo for GGUF download |
 | `MNEMOSYNE_LLM_FILE` | `tinyllama...Q4_K_M.gguf` | GGUF filename |
