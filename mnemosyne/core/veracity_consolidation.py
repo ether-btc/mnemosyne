@@ -22,10 +22,12 @@ Conflict resolution:
 - Consolidation: periodic synthesis of high-confidence facts
 """
 
+import contextlib
 import hashlib
 import logging
 import sqlite3
 import json
+import threading
 import unicodedata
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
@@ -218,8 +220,37 @@ class VeracityConsolidator:
         else:
             self.db_path = db_path or Path.home() / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"
             self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            # Apply the same PRAGMA settings BeamMemory's _get_connection
+            # uses (journal_mode=WAL, busy_timeout=5000ms). Required for
+            # `_serialized_write`'s `BEGIN IMMEDIATE` to behave correctly
+            # under contention: without WAL the lock blocks readers; without
+            # busy_timeout contention raises `database is locked` instantly
+            # instead of waiting up to 5s. Duplicated from the E2.a.5 fix
+            # so this branch is self-contained whether it lands before or
+            # after #84. /review (Claude CRITICAL) caught the
+            # branch-rebase dependency.
+            try:
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                self.conn.execute("PRAGMA busy_timeout=5000")
+            except sqlite3.Error:
+                # Best-effort: in-memory or otherwise-constrained
+                # environments may not support WAL. Continue.
+                pass
         self.conn.row_factory = sqlite3.Row
         self._owns_connection = conn is None
+
+        # Same-connection writer serialization. `BEGIN IMMEDIATE` provides
+        # database-level serialization across CONNECTIONS, but two threads
+        # sharing the same `VeracityConsolidator` instance (and therefore
+        # the same `self.conn`) would both see `conn.in_transaction = True`
+        # after the first thread's BEGIN — defeating the nested-tx skip
+        # logic and recreating the race within a single SQL transaction.
+        # `RLock` (not `Lock`) so the contextmanager can recursively enter
+        # for nested calls within the same thread (e.g.,
+        # `run_consolidation_pass` calling `resolve_conflict_by_facts`).
+        # /review (Codex structured P2 GATE FAIL) caught the same-conn race.
+        self._write_lock = threading.RLock()
+
         self._init_tables()
     
     def _init_tables(self):
@@ -263,6 +294,72 @@ class VeracityConsolidator:
         
         self.conn.commit()
     
+    @contextlib.contextmanager
+    def _serialized_write(self):
+        """Serialize the body's SELECT-then-write under the SQLite writer lock.
+
+        Wraps the block in ``BEGIN IMMEDIATE`` when the connection is
+        not already in a transaction. Concurrent calls queue on the
+        writer lock rather than racing on SELECT-then-INSERT/UPDATE
+        patterns. Nested invocations (caller already in a tx)
+        participate in that tx without starting their own BEGIN.
+
+        Shared by ``resolve_conflict``, ``resolve_conflict_by_facts``,
+        and ``run_consolidation_pass`` so the four write methods
+        (including ``consolidate_fact``) all use one canonical
+        serialization pattern.
+
+        Caller-contract caveat (per E2.a.7 ledger row): a DEFERRED
+        outer transaction (Python sqlite3's default implicit tx) does
+        NOT acquire the writer lock until its own first INSERT/UPDATE.
+        Two threads each in their own DEFERRED outer tx can both pass
+        the SELECT-no-match check before either writes — the race
+        window reopens inside the outer scope. Race safety inside a
+        caller-owned outer tx requires either (a) the outer tx is
+        ``BEGIN IMMEDIATE`` or ``BEGIN EXCLUSIVE``, OR (b) the caller
+        is the only writer (e.g., E2's single-threaded batch
+        enrichment loop).
+
+        Raises whatever the body raises after attempting rollback (if
+        we own the tx) so callers can implement retry / circuit-break
+        policies.
+        """
+        # Capture conn at entry — defense against the body swapping
+        # self.conn (closing the original, reassigning, etc.). All of
+        # commit/rollback/cursor must target the SAME connection we
+        # opened BEGIN IMMEDIATE on. /review (Codex adversarial MED).
+        conn = self.conn
+        # Acquire instance lock BEFORE BEGIN IMMEDIATE so two threads
+        # sharing this VeracityConsolidator instance (and therefore
+        # this conn) serialize at the Python level — SQLite's writer
+        # lock alone doesn't protect them because they share the same
+        # transaction once the first thread starts one.
+        with self._write_lock:
+            cursor = conn.cursor()
+            started_tx = False
+            if not conn.in_transaction:
+                # Let OperationalError propagate. If `database is locked`
+                # fires after busy_timeout, the caller's error handler is
+                # the right place to decide what to do; silent fallthrough
+                # would reintroduce the race we're closing.
+                cursor.execute("BEGIN IMMEDIATE")
+                started_tx = True
+            try:
+                yield
+                if started_tx:
+                    conn.commit()
+            except Exception:
+                if started_tx:
+                    try:
+                        conn.rollback()
+                    except sqlite3.Error as rb_exc:
+                        logger.error(
+                            "_serialized_write: rollback failed after "
+                            "error (connection may be in undefined state): %s",
+                            rb_exc,
+                        )
+                raise
+
     def bayesian_update(self, current_confidence: float, veracity: str) -> float:
         """
         Update confidence using Bayesian formula.
@@ -397,66 +494,92 @@ class VeracityConsolidator:
 
         Args:
             conflict_id: Conflict to resolve
-            winning_fact_id: The fact that wins. Must match either
-                the conflict's fact_a_id or fact_b_id as stored.
-                In mixed-format DBs (some rows with pre-fix legacy
-                IDs, some with post-fix hash IDs), pass the stored
-                id directly — `compute_fact_id` may not match a
-                legacy row.
+            winning_fact_id: The fact that wins
 
-        Behavior change vs pre-fix: if `winning_fact_id` matches
-        neither of the conflict's stored fact IDs, the method
-        returns without writing (previously it would silently mark
-        the wrong row as superseded via the `else` branch of
-        `losing_id = ... if winning_fact_id == fact_a_id else fact_b_id`).
-        /review (Codex adv #3 + Claude #3) caught the silent
-        winner/loser swap on mixed-format DBs.
+        Concurrency: SELECT-then-write pattern wrapped in
+        ``_serialized_write``. Pre-fix two concurrent
+        ``resolve_conflict`` calls on the same conflict_id with
+        different winning_fact_ids could both pass the SELECT and
+        last-writer-wins on the UPDATE, leaving BOTH facts
+        superseded (each marking the other). Post-fix the second
+        call sees the first's commit and either confirms the same
+        winner or finds the conflict already resolved.
         """
-        cursor = self.conn.cursor()
+        with self._serialized_write():
+            cursor = self.conn.cursor()
 
-        # Get conflict details
-        cursor.execute("SELECT * FROM conflicts WHERE id = ?", (conflict_id,))
-        conflict = cursor.fetchone()
-
-        if not conflict:
-            return
-
-        fact_a_id = conflict["fact_a_id"]
-        fact_b_id = conflict["fact_b_id"]
-        # Reject ambiguous calls: the winning id must match one of
-        # the conflict's stored fact ids exactly. Pre-fix the
-        # comparison silently defaulted to fact_a_id as the loser
-        # whenever winning_fact_id != fact_a_id, which produced the
-        # wrong supersession when callers passed a derived-but-stale
-        # id (legacy/new format divergence).
-        if winning_fact_id == fact_a_id:
-            losing_id = fact_b_id
-        elif winning_fact_id == fact_b_id:
-            losing_id = fact_a_id
-        else:
-            logger.warning(
-                "resolve_conflict: winning_fact_id %r matches neither "
-                "fact_a_id %r nor fact_b_id %r; declining to resolve",
-                winning_fact_id, fact_a_id, fact_b_id,
+            # Get conflict details
+            cursor.execute(
+                "SELECT * FROM conflicts WHERE id = ?", (conflict_id,)
             )
-            return
+            conflict = cursor.fetchone()
 
-        # Mark as superseded
-        now = datetime.now().isoformat()
-        cursor.execute("""
-            UPDATE consolidated_facts
-            SET superseded_by = ?, updated_at = ?
-            WHERE id = ?
-        """, (winning_fact_id, now, losing_id))
-        
-        # Mark conflict as resolved
-        cursor.execute("""
-            UPDATE conflicts
-            SET resolution = ?, resolved_at = ?
-            WHERE id = ?
-        """, (f"superseded_by_{winning_fact_id}", now, conflict_id))
-        
-        self.conn.commit()
+            if not conflict:
+                return
+
+            # Already-resolved guard: first-writer-wins semantics. Pre-fix
+            # serialization alone didn't fix the case where two callers
+            # passed different winning_fact_id values — even with BEGIN
+            # IMMEDIATE the second call would still mark the OTHER fact
+            # superseded (the conflict's read returned the same fact ids
+            # both times). With the guard, the second call sees the
+            # conflict is resolved and returns without overwriting. Log
+            # a WARNING so operators can spot conflicting writes.
+            # /review (Codex adv + Maintainability + Claude on E2.a.5)
+            # flagged the same-conflict-id race; the regression test
+            # for E2.a.6 surfaced this additional gap.
+            if conflict["resolution"] is not None:
+                logger.warning(
+                    "resolve_conflict: conflict %d already resolved "
+                    "(resolution=%r); ignoring re-resolution attempt "
+                    "with winning_fact_id=%r",
+                    conflict_id, conflict["resolution"], winning_fact_id,
+                )
+                return
+
+            # Reject ambiguous calls: the winning id must match one of
+            # the conflict's stored fact ids exactly. Pre-fix the
+            # comparison silently defaulted to fact_b_id as the loser
+            # whenever winning_fact_id != fact_a_id, which produced the
+            # wrong supersession when callers passed a derived-but-stale
+            # id (legacy/new format divergence).
+            fact_a_id = conflict["fact_a_id"]
+            fact_b_id = conflict["fact_b_id"]
+            if winning_fact_id == fact_a_id:
+                losing_id = fact_b_id
+            elif winning_fact_id == fact_b_id:
+                losing_id = fact_a_id
+            else:
+                logger.warning(
+                    "resolve_conflict: winning_fact_id %r matches neither "
+                    "fact_a_id %r nor fact_b_id %r; declining to resolve",
+                    winning_fact_id, fact_a_id, fact_b_id,
+                )
+                return
+
+            # Mark as superseded
+            now = datetime.now().isoformat()
+            cursor.execute(
+                """
+                UPDATE consolidated_facts
+                SET superseded_by = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (winning_fact_id, now, losing_id),
+            )
+
+            # Mark conflict as resolved
+            cursor.execute(
+                """
+                UPDATE conflicts
+                SET resolution = ?, resolved_at = ?
+                WHERE id = ?
+                """,
+                (f"superseded_by_{winning_fact_id}", now, conflict_id),
+            )
+
+            # `_serialized_write` commits on context exit when we own
+            # the tx; participates in caller-owned tx otherwise.
     
     def get_conflicts(self) -> List[Dict]:
         """Get all unresolved conflicts."""
@@ -552,50 +675,82 @@ class VeracityConsolidator:
     def run_consolidation_pass(self):
         """
         Background consolidation pass.
-        
+
         1. Find facts with multiple mentions
         2. Boost confidence
         3. Detect conflicts
         4. Auto-resolve obvious conflicts (higher confidence wins)
+
+        Concurrency: wrapped in ``_serialized_write`` so a concurrent
+        write (e.g., `consolidate_fact` or `resolve_conflict`) doesn't
+        interleave with the pass's read-decide-resolve loop. Inner
+        ``resolve_conflict_by_facts`` calls participate in this scope's
+        transaction (their own ``_serialized_write`` will detect the
+        outer tx and skip BEGIN).
         """
-        cursor = self.conn.cursor()
-        
-        # Find facts ready for consolidation (mention_count > 2)
-        cursor.execute("""
-            SELECT * FROM consolidated_facts
-            WHERE mention_count > 2 AND superseded_by IS NULL
-            ORDER BY mention_count DESC
-        """)
-        
-        for row in cursor.fetchall():
-            subject = row["subject"]
-            predicate = row["predicate"]
-            
-            # Find conflicts
-            cursor.execute("""
+        with self._serialized_write():
+            cursor = self.conn.cursor()
+
+            # Find facts ready for consolidation (mention_count > 2)
+            cursor.execute(
+                """
                 SELECT * FROM consolidated_facts
-                WHERE subject = ? AND predicate = ? AND object != ?
-                AND superseded_by IS NULL
-            """, (subject, predicate, row["object"]))
-            
-            conflicts = cursor.fetchall()
-            for conflict in conflicts:
-                # Auto-resolve: higher confidence wins
-                if row["confidence"] > conflict["confidence"]:
-                    self.resolve_conflict_by_facts(row["id"], conflict["id"])
-    
+                WHERE mention_count > 2 AND superseded_by IS NULL
+                ORDER BY mention_count DESC
+                """
+            )
+
+            # Materialize the row list before iterating + writing —
+            # mixing fetch with writes on the same cursor can confuse
+            # the iteration state under some sqlite3 builds.
+            primary_rows = cursor.fetchall()
+
+            for row in primary_rows:
+                subject = row["subject"]
+                predicate = row["predicate"]
+
+                # Find conflicts
+                cursor.execute(
+                    """
+                    SELECT * FROM consolidated_facts
+                    WHERE subject = ? AND predicate = ? AND object != ?
+                    AND superseded_by IS NULL
+                    """,
+                    (subject, predicate, row["object"]),
+                )
+
+                conflicts = cursor.fetchall()
+                for conflict in conflicts:
+                    # Auto-resolve: higher confidence wins
+                    if row["confidence"] > conflict["confidence"]:
+                        self.resolve_conflict_by_facts(
+                            row["id"], conflict["id"]
+                        )
+
     def resolve_conflict_by_facts(self, winning_id: str, losing_id: str):
-        """Resolve conflict by marking losing fact as superseded."""
-        now = datetime.now().isoformat()
-        cursor = self.conn.cursor()
-        
-        cursor.execute("""
-            UPDATE consolidated_facts
-            SET superseded_by = ?, updated_at = ?
-            WHERE id = ?
-        """, (winning_id, now, losing_id))
-        
-        self.conn.commit()
+        """Resolve conflict by marking losing fact as superseded.
+
+        Concurrency: this is a single-statement UPDATE so it doesn't
+        have the SELECT-then-write race shape of ``resolve_conflict``.
+        Still wrapped in ``_serialized_write`` for consistency: a
+        concurrent ``resolve_conflict`` on the same losing_id would
+        interleave on the `superseded_by` column, and the wrap makes
+        the override deterministic (later writer wins after the
+        earlier one commits, instead of both racing inside their
+        respective reads).
+        """
+        with self._serialized_write():
+            now = datetime.now().isoformat()
+            cursor = self.conn.cursor()
+
+            cursor.execute(
+                """
+                UPDATE consolidated_facts
+                SET superseded_by = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (winning_id, now, losing_id),
+            )
     
     def get_stats(self) -> Dict:
         """Get consolidation statistics."""
