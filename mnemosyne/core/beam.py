@@ -63,10 +63,23 @@ try:
         VeracityConsolidator,
         VERACITY_WEIGHTS,
         clamp_veracity,
+        aggregate_veracity,
     )
+    # Alias used below to construct STATED_WEIGHT et al. — same dict as
+    # the canonical VERACITY_WEIGHTS so changes propagate.
+    _VW_DEFAULTS = VERACITY_WEIGHTS
 except ImportError:
     VeracityConsolidator = None
     VERACITY_WEIGHTS = {}
+    # Hardcoded backstop so degraded-import mode doesn't crash module
+    # load when constructing STATED_WEIGHT et al. (C1 review fix).
+    _VW_DEFAULTS = {
+        "stated": 1.0,
+        "inferred": 0.7,
+        "tool": 0.5,
+        "imported": 0.6,
+        "unknown": 0.8,
+    }
 
     # Surface degraded mode at import time so operators see ONE signal
     # in startup logs that the canonical helper isn't available. Without
@@ -78,6 +91,11 @@ except ImportError:
         "silently (no per-call WARNING). Operators should resolve the "
         "import to restore full audit logging."
     )
+
+    def aggregate_veracity(source_veracities) -> str:
+        """Fallback aggregator when veracity_consolidation is unavailable.
+        Returns 'unknown' unconditionally so consolidation doesn't crash."""
+        return "unknown"
 
     def clamp_veracity(raw, *, context: str = "veracity") -> str:
         """Fallback when veracity_consolidation is unavailable.
@@ -163,95 +181,19 @@ DEGRADE_BATCH_SIZE = int(os.environ.get("MNEMOSYNE_DEGRADE_BATCH", "100"))
 SMART_COMPRESS = os.environ.get("MNEMOSYNE_SMART_COMPRESS", "1") not in ("0", "false", "no")
 TIER3_MAX_CHARS = int(os.environ.get("MNEMOSYNE_TIER3_MAX_CHARS", "300"))
 
-def _env_float(name: str, default: float) -> float:
-    """Parse an env var as float; fall back to `default` on empty or
-    invalid values rather than crashing at module load.
-
-    Pre-fix `float(os.environ.get("MNEMOSYNE_STATED_WEIGHT", "1.0"))`
-    raised ValueError when the env var was set to empty (`export
-    MNEMOSYNE_STATED_WEIGHT=`) because `os.environ.get` returns `""`
-    (the value), not the default — `float("")` then crashed import
-    BEFORE the C32 override-WARN could fire. Robust path: strip,
-    treat empty as "fall back," log a WARN on actually-bad values.
-    """
-    raw = os.environ.get(name, "")
-    raw = raw.strip()
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        logger.warning(
-            "%s=%r is not a valid float; falling back to default %s",
-            name, raw[:80], default,
-        )
-        return default
-
-
-# Veracity weighting (memory confidence)
-STATED_WEIGHT = _env_float("MNEMOSYNE_STATED_WEIGHT", 1.0)
-INFERRED_WEIGHT = _env_float("MNEMOSYNE_INFERRED_WEIGHT", 0.7)
-TOOL_WEIGHT = _env_float("MNEMOSYNE_TOOL_WEIGHT", 0.5)
-IMPORTED_WEIGHT = _env_float("MNEMOSYNE_IMPORTED_WEIGHT", 0.6)
-UNKNOWN_WEIGHT = _env_float("MNEMOSYNE_UNKNOWN_WEIGHT", 0.8)
-
-
-def _detect_veracity_weight_overrides() -> List[str]:
-    """C32: return a list of `MNEMOSYNE_*_WEIGHT` env vars that are
-    set to a non-empty value.
-
-    Filters out empty-string values (e.g., `export MNEMOSYNE_STATED_WEIGHT=`)
-    since those don't actually override anything — `_env_float` falls
-    back to the default for empties. Counting them as overrides would
-    confuse the WARN message.
-    """
-    return [
-        name for name in (
-            "MNEMOSYNE_STATED_WEIGHT",
-            "MNEMOSYNE_INFERRED_WEIGHT",
-            "MNEMOSYNE_TOOL_WEIGHT",
-            "MNEMOSYNE_IMPORTED_WEIGHT",
-            "MNEMOSYNE_UNKNOWN_WEIGHT",
-        )
-        if os.environ.get(name, "").strip()
-    ]
-
-
-_VERACITY_WARN_EMITTED = False
-
-
-def _warn_about_veracity_weight_overrides(force: bool = False) -> bool:
-    """Log a WARNING if any `MNEMOSYNE_*_WEIGHT` env var is overridden.
-
-    Idempotent per-process: subsequent calls return False without
-    re-emitting unless `force=True` (tests use this to verify the WARN
-    fires per call). Module-load calls this once below. The guard
-    matters for multi-worker setups (uvicorn `--workers`, pytest-xdist)
-    where each worker reloads the module — each process gets one WARN
-    instead of N per worker startup.
-
-    Returns True iff a warning was emitted on this call.
-    """
-    global _VERACITY_WARN_EMITTED
-    if _VERACITY_WARN_EMITTED and not force:
-        return False
-    overrides = _detect_veracity_weight_overrides()
-    if not overrides:
-        return False
-    logger.warning(
-        "Veracity weight env overrides detected: %s. Recall scoring will "
-        "honor the override, but consolidation Bayesian compounding "
-        "(veracity_consolidation.VERACITY_WEIGHTS) does NOT — the two "
-        "will drift. Set matching values in veracity_consolidation.py "
-        "OR accept that 'consolidated-as-N also ranks at N' invariant "
-        "is broken until the consolidator is taught the same overrides.",
-        ", ".join(overrides),
-    )
-    _VERACITY_WARN_EMITTED = True
-    return True
-
-
-_warn_about_veracity_weight_overrides()
+# Veracity weighting (memory confidence). C29: defaults come from
+# `_VW_DEFAULTS` which mirrors `veracity_consolidation.VERACITY_WEIGHTS`
+# in normal mode and falls back to a hardcoded literal in degraded-import
+# mode (the import block above sets it). Single source of truth for the
+# consolidator's Bayesian compounding and recall's veracity multiplier.
+# Env-var overrides remain so operators can tune ranking; documented
+# drift risk: if `MNEMOSYNE_*_WEIGHT` is set, recall scoring diverges
+# from consolidation confidence math (consolidator doesn't honor env).
+STATED_WEIGHT = float(os.environ.get("MNEMOSYNE_STATED_WEIGHT", str(_VW_DEFAULTS["stated"])))
+INFERRED_WEIGHT = float(os.environ.get("MNEMOSYNE_INFERRED_WEIGHT", str(_VW_DEFAULTS["inferred"])))
+TOOL_WEIGHT = float(os.environ.get("MNEMOSYNE_TOOL_WEIGHT", str(_VW_DEFAULTS["tool"])))
+IMPORTED_WEIGHT = float(os.environ.get("MNEMOSYNE_IMPORTED_WEIGHT", str(_VW_DEFAULTS["imported"])))
+UNKNOWN_WEIGHT = float(os.environ.get("MNEMOSYNE_UNKNOWN_WEIGHT", str(_VW_DEFAULTS["unknown"])))
 
 # Vector compression: float32 | int8 | bit
 VEC_TYPE = os.environ.get("MNEMOSYNE_VEC_TYPE", "int8").lower()
@@ -1542,6 +1484,14 @@ class BeamMemory:
             # a fresh summary. Pre-E3 this scenario didn't exist because
             # consolidated rows were deleted; the additive design has to
             # opt back in.
+            # E4.a.1 review fix (P1): refresh veracity on dedup-update too.
+            # Without this, a row first stored as 'unknown' and later
+            # re-remembered as 'stated' kept the stale 'unknown' label,
+            # which E4.a.1's sleep-time aggregator then propagates into
+            # the episodic summary — defeating the trust-signal refresh.
+            # Conservative policy: only upgrade if the new call passes a
+            # non-'unknown' veracity (preserves per-row trust on
+            # backfills that don't carry a meaningful veracity arg).
             cursor.execute("""
                 UPDATE working_memory
                 SET importance = MAX(importance, ?), timestamp = ?, source = ?,
@@ -1551,12 +1501,14 @@ class BeamMemory:
                     author_type = COALESCE(?, author_type),
                     channel_id = COALESCE(?, channel_id),
                     memory_type = COALESCE(?, memory_type),
+                    veracity = CASE WHEN ? != 'unknown' THEN ? ELSE veracity END,
                     consolidated_at = NULL
                 WHERE id = ? AND session_id = ?
             """, (importance, datetime.now().isoformat(), source,
                   valid_until, scope,
                   self.author_id, self.author_type, self.channel_id,
                   memory_type,
+                  veracity, veracity,
                   existing_id, self.session_id))
             self.conn.commit()
             # Run the same entity/fact extraction the new-row path runs, so
@@ -1757,13 +1709,36 @@ class BeamMemory:
                 item_veracity,
             ))
         self.conn.commit()
-
-        # Generate vector embeddings for working memory hybrid search
+        
+        # Generate vector embeddings for working memory hybrid search.
+        # E2.a.10: pre-fix this block had two silent-failure modes:
+        # (a) if `embed()` returns a shorter array than inputs (partial
+        # fastembed failure), `vectors[i]` raises IndexError mid-loop →
+        # caught by bare except → the entire batch's embeddings are
+        # lost since cursor execution stops at the IndexError row;
+        # (b) any embed failure during ingest was silent. At 250K-row
+        # scale the vector voice (35% RRF weight) would silently bias
+        # toward earlier-ingested rows without any operator signal.
+        # Fix: length-mismatch check + WARNING log on the swallow.
         if _embeddings.available():
             try:
                 contents = [item["content"] for item in items]
                 vectors = _embeddings.embed(contents)
-                if vectors is not None:
+                if vectors is None:
+                    logger.warning(
+                        "remember_batch: _embeddings.embed returned None for "
+                        "batch of %d items — no vectors stored, vector voice "
+                        "will miss these rows",
+                        len(contents),
+                    )
+                elif len(vectors) != len(contents):
+                    logger.warning(
+                        "remember_batch: embedding count mismatch (%d vectors "
+                        "for %d inputs) — skipping vector storage for this "
+                        "batch to avoid partial-alignment errors",
+                        len(vectors), len(contents),
+                    )
+                else:
                     model = _embeddings._DEFAULT_MODEL
                     for i, memory_id in enumerate(ids):
                         emb_json = _embeddings.serialize(vectors[i])
@@ -1771,81 +1746,16 @@ class BeamMemory:
                             "INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, ?)",
                             (memory_id, emb_json, model)
                         )
-            except Exception:
-                pass  # Vector embedding is best-effort, non-blocking
-
-        # E2: per-row enrichment pipeline. Mirrors remember()'s
-        # post-insert sequence at beam.py:1406 + 1417 + 1419.
-        # Always-on rule-based parts plus opt-in entity/LLM-extraction
-        # paths plus MEMORY_ADDED event emission (parity with
-        # remember()). Run AFTER the bulk INSERT + commit so a failure
-        # in any single row's enrichment doesn't roll back the whole
-        # batch. Each helper already handles its own exceptions
-        # internally; they're best-effort by design.
-        #
-        # Performance: the enrichment helpers
-        # (AnnotationStore.add, EpisodicGraph.store_gist /
-        # store_fact / add_edge, VeracityConsolidator.consolidate_fact)
-        # each call self.conn.commit() at the end of their work. At
-        # benchmark scale that produces 10-15 commits per row × N rows
-        # — millions of fsync round-trips for the BEAM-recovery
-        # 250K-message ingest (estimated 3-10 hours wall clock pre-fix).
-        # /review caught this as 4-source CRITICAL. Wrapping the whole
-        # loop in _deferred_commits restores the bulk-insert
-        # transaction discipline: inner commit() calls become no-ops
-        # and a single explicit commit fires at the end.
-        with _deferred_commits(self.conn):
-            for memory_id, item in zip(ids, items):
-                src, ver = meta_by_id[memory_id]
-                content = item["content"]
-                # Each row's enrichment is wrapped in try/except so a
-                # genuinely buggy helper doesn't tear down the whole
-                # batch (best-effort contract — the helpers themselves
-                # already swallow their internal errors, but defense
-                # in depth at the loop level keeps later rows alive
-                # if any helper is monkey-patched / replaced).
-                try:
-                    # Always-on: temporal annotations + graph + veracity
-                    # consolidation. Zero-LLM. Mirrors remember() exactly.
-                    self._add_temporal_triple(memory_id, timestamp, src, content)
-                    self._ingest_graph_and_veracity(memory_id, content, src, ver)
-                    # Opt-in: regex entity extraction.
-                    if extract_entities:
-                        _extract_and_store_entities(self, memory_id, content)
-                    # Opt-in: LLM-based fact extraction.
-                    if extract:
-                        _extract_and_store_facts(self, memory_id, content, src)
-                except Exception as exc:
-                    # Log + continue. Pre-fix the helpers' own internal
-                    # try/except was the only guard, so a future
-                    # refactor that strips one of those internals would
-                    # break the whole batch. Outer guard keeps the
-                    # "later rows survive a bad row" contract.
-                    logger.warning(
-                        "remember_batch enrichment failed for %s: %s",
-                        memory_id, exc,
-                    )
-                # Parity with remember(): emit MEMORY_ADDED so any
-                # streaming consumer (DeltaSync, observability hooks,
-                # live UI updates) sees batch ingest events. Pre-/review
-                # only single-remember() rows produced events; batch
-                # rows were silent. Claude adversarial flagged this as
-                # a CRITICAL parity gap with the diff's stated goal.
-                # Outside the enrichment try/except — event emission is
-                # cheap and shouldn't be skipped just because a regex
-                # extractor flaked.
-                try:
-                    self._emit_event(
-                        "MEMORY_ADDED",
-                        memory_id,
-                        content=content,
-                        source=src,
-                        importance=item.get("importance", 0.5),
-                        metadata=item.get("metadata"),
-                    )
-                except Exception:
-                    pass
-
+            except Exception as exc:
+                # M3 review fix: include exception type name so operators
+                # can distinguish sqlite3.OperationalError from RuntimeError
+                # etc. without parsing the message string.
+                logger.warning(
+                    "remember_batch: embedding storage failed for batch of "
+                    "%d items (vector voice will miss these rows) (%s): %s",
+                    len(items), type(exc).__name__, exc,
+                )
+        
         self._trim_working_memory()
         return ids
 
@@ -2082,9 +1992,19 @@ class BeamMemory:
     def consolidate_to_episodic(self, summary: str, source_wm_ids: List[str],
                                 source: str = "consolidation", importance: float = 0.6,
                                 metadata: Dict = None, valid_until: str = None,
-                                scope: str = "session") -> str:
+                                scope: str = "session",
+                                veracity: Optional[str] = None) -> str:
         """
         Store a consolidated summary into episodic_memory with optional embedding.
+
+        E4.a.1: `veracity` kwarg threads the aggregated source-row veracity
+        into the episodic INSERT. Pre-fix the INSERT didn't include the
+        veracity column at all, so post-sleep rows took the schema default
+        'unknown' — destroying the per-row veracity signal `remember_batch`
+        had populated. Callers (typically `sleep()`) should compute the
+        aggregate via `aggregate_veracity()` over the source rows' veracity
+        values and pass it here. `None` falls back to 'unknown' (matches
+        legacy behavior + schema default).
         """
         memory_id = _generate_id(summary)
         timestamp = datetime.now().isoformat()
@@ -2096,15 +2016,23 @@ class BeamMemory:
                 ep_type = result.memory_type.value
             except Exception:
                 pass
+        # Clamp to canonical allowlist at the trust boundary. Defaults to
+        # 'unknown' if not provided (back-compat with pre-E4.a.1 callers).
+        if veracity is None:
+            row_veracity = "unknown"
+        else:
+            row_veracity = clamp_veracity(
+                veracity, context="consolidate_to_episodic.veracity"
+            )
         cursor = self.conn.cursor()
         cursor.execute("""
             INSERT INTO episodic_memory
             (id, content, source, timestamp, session_id, importance, metadata_json, summary_of, valid_until, scope,
-             author_id, author_type, channel_id, memory_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             author_id, author_type, channel_id, memory_type, veracity)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (memory_id, summary, source, timestamp, self.session_id, importance,
               json.dumps(metadata or {}), ",".join(source_wm_ids), valid_until, scope,
-              self.author_id, self.author_type, self.channel_id, ep_type))
+              self.author_id, self.author_type, self.channel_id, ep_type, row_veracity))
         rowid = cursor.lastrowid
 
         if _embeddings.available():
@@ -2133,7 +2061,14 @@ class BeamMemory:
         self.conn.commit()
 
         # Phase 3-4: Graph + veracity for consolidated episodic memory
-        self._ingest_graph_and_veracity(memory_id, summary, source, veracity="inferred")
+        # E4.a.1 review fix (H2): thread the aggregated row_veracity into
+        # graph + fact extraction so Bayesian compounding on consolidated
+        # facts uses the source-aggregated signal, not a hardcoded
+        # 'inferred'. Pre-fix this line passed 'inferred' regardless, which
+        # the consolidator's `consolidate_fact` then used as the veracity
+        # weight in its confidence update — undermining the very signal
+        # we just preserved in the episodic INSERT.
+        self._ingest_graph_and_veracity(memory_id, summary, source, veracity=row_veracity)
 
         self._emit_event("MEMORY_CONSOLIDATED", memory_id, content=summary,
                          source=source, importance=importance,
@@ -4072,8 +4007,10 @@ class BeamMemory:
         # and miss the NULL rows. See Codex /review note for C9.
         # consolidated_at IS NULL filters out rows already processed by
         # a prior sleep so we don't re-summarize the same originals.
+        # E4.a.1: select veracity so the summary can inherit aggregated
+        # source-row trust signal (instead of defaulting to 'unknown').
         cursor.execute(f"""
-            SELECT id, content, source, timestamp, importance, metadata_json, scope, valid_until
+            SELECT id, content, source, timestamp, importance, metadata_json, scope, valid_until, veracity
             FROM working_memory
             WHERE COALESCE(session_id, 'default') = ?
               AND timestamp < ?
@@ -4154,6 +4091,15 @@ class BeamMemory:
                     if aggregated_valid_until is None or item["valid_until"] < aggregated_valid_until:
                         aggregated_valid_until = item["valid_until"]
 
+            # E4.a.1: aggregate per-row veracity into the summary's
+            # veracity label. Mode of sources with conservative tie-break.
+            # Pre-fix the episodic INSERT omitted veracity and the row
+            # took 'unknown' (0.8 multiplier) regardless of how confident
+            # the sources were.
+            aggregated_veracity = aggregate_veracity(
+                [item.get("veracity") for item in items]
+            )
+
             # --- Try LLM summarization (chunked to fit context) ---
             summary = None
             llm_succeeded = False
@@ -4205,6 +4151,7 @@ class BeamMemory:
                     importance=0.6,
                     scope=aggregated_scope,
                     valid_until=aggregated_valid_until,
+                    veracity=aggregated_veracity,
                     metadata={
                         "original_count": len(items),
                         "source": source,
