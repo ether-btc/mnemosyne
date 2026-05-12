@@ -1532,12 +1532,35 @@ class BeamMemory:
             ))
         self.conn.commit()
         
-        # Generate vector embeddings for working memory hybrid search
+        # Generate vector embeddings for working memory hybrid search.
+        # E2.a.10: pre-fix this block had two silent-failure modes:
+        # (a) if `embed()` returns a shorter array than inputs (partial
+        # fastembed failure), `vectors[i]` raises IndexError mid-loop →
+        # caught by bare except → the entire batch's embeddings are
+        # lost since cursor execution stops at the IndexError row;
+        # (b) any embed failure during ingest was silent. At 250K-row
+        # scale the vector voice (35% RRF weight) would silently bias
+        # toward earlier-ingested rows without any operator signal.
+        # Fix: length-mismatch check + WARNING log on the swallow.
         if _embeddings.available():
             try:
                 contents = [item["content"] for item in items]
                 vectors = _embeddings.embed(contents)
-                if vectors is not None:
+                if vectors is None:
+                    logger.warning(
+                        "remember_batch: _embeddings.embed returned None for "
+                        "batch of %d items — no vectors stored, vector voice "
+                        "will miss these rows",
+                        len(contents),
+                    )
+                elif len(vectors) != len(contents):
+                    logger.warning(
+                        "remember_batch: embedding count mismatch (%d vectors "
+                        "for %d inputs) — skipping vector storage for this "
+                        "batch to avoid partial-alignment errors",
+                        len(vectors), len(contents),
+                    )
+                else:
                     model = _embeddings._DEFAULT_MODEL
                     for i, memory_id in enumerate(ids):
                         emb_json = _embeddings.serialize(vectors[i])
@@ -1545,8 +1568,12 @@ class BeamMemory:
                             "INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, ?)",
                             (memory_id, emb_json, model)
                         )
-            except Exception:
-                pass  # Vector embedding is best-effort, non-blocking
+            except Exception as exc:
+                logger.warning(
+                    "remember_batch: embedding storage failed for batch of "
+                    "%d items (vector voice will miss these rows): %s",
+                    len(items), exc,
+                )
         
         self._trim_working_memory()
         return ids
