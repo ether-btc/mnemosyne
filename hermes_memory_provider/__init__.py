@@ -672,7 +672,9 @@ class MnemosyneMemoryProvider(MemoryProvider):
                     content += "..."
                 ts = r.get("timestamp", "")[:16] if r.get("timestamp") else ""
                 imp = r.get("importance", 0.0)
-                lines.append(f"  [{ts}] (importance {imp:.2f}) {content}")
+                trust = r.get("trust_tier", "STATED")
+                trust_tag = f" [{trust}]" if trust != "STATED" else ""
+                lines.append(f"  [{ts}] (importance {imp:.2f}){trust_tag} {content}")
             return "\n".join(lines)
         except Exception as e:
             logger.debug("Mnemosyne prefetch failed: %s", e)
