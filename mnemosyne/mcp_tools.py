@@ -273,7 +273,7 @@ def _resolve_bank(arguments: Dict[str, Any]) -> str:
 def _handle_remember(arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Handle mnemosyne_remember tool call."""
     content = arguments["content"]
-    source = arguments.get("source", "conversation")
+    source = arguments.get("source", "mcp")
     importance = arguments.get("importance", 0.5)
     metadata = arguments.get("metadata", {})
     extract_entities = arguments.get("extract_entities", False)
@@ -288,7 +288,6 @@ def _handle_remember(arguments: Dict[str, Any]) -> Dict[str, Any]:
         metadata=metadata,
         extract_entities=extract_entities,
         extract=extract,
-        trust_tier="EXTERNAL_WRITE",
     )
 
     return {

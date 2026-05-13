@@ -333,7 +333,7 @@ class Mnemosyne:
             importance=importance, metadata=metadata,
             valid_until=valid_until, scope=scope,
             extract_entities=extract_entities, extract=extract,
-            trust_tier=trust_tier or "STATED",
+            trust_tier=trust_tier,
         )
         timestamp = datetime.now().isoformat()
 

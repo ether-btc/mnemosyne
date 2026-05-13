@@ -117,6 +117,47 @@ except ImportError:
             return norm
         return "unknown"
 
+# ------------------------------------------------------------------
+# Trust tier derivation from ingestion source (plugin-first architecture)
+# ------------------------------------------------------------------
+TRUST_TIER_MAP = {
+    "conversation": "STATED",       # Direct user input via agent
+    "user":          "STATED",       # Explicit user action
+    "cli":           "STATED",       # CLI direct user input
+    "mcp":           "EXTERNAL_WRITE",  # External MCP tool calls
+    "import":        "IMPORTED",     # Bulk import from file
+    "mem0":          "IMPORTED",     # External service import
+    "honcho_import": "IMPORTED",     # Honcho data migration
+    "honcho_summary":"IMPORTED",     # Honcho auto-summary
+    "consolidation": "DERIVED",      # System sleep/summarize output
+    "sleep_consolidation": "DERIVED", # Sleep cycle output
+    "regex":         "DERIVED",      # Automated regex extraction
+    "extraction":    "DERIVED",      # LLM fact extraction
+    "unknown":       "STATED",       # Unknown source, conservative default
+}
+
+def _source_to_trust_tier(source: str) -> str:
+    """Map ingestion source to trust_tier for prompt-injection defense.
+
+    Plugin-first design: callers describe WHAT they are (via `source`),
+    Mnemosyne decides HOW to trust it (via trust_tier mapping). New
+    ingestion paths only need to set `source` honestly — the mapping
+    centralizes the trust policy.
+    """
+    if not source:
+        return "STATED"
+    # Direct match first
+    if source in TRUST_TIER_MAP:
+        return TRUST_TIER_MAP[source]
+    # Heuristic fallback: any source containing 'import' → IMPORTED
+    if "import" in source.lower():
+        return "IMPORTED"
+    # Any source containing 'mcp' → EXTERNAL_WRITE
+    if "mcp" in source.lower():
+        return "EXTERNAL_WRITE"
+    # Conservative default: treat as direct user input
+    return "STATED"
+
 try:
     import numpy as np
 except ImportError:
@@ -1560,7 +1601,7 @@ class BeamMemory:
                  extract_entities: bool = False,
                  extract: bool = False,
                  veracity: str = "unknown",
-                 trust_tier: str = "STATED") -> str:
+                 trust_tier: str = None) -> str:
         """Store into working_memory. Deduplicates exact content matches.
 
         When called from the legacy-compatible Mnemosyne.remember() path,
@@ -1591,13 +1632,20 @@ class BeamMemory:
         # silently fall through to UNKNOWN_WEIGHT at scoring time.
         veracity = clamp_veracity(veracity, context="remember")
 
-        # --- Content sanitization: extract binary payloads to blob storage ---
+    # --- Content sanitization: extract binary payloads to blob storage ---
         from mnemosyne.core.content_sanitizer import sanitize_content as _sanitize
         sanitized_content, blob_meta = _sanitize(content)
         if blob_meta:
             metadata = (metadata or {}).copy()
             metadata["_blob"] = blob_meta
             content = sanitized_content
+
+        # --- Auto-derive trust_tier from source if not explicitly set ---
+        if trust_tier is None:
+            trust_tier = _source_to_trust_tier(source)
+        # Clamp to known tiers
+        if trust_tier not in ("STATED", "DERIVED", "EXTERNAL_WRITE", "IMPORTED"):
+            trust_tier = "STATED"
 
         # --- Typed memory classification (Phase 1 -- zero overhead) ---
         memory_type = None
