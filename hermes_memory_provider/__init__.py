@@ -641,11 +641,17 @@ class MnemosyneMemoryProvider(MemoryProvider):
         """Recall relevant context via Mnemosyne hybrid search with temporal weighting.
         
         Only includes memories above a relevance threshold to prevent context pollution
-        from low-quality matches."""
+        from low-quality matches. Scoped to the user's author_id when available."""
         if not self._beam or self._agent_context in self._skip_contexts:
             return ""
         try:
-            results = self._beam.recall(query, top_k=8, temporal_weight=0.2, temporal_halflife=48)
+            import os
+            author_id = self._beam.author_id or os.environ.get("MNEMOSYNE_AUTHOR_ID")
+            results = self._beam.recall(
+                query, top_k=8, 
+                temporal_weight=0.2, temporal_halflife=48,
+                author_id=author_id,
+            )
             if not results:
                 return ""
             # Filter out low-relevance results to prevent context pollution
