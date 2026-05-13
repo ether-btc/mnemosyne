@@ -91,6 +91,7 @@ def test_json_mode_uses_mnemosyne_data_dir(tmp_path):
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["MNEMOSYNE_DATA_DIR"] = str(data_dir)
+    env["MNEMOSYNE_NO_EMBEDDINGS"] = "1"
 
     store = subprocess.run(
         [sys.executable, "-m", "mnemosyne.cli", "store", "stats data dir probe"],
