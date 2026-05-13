@@ -230,6 +230,12 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
     def __init__(self):
         self._beam: Optional[Any] = None
+        # C27: capture init exception so downstream methods can surface it
+        # instead of silently no-op'ing. `_beam is None AND _init_error is None`
+        # means a deliberate skip (subagent/cron/skill_loop context, or pre-init);
+        # `_beam is None AND _init_error is not None` means a real failure that
+        # users and operators need to see.
+        self._init_error: Optional[BaseException] = None
         self._session_id = "hermes_default"
         self._hermes_home = ""
         self._platform = "cli"
@@ -247,6 +253,32 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # daemon thread from racing with unregister and falling through to
         # MNEMOSYNE_LLM_BASE_URL.
         self._session_end_thread: Optional[threading.Thread] = None
+
+    def _init_error_reason(self) -> str:
+        """Return a human-readable failure reason for tool responses.
+
+        Truncates the exception message to 200 chars so a verbose SQLite
+        error (or similar) can't bloat downstream tool-call payloads.
+        Collapses whitespace (including embedded newlines) into single
+        spaces so the message can't break the system-prompt structure or
+        look like multi-line instructions to the LLM -- defense in depth
+        against an exception whose ``str()`` includes user-controllable
+        text (e.g. a filesystem path supplied via MNEMOSYNE_DATA_DIR).
+        Returns a generic string when init was never attempted (e.g. a
+        subagent-context session that legitimately skipped initialize()).
+        """
+        if self._init_error is None:
+            return "Mnemosyne not initialized"
+        msg = str(self._init_error)
+        # Collapse all whitespace (\n, \r, \t, runs of spaces) into a
+        # single space. Codex finding #3: a multi-line exception text or
+        # one containing tab-separated instruction-like content could
+        # otherwise reach the LLM as structured input.
+        import re
+        msg = re.sub(r"\s+", " ", msg).strip()
+        if len(msg) > 200:
+            msg = msg[:200] + "..."
+        return f"{type(self._init_error).__name__}: {msg}"
 
     @property
     def name(self) -> str:
@@ -424,6 +456,17 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize Mnemosyne beam for this session."""
+        # C27: clear stale state from any prior init attempt so a re-init
+        # returns the provider to a clean slate. _beam reset is critical
+        # for the primary->skip-context re-init case (codex review finding
+        # #1): without it, a previously-initialized primary session that
+        # later re-initialized into a subagent context would leave the old
+        # _beam active, causing system_prompt_block() to report "Active"
+        # and handle_tool_call() to silently write into the wrong session.
+        # _init_error reset complements this for the failure-recovery case.
+        self._beam = None
+        self._init_error = None
+
         self._agent_context = kwargs.get("agent_context", "primary")
         self._platform = kwargs.get("platform", "cli")
         self._hermes_home = kwargs.get("hermes_home", "")
@@ -460,8 +503,15 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 self._beam = BeamMemory(session_id=self._session_id)
                 logger.info("Mnemosyne initialized: session=%s", self._session_id)
         except Exception as e:
+            # C27: capture the exception so system_prompt_block() can render a
+            # visible "UNAVAILABLE" banner every turn and handle_tool_call()
+            # can return a structured `memory_unavailable` response. Without
+            # this, an operator misconfiguration (corrupt DB, missing extras,
+            # permissions, schema mismatch) silently masquerades as "the agent
+            # doesn't remember anything" with no signal to the user.
             logger.warning("Mnemosyne init failed: %s", e)
             self._beam = None
+            self._init_error = e
 
         # Register the Hermes auxiliary LLM backend so Mnemosyne can route
         # consolidation and fact extraction through Hermes' authenticated
@@ -476,14 +526,32 @@ class MnemosyneMemoryProvider(MemoryProvider):
             logger.debug("Mnemosyne could not register Hermes auxiliary LLM backend: %s", exc)
 
     def system_prompt_block(self) -> str:
-        if not self._beam:
-            return ""
-        return (
-            "# Mnemosyne Memory\n"
-            "Active (native local memory). Use mnemosyne_remember to store ANY "
-            "durable fact, preference, identity, or insight. Use mnemosyne_recall to search. "
-            "The legacy memory tool is deprecated for durable storage — Mnemosyne is primary."
-        )
+        if self._beam:
+            # Merge resolution (PR #106 + C27): keep PR #106's description
+            # update that adds "identity" to the recognized memory kinds
+            # (matches the auto-capture for identity-significant feelings
+            # added in that PR), and keep C27's three-branch structure
+            # (working / init-failed-visible / skip-context-silent).
+            return (
+                "# Mnemosyne Memory\n"
+                "Active (native local memory). Use mnemosyne_remember to store ANY "
+                "durable fact, preference, identity, or insight. Use mnemosyne_recall to search. "
+                "The legacy memory tool is deprecated for durable storage — Mnemosyne is primary."
+            )
+        # C27: when init failed (as opposed to a deliberate skip-context),
+        # surface the failure in the system prompt so the agent -- and through
+        # it the user -- can see that memory is unavailable rather than
+        # silently behaving as if nothing was stored. The skip-context case
+        # still returns "" because that is the documented contract for
+        # cron/subagent/skill_loop sessions.
+        if self._init_error is not None:
+            return (
+                "# Mnemosyne Memory\n"
+                f"⚠️ UNAVAILABLE: {self._init_error_reason()}\n"
+                "Memory operations will fail this session. Resolve the underlying issue "
+                "(check ~/.hermes/logs/agent.log for the WARNING) and restart Hermes to retry."
+            )
+        return ""
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall relevant context via Mnemosyne hybrid search with temporal weighting.
@@ -602,7 +670,20 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if not self._beam:
-            return json.dumps({"error": "Mnemosyne not initialized"})
+            # C27: structured response carries the actual failure reason
+            # instead of a generic "not initialized" string. Status field
+            # is parseable by tool consumers; `reason` is human-readable for
+            # the agent to relay to the user. The `error` field is kept
+            # alongside `status` so callers using the prior "if 'error' in
+            # payload" pattern (codex review finding #4) don't silently
+            # misclassify unavailable as success.
+            reason = self._init_error_reason()
+            return json.dumps({
+                "status": "memory_unavailable",
+                "tool": tool_name,
+                "reason": reason,
+                "error": f"Mnemosyne unavailable: {reason}",
+            })
         try:
             if tool_name == "mnemosyne_remember":
                 return self._handle_remember(args)
