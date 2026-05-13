@@ -639,6 +639,9 @@ def init_beam(db_path: Path = None):
     _add_column_if_missing(conn, "episodic_memory", "author_id", "TEXT DEFAULT NULL")
     _add_column_if_missing(conn, "episodic_memory", "author_type", "TEXT DEFAULT NULL")
     _add_column_if_missing(conn, "episodic_memory", "channel_id", "TEXT DEFAULT NULL")
+    # --- Migration: trust tier for prompt-injection defense (v2.6) ---
+    _add_column_if_missing(conn, "working_memory", "trust_tier", "TEXT DEFAULT 'STATED'")
+    _add_column_if_missing(conn, "episodic_memory", "trust_tier", "TEXT DEFAULT 'STATED'")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_author ON working_memory(author_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_channel ON working_memory(channel_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_em_author ON episodic_memory(author_id)")
@@ -1556,7 +1559,8 @@ class BeamMemory:
                  memory_id: str = None,
                  extract_entities: bool = False,
                  extract: bool = False,
-                 veracity: str = "unknown") -> str:
+                 veracity: str = "unknown",
+                 trust_tier: str = "STATED") -> str:
         """Store into working_memory. Deduplicates exact content matches.
 
         When called from the legacy-compatible Mnemosyne.remember() path,
@@ -1633,6 +1637,7 @@ class BeamMemory:
                     channel_id = COALESCE(?, channel_id),
                     memory_type = COALESCE(?, memory_type),
                     veracity = CASE WHEN ? != 'unknown' THEN ? ELSE veracity END,
+                    trust_tier = COALESCE(?, trust_tier),
                     consolidated_at = NULL
                 WHERE id = ? AND session_id = ?
             """, (importance, datetime.now().isoformat(), source,
@@ -1640,6 +1645,7 @@ class BeamMemory:
                   self.author_id, self.author_type, self.channel_id,
                   memory_type,
                   veracity, veracity,
+                  trust_tier,
                   existing_id, self.session_id))
             self.conn.commit()
             # Run the same entity/fact extraction the new-row path runs, so
@@ -1664,11 +1670,11 @@ class BeamMemory:
         cursor.execute("""
             INSERT INTO working_memory
             (id, content, source, timestamp, session_id, importance, metadata_json, valid_until, scope,
-             author_id, author_type, channel_id, veracity, memory_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             author_id, author_type, channel_id, veracity, memory_type, trust_tier)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (memory_id, content, source, timestamp, self.session_id, importance,
               json.dumps(metadata or {}), valid_until, scope,
-              self.author_id, self.author_type, self.channel_id, veracity, memory_type))
+              self.author_id, self.author_type, self.channel_id, veracity, memory_type, trust_tier))
         self.conn.commit()
         self._trim_working_memory()
 
@@ -1694,6 +1700,7 @@ class BeamMemory:
                        *,
                        veracity: Optional[str] = None,
                        force_veracity: bool = False,
+                       trust_tier: str = "IMPORTED",
                        extract_entities: bool = False,
                        extract: bool = False) -> List[str]:
         """
@@ -1832,8 +1839,8 @@ class BeamMemory:
             meta_by_id[memory_id] = (item_source, item_veracity)
             cursor.execute("""
                 INSERT INTO working_memory (id, content, source, timestamp, session_id, importance, metadata_json,
-                author_id, author_type, channel_id, memory_type, veracity)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                author_id, author_type, channel_id, memory_type, veracity, trust_tier)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 memory_id,
                 item["content"],
@@ -1847,6 +1854,7 @@ class BeamMemory:
                 item.get("channel_id", self.channel_id),
                 item_type,
                 item_veracity,
+                trust_tier,
             ))
         self.conn.commit()
         
