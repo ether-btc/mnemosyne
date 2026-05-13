@@ -281,10 +281,12 @@ def _on_pre_llm_call(session_id, history, **kwargs):
 
         if user_message and len(user_message) > 3:
             # Search across ALL sessions (no session filter) for semantic matches
+            # Scoped to the user's author_id for cross-session consistency
             recall_results = mem.recall(
                 query=user_message,
                 top_k=5,
-                temporal_weight=0.2  # mild recency bias
+                temporal_weight=0.2,  # mild recency bias
+                author_id=mem.beam.author_id,
             )
 
         # Deduplicate: remove recall results that are already in context_memories
