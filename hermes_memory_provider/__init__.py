@@ -472,23 +472,23 @@ except ImportError:
     MemoryProvider = object  # type: ignore
 
 
+def _parse_env_float(key: str, default: float) -> float:
+    """Read a float env var, falling back to default on missing or invalid value."""
+    val = os.environ.get(key)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
 class MnemosyneMemoryProvider(MemoryProvider):
     """Mnemosyne native memory — local SQLite with vector + FTS5 hybrid search."""
 
     # How long on_session_end will wait for sleep/consolidation to finish before
     # giving up and letting the daemon thread continue in the background. Tests
     # may shorten this to keep the suite fast. Override via MNEMOSYNE_SESSION_END_TIMEOUT.
-    @staticmethod
-    def _parse_env_float(key: str, default: float) -> float:
-        """Read a float env var, falling back to default on missing or invalid value."""
-        val = os.environ.get(key)
-        if val is None:
-            return default
-        try:
-            return float(val)
-        except (ValueError, TypeError):
-            return default
-
     SESSION_END_SLEEP_TIMEOUT_SECONDS = _parse_env_float("MNEMOSYNE_SESSION_END_TIMEOUT", 15)
 
     # Auto-sleep thread join timeout. Re-read from env once at class level so
