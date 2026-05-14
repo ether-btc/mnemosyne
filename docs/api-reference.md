@@ -1,4 +1,4 @@
-# API Reference — Mnemosyne v2.9.0
+# API Reference — Mnemosyne v2.8.0
 
 ## Quick Start
 
