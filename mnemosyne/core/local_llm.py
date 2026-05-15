@@ -355,10 +355,17 @@ def _prompt_token_budget() -> int:
     Picks the larger HOST_LLM_N_CTX when the host backend will handle the
     call; otherwise the TinyLlama-calibrated LLM_N_CTX. This avoids the
     multi-chunk-summary degradation on 128K-context aux providers.
+
+    NOTE: output_reserve is capped at min(LLM_MAX_TOKENS, n_ctx // 4) so
+    that LLM_MAX_TOKENS == n_ctx (the default for TinyLlama 1.1B with 2048
+    context) doesn't leave a negative budget for memory content. See
+    BEAM-benchmark root-cause analysis (May 2026). Summarized output fits
+    in 128-256 tokens for consolidation; reserving more than 1/4 of the
+    context window for output starves the input side.
     """
     overhead = 80
-    output_reserve = LLM_MAX_TOKENS
     n_ctx = HOST_LLM_N_CTX if _host_backend_will_handle_call() else LLM_N_CTX
+    output_reserve = min(LLM_MAX_TOKENS, max(128, n_ctx // 4))
     safety_margin = int(n_ctx * 0.2)
     return max(64, n_ctx - overhead - output_reserve - safety_margin)
 

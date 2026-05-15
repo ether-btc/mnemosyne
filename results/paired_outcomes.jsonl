@@ -1,0 +1,16 @@
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q0", "ability": "ABS", "score": 1.0, "correct": true}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q1", "ability": "ABS", "score": 1.0, "correct": true}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q2", "ability": "CR", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q3", "ability": "CR", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q4", "ability": "EO", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q5", "ability": "EO", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q6", "ability": "IE", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q7", "ability": "IE", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q10", "ability": "KU", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q11", "ability": "KU", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q12", "ability": "MR", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q13", "ability": "MR", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q16", "ability": "SUM", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q17", "ability": "SUM", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q18", "ability": "TR", "score": 0.0, "correct": false}
+{"config_id": "cfg-d36f49d11b", "run_started_at": "2026-05-15T12:22:40.343011+00:00", "scale": "100K", "conversation_id": "1", "qid": "1:q19", "ability": "TR", "score": 0.0, "correct": false}
