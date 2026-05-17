@@ -1,5 +1,5 @@
 {
-  "date": "2026-05-17T00:24:07.385754+00:00",
+  "date": "2026-05-17T02:53:55.677578+00:00",
   "metadata": {
     "model": "deepseek-v4-pro",
     "sample_size": 1,
@@ -28,7 +28,7 @@
         "count": 2
       },
       "MR": {
-        "avg_score": 0.0,
+        "avg_score": 0.5,
         "count": 2
       },
       "SUM": {
@@ -40,7 +40,7 @@
         "count": 2
       },
       "OVERALL": {
-        "avg_score": 0.1875,
+        "avg_score": 0.25,
         "count": 16
       }
     }
