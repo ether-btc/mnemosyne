@@ -1132,7 +1132,9 @@ def _fact_match_tokens(text: str) -> Set[str]:
     return {
         token
         for token in tokens
-        if len(token) >= 3 and token not in _FACT_MATCH_STOPWORDS
+        if len(token) >= 3
+        and token not in _FACT_MATCH_STOPWORDS
+        and not token.isdigit()  # drop pure numeric tokens (IPs, versions)
     }
 
 
@@ -1165,14 +1167,11 @@ def _strict_fact_matches(query: str, fact_text: str) -> bool:
     # Allow a single highly distinctive exact token, but not arbitrary words.
     if len(overlap) == 1:
         token = next(iter(overlap))
-        return (
-            len(token) >= 8
-            or "." in token
-            or "/" in token
-            or ":" in token
-            or "-" in token
-            or "_" in token
-        )
+        # Require BOTH length >= 8 AND structural markers for single-token matches.
+        # A bare 8-char lowercase string like "abcdefgh" is not distinctive enough;
+        # we need a path/domain/version marker to avoid false positives.
+        has_structure = any(c in token for c in (".", "/", ":", "-", "_"))
+        return len(token) >= 8 and has_structure
 
     return False
 
