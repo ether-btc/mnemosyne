@@ -740,6 +740,16 @@ def _multi_strategy_recall(beam: BeamMemory, question: str, top_k: int = DEFAULT
         date_temporal_weight = 0.5
         # Search for dates and timelines
         _add_unique(_recall_safe(beam, "deadline schedule timeline date", top_k, temporal_weight=date_temporal_weight))
+        
+        # --- NEW: Hard-filter for specific extracted date strings ---
+        # If the question asks about a specific date (e.g., '2024-03-15'), force-filter SQL
+        # directly for that exact string in the content to eliminate FTS5 fuzziness.
+        date_match = re.search(r'\d{4}-\d{2}-\d{2}', question)
+        if date_match:
+            exact_date = date_match.group(0)
+            # Inject a high-priority hard-filter query
+            _add_unique(_recall_safe(beam, f"content:'{exact_date}'", top_k * 2, temporal_weight=0.9))
+            
         # Search for specific months mentioned in the question
         for month in ['january', 'february', 'march', 'april', 'may', 'june',
                       'july', 'august', 'september', 'october', 'november', 'december']:
@@ -1412,19 +1422,31 @@ def answer_with_memory(llm: LLMClient, beam: BeamMemory, question: str,
         ]
         pass1_answer = llm.chat(pass1_messages, temperature=0.1, max_tokens=1024)
         
-        # --- Gap analysis: what specific information is missing? ---
-        gap_prompt = f"""You answered a memory-retrieval question. Now identify what is MISSING.
+        # --- Gap analysis: extract exact date/entity strings for Pass 2 FTS5 hard-filter ---
+        # Critical: give the LLM the RAW retrieved context so it can SEE the dates it missed.
+        gap_prompt = f"""You answered a temporal question but may have used wrong dates. Your job: extract the CORRECT date strings from the context below.
 
-ORIGINAL QUESTION: {question}
+QUESTION: {question}
 YOUR ANSWER: {pass1_answer}
 
-Your answer may be incomplete. List specific missing information as search queries.
-Format: One query per line prefixed with "GAP:".
-Examples: "GAP: sprint end date March 2024", "GAP: number of columns transactions table"
-If your answer is already comprehensive and correct, output only: NO_GAPS"""
+RETRIEVED MEMORY CONTEXT (scan this for dates):
+{pass1_ctx}
+
+TASK: Extract the exact ISO date strings (YYYY-MM-DD) and key entities the question needs.
+Output format (one per line, no other text):
+GAP: 2024-01-15
+GAP: 2024-03-15
+GAP: transaction management
+GAP: analytics deadline
+
+Rules:
+- Extract dates that appear in the CONTEXT, even if you didn't use them in your answer.
+- For "how many days/weeks between X and Y" questions, extract BOTH date strings.
+- For event ordering questions, extract the event names/phrases.
+- If the context contains no relevant dates, output: NO_GAPS"""
         
         gap_messages = [
-            {"role": "system", "content": "You identify missing facts for targeted retrieval. Be specific. Output search queries."},
+            {"role": "system", "content": "You extract exact entity strings from text for database filtering. Output ONLY 'GAP: ...' lines or 'NO_GAPS'. No pleasantries, no explanations."},
             {"role": "user", "content": gap_prompt},
         ]
         gap_response = llm.chat(gap_messages, temperature=0.0, max_tokens=384)
@@ -1464,10 +1486,25 @@ If your answer is already comprehensive and correct, output only: NO_GAPS"""
             
             # Rebuild context with augmented memories
             pass2_ctx = _build_context(all_mems, recent_parts)
-            pass2_messages = [
-                {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
-                {"role": "user", "content": f"{pass2_ctx}\n\nQUESTION: {question}\n\nANSWER:"},
-            ]
+            
+            # Switch to Calculator prompt for TR/EO abilities
+            if ability in {'TR', 'EO'}:
+                calc_prompt = """You are a precise temporal calculator. You have been provided with specific retrieved evidence (dates, event timelines).
+Your task is to compute the duration or interval between the events.
+DO NOT use chat pleasantries or summarize the conversation.
+Follow this format strictly:
+1. IDENTIFIED DATES: [List dates found]
+2. CALCULATION: [Show the step-by-step math]
+3. FINAL ANSWER: [Provide only the number/duration]"""
+                pass2_messages = [
+                    {"role": "system", "content": calc_prompt},
+                    {"role": "user", "content": f"{pass2_ctx}\n\nQUESTION: {question}\n\nANSWER:"},
+                ]
+            else:
+                pass2_messages = [
+                    {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"{pass2_ctx}\n\nQUESTION: {question}\n\nANSWER:"},
+                ]
             return _ret(llm.chat(pass2_messages, temperature=0.1, max_tokens=2048), all_mems)
         
         # No gaps: return pass 1 answer as-is
