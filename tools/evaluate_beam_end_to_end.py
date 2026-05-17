@@ -1503,6 +1503,31 @@ GAP: migrated to PostgreSQL""" % (question, ctx_trimmed))
                     if ck not in gap_seen:
                         gap_seen.add(ck)
                         gap_memories.append(mem)
+                # ---- LIKE fallback: FTS5 sanitization destroys specificity for
+                # ---- gap queries containing dots/dashes/versions. Exact substring
+                # ---- search catches what FTS5 OR-tokenization misses.
+                try:
+                    import sqlite3 as _sql
+                    _conn = beam.conn
+                    for _tbl, _id_col in [("working_memory", "id"), ("episodic_memory", "id")]:
+                        _rows = _conn.execute(
+                            f"SELECT {_id_col}, content, metadata FROM {_tbl} WHERE content LIKE ? ORDER BY timestamp DESC LIMIT 10",
+                            (f"%{gq}%",)
+                        ).fetchall()
+                        for _r in _rows:
+                            _ck = _r[1][:80] if _r[1] else ""
+                            if _ck and _ck not in gap_seen:
+                                gap_seen.add(_ck)
+                                _mem = {"id": _r[0], "content": _r[1], "score": 0.95,
+                                        "metadata": json.loads(_r[2]) if _r[2] else {}}
+                                # Inject temporal tags for date-based LIKE hits
+                                import re as _re_like
+                                _dates = _re_like.findall(r'\b\d{4}-\d{2}-\d{2}\b', _r[1] or "")
+                                if _dates:
+                                    _mem["content"] = f"{_r[1]} [DATES: {', '.join(_dates)}]"
+                                gap_memories.append(_mem)
+                except Exception:
+                    pass
             
             # Merge: original + gap memories, deduplicate, re-sort
             all_mems = list(memories)
