@@ -1462,7 +1462,7 @@ GAP: migrated to PostgreSQL""" % (question, ctx_trimmed))
             {"role": "user", "content": gap_prompt},
         ]
         try:
-            gap_response = llm.chat(gap_messages, temperature=0.0, max_tokens=1024)
+            gap_response = llm.chat(gap_messages, temperature=0.0, max_tokens=2048)
         except Exception as e:
             import traceback
             gap_response = None
