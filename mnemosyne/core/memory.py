@@ -328,6 +328,15 @@ class Mnemosyne:
 
         _content = sanitized_content if blob_meta else content
 
+        # Temporal tagging pass
+        import re
+        dates = re.findall(r'\b\d{4}-\d{2}-\d{2}\b', _content)
+        if dates:
+            _content = f"{_content} [DATES: {', '.join(dates)}]"
+        durations = re.findall(r'\b\d+\s(?:days|weeks|months|years)\b', _content, re.IGNORECASE)
+        if durations:
+            _content = f"{_content} [DURATIONS: {', '.join(durations)}]"
+
         memory_id = self.beam.remember(
             _content, source=source,
             importance=importance, metadata=metadata,

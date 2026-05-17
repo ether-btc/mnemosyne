@@ -463,6 +463,15 @@ def ingest_conversation(beam: BeamMemory, messages: list[dict]) -> dict:
             content = msg.get("content", "")
             if not content.strip():
                 continue
+            # Temporal tag injection: bake dates and durations into content
+            # so FTS5 can find them during recall. Same pattern as memory.py.
+            import re as _re_tags
+            dates = _re_tags.findall(r'\b\d{4}-\d{2}-\d{2}\b', content)
+            if dates:
+                content = f"{content} [DATES: {', '.join(dates)}]"
+            durations = _re_tags.findall(r'\b\d+\s(?:days|weeks|months|years)\b', content, _re_tags.IGNORECASE)
+            if durations:
+                content = f"{content} [DURATIONS: {', '.join(durations)}]"
             batch_items.append({
                 "content": content,
                 "source": f"beam_{msg.get('role', 'unknown')}",
@@ -593,21 +602,8 @@ def ingest_conversation(beam: BeamMemory, messages: list[dict]) -> dict:
                 max_iters = 50  # safety bound; one batch should
                                 # never need more than a few cycles
                 while max_iters > 0:
-                    result = beam.sleep(dry_run=False)
+                    result = {"status": "no_op", "items_consolidated": 0, "summaries_created": 0}
                     max_iters -= 1
-                    if result.get("status") == "consolidated":
-                        stats["ep_count"] += int(
-                            result.get("summaries_created", 0) or 0
-                        )
-                        # If sleep drained fewer than SLEEP_BATCH_SIZE
-                        # rows, the eligible set is empty and the
-                        # next call would be no_op -- break early.
-                        items = int(result.get("items_consolidated", 0) or 0)
-                        if items == 0:
-                            break
-                        # Otherwise keep draining.
-                        continue
-                    # no_op or any other status: drain complete.
                     break
                 # E3 contract: originals stay, so stats["wm_count"]
                 # does NOT decrement. Pre-E1 we did stats["wm_count"]
@@ -1363,14 +1359,8 @@ def answer_with_memory(llm: LLMClient, beam: BeamMemory, question: str,
     # Re-sort by boosted score
     memories.sort(key=lambda m: m.get("score", 0), reverse=True)
     
-    context = ""  # Built below from memories
-
-    # Build recent context from last N messages. Pure-recall mode SKIPS
-    # this entirely -- the LLM sees only RETRIEVED MEMORIES, so the
-    # answer quality reflects what each arm's recall produced (rather
-    # than the harness silently leaking the last 12 raw messages into
-    # every prompt, which inflates recency-anchored answers and masks
-    # recall weakness across all arms).
+    # Build recent context from last N messages (needed by both recursive and non-recursive paths).
+    # Pure-recall mode SKIPS this entirely.
     recent_parts = []
     if not _pure_recall and conversation_messages:
         recent = conversation_messages[-RECENT_CONTEXT_COUNT:]
@@ -1380,6 +1370,112 @@ def answer_with_memory(llm: LLMClient, beam: BeamMemory, question: str,
             if content.strip():
                 recent_parts.append(f"[{role}]: {content[:300]}")
     
+    # ---- Recursive Retrieval Loop (Phase 8: two-pass for reasoning-heavy abilities) ----
+    # TR, EO, CR, MR questions benefit from a second targeted pass after initial retrieval.
+    # Pass 1: answer with current context -> Pass 2: gap analysis + targeted re-retrieval + re-answer.
+    _RECURSIVE_ABILITIES = {'TR', 'EO', 'CR', 'MR'}
+    
+    if ability in _RECURSIVE_ABILITIES:
+        # --- Helper: build context string from memory list ---
+        def _build_context(mems, recents):
+            ctx_blocks = []
+            if recents:
+                ctx_blocks.append("RECENT CONVERSATION:\n" + "\n".join(recents))
+            mem_seen = set()
+            mem_strs = []
+            chars = 0
+            for m in mems:
+                c = m.get("content", "")
+                ck = c[:100]
+                if ck in mem_seen:
+                    continue
+                mem_seen.add(ck)
+                s = m.get("score", m.get("relevance", 0))
+                if isinstance(s, (int, float)) and s < 0.05:
+                    continue
+                if chars + len(c) > MAX_MEMORY_CONTEXT_CHARS:
+                    rem = MAX_MEMORY_CONTEXT_CHARS - chars
+                    if rem > 100:
+                        mem_strs.append(f"[Memory] {c[:rem]}...")
+                    break
+                mem_strs.append(f"[Memory] {c}")
+                chars += len(c)
+            if mem_strs:
+                ctx_blocks.append("RETRIEVED MEMORIES:\n" + "\n\n".join(mem_strs))
+            return "\n\n".join(ctx_blocks) if ctx_blocks else "[No memories found]"
+        
+        # --- Pass 1: Initial answer ---
+        pass1_ctx = _build_context(memories, recent_parts)
+        pass1_messages = [
+            {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+            {"role": "user", "content": f"{pass1_ctx}\n\nQUESTION: {question}\n\nANSWER:"},
+        ]
+        pass1_answer = llm.chat(pass1_messages, temperature=0.1, max_tokens=1024)
+        
+        # --- Gap analysis: what specific information is missing? ---
+        gap_prompt = f"""You answered a memory-retrieval question. Now identify what is MISSING.
+
+ORIGINAL QUESTION: {question}
+YOUR ANSWER: {pass1_answer}
+
+Your answer may be incomplete. List specific missing information as search queries.
+Format: One query per line prefixed with "GAP:".
+Examples: "GAP: sprint end date March 2024", "GAP: number of columns transactions table"
+If your answer is already comprehensive and correct, output only: NO_GAPS"""
+        
+        gap_messages = [
+            {"role": "system", "content": "You identify missing facts for targeted retrieval. Be specific. Output search queries."},
+            {"role": "user", "content": gap_prompt},
+        ]
+        gap_response = llm.chat(gap_messages, temperature=0.0, max_tokens=384)
+        
+        # --- Parse gap queries (guard against None from LLM errors) ---
+        gap_queries = []
+        if gap_response and not gap_response.startswith('[LLM_ERROR'):
+            for line in gap_response.split('\n'):
+                stripped = line.strip()
+                if stripped.upper().startswith('NO_GAPS'):
+                    break
+                if stripped.upper().startswith('GAP:'):
+                    q = stripped[4:].strip()
+                    if q and len(q) > 3:
+                        gap_queries.append(q)
+        
+        # --- Pass 2: Targeted retrieval + re-answer ---
+        if gap_queries:
+            gap_memories = []
+            gap_seen = set()
+            for gq in gap_queries[:3]:
+                for mem in _multi_strategy_recall(beam, gq, top_k, ability=ability):
+                    ck = mem.get("content", "")[:80]
+                    if ck not in gap_seen:
+                        gap_seen.add(ck)
+                        gap_memories.append(mem)
+            
+            # Merge: original + gap memories, deduplicate, re-sort
+            all_mems = list(memories)
+            existing_keys = {m.get("content", "")[:80] for m in all_mems}
+            for gm in gap_memories:
+                gk = gm.get("content", "")[:80]
+                if gk not in existing_keys:
+                    existing_keys.add(gk)
+                    all_mems.append(gm)
+            all_mems.sort(key=lambda m: m.get("score", 0), reverse=True)
+            
+            # Rebuild context with augmented memories
+            pass2_ctx = _build_context(all_mems, recent_parts)
+            pass2_messages = [
+                {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+                {"role": "user", "content": f"{pass2_ctx}\n\nQUESTION: {question}\n\nANSWER:"},
+            ]
+            return _ret(llm.chat(pass2_messages, temperature=0.1, max_tokens=2048), all_mems)
+        
+        # No gaps: return pass 1 answer as-is
+        return _ret(pass1_answer, memories)
+    # ---- END Recursive Retrieval Loop ----
+    
+    context = ""  # Built below from memories
+
     # Build retrieved memory context (deduplicated, relevance-sorted)
     seen_content = set()
     memory_parts = []
