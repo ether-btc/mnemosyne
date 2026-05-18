@@ -278,7 +278,7 @@ def load_beam_dataset(scales: list[str], max_conversations: int = None) -> dict:
 
             else:
                 # 100K, 500K, 1M scales from the main dataset
-                ds = load_dataset("Mohammadta/BEAM", streaming=True)
+                ds = load_dataset("Mohammadta/BEAM", streaming=False)
                 if scale not in ds:
                     print(f"    WARNING: split '{scale}' not found. Available: {list(ds.keys())}")
                     continue
