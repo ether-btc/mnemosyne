@@ -2256,17 +2256,9 @@ def main():
                 ingest_time = time.perf_counter() - t0
 
                 # Post-ingestion consolidation sweep: catch any rows that the
-                # per-batch sleep loop didn't process. Uses LLM-based summarization
-                # (cheap flash model via OpenRouter) instead of AAAK compression
-                # to produce dense episodic summaries. The 52.3% peak relied on
-                # LLM summaries collapsing related facts from 10+ messages into one.
-                # Configure the remote LLM path before the sweep so local_llm
-                # routes to OpenRouter instead of falling back to AAAK.
-                import mnemosyne.core.local_llm as _llm
-                _llm.LLM_ENABLED = True
-                _llm.LLM_BASE_URL = OPENROUTER_BASE_URL
-                _llm.LLM_API_KEY = OPENROUTER_API_KEY
-                _llm.LLM_REMOTE_MODEL = CONSOLIDATION_MODEL
+                # per-batch sleep loop didn't process. Uses AAAK compression
+                # (same as per-batch). LLM-based consolidation is available via
+                # MNEMOSYNE_LLM_BASE_URL + MNEMOSYNE_LLM_MODEL env vars.
                 _consolidation_attempts = 0
                 while _consolidation_attempts < 50:
                     try:
