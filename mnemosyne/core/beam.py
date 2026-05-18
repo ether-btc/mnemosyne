@@ -634,6 +634,93 @@ def init_beam(db_path: Path = None):
         END
     """)
 
+    # --- MEMORIA: Structured Fact Tables (Phase 1) ---
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memoria_facts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT DEFAULT 'default',
+            message_idx INTEGER,
+            fact_type TEXT,
+            key TEXT,
+            value TEXT,
+            context_snippet TEXT,
+            importance REAL DEFAULT 0.5,
+            timestamp TEXT,
+            version_id INTEGER DEFAULT 0,
+            previous_value TEXT,
+            updated_msg_idx INTEGER,
+            valid_from_msg_idx INTEGER,
+            valid_to_msg_idx INTEGER
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_key ON memoria_facts(key)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_type ON memoria_facts(fact_type)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_session ON memoria_facts(session_id)")
+    # Migration: add versioning columns to existing tables (safe re-run)
+    for col in ['version_id', 'previous_value', 'updated_msg_idx', 'valid_from_msg_idx', 'valid_to_msg_idx']:
+        _add_column_if_missing(conn, "memoria_facts", col, {
+            'version_id': 'INTEGER DEFAULT 0',
+            'previous_value': 'TEXT',
+            'updated_msg_idx': 'INTEGER',
+            'valid_from_msg_idx': 'INTEGER',
+            'valid_to_msg_idx': 'INTEGER',
+        }.get(col, 'TEXT'))
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memoria_timelines (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT DEFAULT 'default',
+            date TEXT,
+            message_idx INTEGER,
+            description TEXT,
+            source TEXT
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_timelines_date ON memoria_timelines(date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_timelines_session ON memoria_timelines(session_id)")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memoria_instructions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT DEFAULT 'default',
+            message_idx INTEGER,
+            instruction TEXT,
+            active INTEGER DEFAULT 1,
+            topic TEXT,
+            context_snippet TEXT
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_instr_session ON memoria_instructions(session_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_instr_active ON memoria_instructions(active)")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memoria_preferences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT DEFAULT 'default',
+            message_idx INTEGER,
+            preference TEXT,
+            topic TEXT,
+            evolution TEXT,
+            context_snippet TEXT
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pref_session ON memoria_preferences(session_id)")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memoria_kg (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT DEFAULT 'default',
+            subject TEXT,
+            predicate TEXT,
+            object TEXT,
+            message_idx INTEGER,
+            confidence REAL DEFAULT 0.7
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_kg_subject ON memoria_kg(subject)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_kg_predicate ON memoria_kg(predicate)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_kg_session ON memoria_kg(session_id)")
+
     # --- Consolidation Log ---
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS consolidation_log (
@@ -1132,7 +1219,7 @@ def _fact_match_tokens(text: str) -> Set[str]:
     return {
         token
         for token in tokens
-        if len(token) >= 3 and token not in _FACT_MATCH_STOPWORDS
+        if len(token) >= 3 and token not in _FACT_MATCH_STOPWORDS and not token.isdigit()
     }
 
 
@@ -1165,14 +1252,8 @@ def _strict_fact_matches(query: str, fact_text: str) -> bool:
     # Allow a single highly distinctive exact token, but not arbitrary words.
     if len(overlap) == 1:
         token = next(iter(overlap))
-        return (
-            len(token) >= 8
-            or "." in token
-            or "/" in token
-            or ":" in token
-            or "-" in token
-            or "_" in token
-        )
+        has_structure = any(c in token for c in (".", "/", ":", "-", "_"))
+        return len(token) >= 8 and has_structure
 
     return False
 
@@ -2122,6 +2203,122 @@ class BeamMemory:
             except Exception:
                 pass  # Veracity failures are non-blocking
 
+        # Phase 5: Proactive linking — auto-create graph edges to related memories
+        self._proactively_link(memory_id, content)
+
+    def _proactively_link(self, memory_id: str, content: str):
+        """Phase 5: Auto-create graph edges between new memory and related existing memories.
+
+        Two zero-LLM strategies:
+        1. Content similarity via recall() — top-K via FTS5 + vector
+        2. Entity overlap via shared facts in the graph
+
+        Gated behind MNEMOSYNE_PROACTIVE_LINKING=1 env var.
+        Non-blocking — failures never affect memory storage.
+        """
+        import os
+        if os.environ.get("MNEMOSYNE_PROACTIVE_LINKING", "0") != "1":
+            return
+        if self.episodic_graph is None:
+            return
+
+        try:
+            now = datetime.now().isoformat()
+
+            # --- Strategy 1: Content similarity via direct FTS5 ---
+            try:
+                # Build a broad FTS5 query from content keywords (skip very short content)
+                stop_words = frozenset({
+                    "the", "a", "an", "is", "was", "are", "were", "be", "been",
+                    "being", "have", "has", "had", "do", "does", "did", "will",
+                    "would", "could", "should", "may", "might", "can", "shall",
+                    "to", "of", "in", "for", "on", "with", "at", "by", "from",
+                    "as", "into", "through", "during", "before", "after", "above",
+                    "below", "between", "out", "off", "over", "under", "again",
+                    "further", "then", "once", "here", "there", "when", "where",
+                    "why", "how", "all", "each", "every", "both", "few", "more",
+                    "most", "other", "some", "such", "no", "nor", "not", "only",
+                    "own", "same", "so", "than", "too", "very", "just", "because",
+                    "about", "which", "who", "what", "this", "that", "these",
+                    "those", "it", "its", "i", "me", "my", "we", "our", "you",
+                    "your", "he", "him", "his", "she", "her", "they", "them",
+                    "their", "and", "but", "or", "if", "while",
+                })
+                words = [w.lower().strip(".,!?;:'\"()[]{}") for w in content.split()]
+                keywords = [w for w in words if len(w) > 2 and w not in stop_words]
+                keywords = [kw for kw in keywords if kw.isalpha()]  # FTS5-safe only
+                if len(keywords) >= 3:
+                    fts_query = " OR ".join(keywords)
+                    cursor = self.conn.execute(
+                        "SELECT DISTINCT id FROM fts_working WHERE fts_working MATCH ? ORDER BY rank LIMIT 5",
+                        (fts_query,)
+                    )
+                    similar_ids = [r["id"] for r in cursor.fetchall() if r["id"] != memory_id]
+
+                    similarity_count = 0
+                    for i, rid in enumerate(similar_ids[:5]):
+                        existing = self.episodic_graph.conn.execute(
+                            "SELECT 1 FROM graph_edges WHERE (source = ? AND target = ?) OR (source = ? AND target = ?)",
+                            (memory_id, rid, rid, memory_id)
+                        ).fetchone()
+                        if existing:
+                            continue
+                        weight = max(0.1, 1.0 - i * 0.2)
+                        self.episodic_graph.add_edge(GraphEdge(
+                            source=memory_id, target=rid,
+                            edge_type="related_to", weight=weight, timestamp=now,
+                        ))
+                        similarity_count += 1
+
+                    if similarity_count:
+                        logger.debug(
+                            "Proactive linking (similarity): %d edges for %s", similarity_count, memory_id
+                        )
+            except Exception:
+                logger.debug("Proactive linking similarity strategy failed for %s", memory_id, exc_info=True)
+
+            # --- Strategy 2: Entity overlap via shared entity mentions ---
+            try:
+                mention_rows = self.conn.execute(
+                    "SELECT value FROM annotations WHERE memory_id = ? AND kind = 'mentions'",
+                    (memory_id,)
+                ).fetchall()
+
+                entity_count = 0
+                for row in mention_rows:
+                    entity_val = row["value"]
+                    related = self.conn.execute(
+                        """SELECT DISTINCT memory_id FROM annotations
+                           WHERE kind = 'mentions' AND value = ?
+                             AND memory_id != ?
+                           LIMIT 5""",
+                        (entity_val, memory_id)
+                    ).fetchall()
+                    for match in related:
+                        rid = match["memory_id"]
+                        existing = self.episodic_graph.conn.execute(
+                            "SELECT 1 FROM graph_edges WHERE source = ? AND target = ? AND edge_type = 'references'",
+                            (memory_id, rid)
+                        ).fetchone()
+                        if existing:
+                            continue
+                        self.episodic_graph.add_edge(GraphEdge(
+                            source=memory_id, target=rid,
+                            edge_type="references", weight=0.8, timestamp=now,
+                        ))
+                        entity_count += 1
+
+                if entity_count:
+                    logger.debug(
+                        "Proactive linking (entity): %d edges for %s", entity_count, memory_id
+                    )
+            except Exception:
+                logger.debug("Proactive linking entity strategy failed for %s", memory_id, exc_info=True)
+
+        except Exception:
+            logger.debug("Proactive linking outer wrapper failed for %s", memory_id, exc_info=True)
+            # Non-blocking — never surface to caller
+
     def _add_temporal_triple(self, memory_id: str, timestamp: str, source: str, content: str):
         """Auto-generate temporal annotations for a memory.
 
@@ -2424,6 +2621,658 @@ class BeamMemory:
                          source=source, importance=importance,
                          metadata={"summary_of": source_wm_ids, **(metadata or {})})
         return memory_id
+
+    # ------------------------------------------------------------------
+    # MEMORIA: Structured Fact Extraction (Phase 1)
+    # ------------------------------------------------------------------
+    def extract_and_store_facts(self, content: str, message_idx: int = 0) -> dict:
+        """Extract structured facts from a message and store in facts/timelines/kg tables.
+        Uses regex patterns to match the same fact types as the BEAM benchmark oracles.
+        Returns dict of counts per fact_type."""
+        import re as _re
+        counts = {"metric": 0, "date": 0, "version": 0, "entity": 0,
+                  "sequence": 0, "timeline": 0, "negation": 0, "decision": 0}
+        session = self.session_id
+        # Metrics: numbers with units — use finditer for position info
+        _metric_re_iter = list(_re.finditer(
+            r'(\d+(?:[.,]\d+)?)\s*(ms|sec|seconds?|minutes?|hours?|days?|'
+            r'weeks?|months?|%|KB|MB|GB|TB|rows?|columns?|roles?|features?|'
+            r'bugs?|commits?|cards?|users?|items?|tests?|APIs?|endpoints?|'
+            r'sprints?|tickets?)',
+            content, _re.IGNORECASE))
+        for m in _metric_re_iter[:10]:
+            num = m.group(1)
+            unit = m.group(2)
+            unit_clean = unit.lower()
+            # Strip plural 's' but preserve "ms" (milliseconds)
+            if unit_clean.endswith('s') and not unit_clean.endswith('ms'):
+                unit_clean = unit_clean[:-1]
+            # Extract context words before the metric to build a specific key.
+            # "dashboard API response time of 250ms" → "response_time_ms"
+            pre_text = content[max(0, m.start()-50):m.start()]
+            ctx_words = [w.strip('.,:;!?()[]"\'') for w in pre_text.split()
+                         if len(w.strip('.,:;!?()[]"\'')) > 2
+                         and w.lower() not in ('the', 'and', 'for', 'was', 'of', 'to', 'a', 'an', 'in', 'on', 'at', 'by', 'is', 'are')][-3:]
+            prefix = '_'.join(w.lower() for w in ctx_words) if ctx_words else ''
+            key = f"{prefix}_{unit_clean}" if prefix else unit_clean
+            val = f"{num}{unit}"
+            self._insert_fact(session, message_idx, 'metric', key, val,
+                              self._context_snippet(content, m.start()), 0.65)
+            counts["metric"] += 1
+
+        # ISO Dates
+        for m in _re.finditer(r'\b(\d{4}-\d{2}-\d{2})\b', content):
+            dt = m.group(1)
+            ctx = self._context_snippet(content, m.start())
+            self._insert_fact(session, message_idx, 'date', 'iso_date', dt, ctx, 0.7)
+            self._insert_timeline(session, dt, message_idx, ctx[:120], 'iso_date')
+            counts["date"] += 1
+            counts["timeline"] += 1
+
+        # Named dates (e.g. March 29, 2024)
+        for m in _re.finditer(
+            r'((?:January|February|March|April|May|June|July|August|September|'
+            r'October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)'
+            r'[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?,?\s*(?:\d{4})?)',
+            content, _re.IGNORECASE):
+            dt = m.group(1).strip()
+            ctx = self._context_snippet(content, m.start())
+            self._insert_fact(session, message_idx, 'date', 'named_date', dt, ctx, 0.7)
+            counts["date"] += 1
+
+        # Version strings
+        for m in _re.finditer(r'([A-Z][a-zA-Z]+(?:\s*[A-Z][a-zA-Z]+)*)\s+v?(\d+\.\d+(?:\.\d+)?)', content):
+            name = m.group(1).strip()
+            ver = m.group(2)
+            key = f"{name.lower().replace(' ', '_')}_version"
+            self._insert_fact(session, message_idx, 'version', key, ver,
+                              self._context_snippet(content, m.start()), 0.7)
+            counts["version"] += 1
+
+        # Negations (critical for CR)
+        for m in _re.finditer(
+            r'(I(?: have|\'ve)?\s*(?:never|not)\s+[^.,;!?\n]{15,120})',
+            content, _re.IGNORECASE):
+            neg_text = m.group(1).strip()
+            obj = neg_text.split("never", 1)[-1].split("not", 1)[-1].strip() if "never" in neg_text.lower() or " not " in neg_text.lower() else neg_text
+            self._insert_kg(session, 'user', 'negation', obj[:80], message_idx, 0.75)
+            counts["negation"] += 1
+
+        # Decisions
+        for m in _re.finditer(
+            r'(?:decided to|chose to|opted for|selected|picked|switching to)\s+([^.,;!?\n]{10,120})',
+            content, _re.IGNORECASE):
+            decision = m.group(1).strip()
+            self._insert_kg(session, 'user', 'decision', decision, message_idx, 0.65)
+            counts["decision"] += 1
+
+        # Entity-action pairs (MR support)
+        for m in _re.finditer(
+            r'(?:the|my|our)\s+([a-z_]+\s*(?:table|model|schema|API|endpoint|function|module|route|handler))'
+            r'\s+(?:needs?|requires?|should|could|would|will|has|have)\s+([^.,;!?\n]{10,80})',
+            content, _re.IGNORECASE):
+            entity = m.group(1).strip()
+            action = m.group(2).strip()
+            self._insert_kg(session, entity, 'requires', action, message_idx, 0.65)
+            counts["decision"] += 1
+
+        # Sequence markers (EO support)
+        for m in _re.finditer(
+            r'((?:first|second|third|fourth|fifth|finally|next|then|after that)[^.,;!?\n]{15,120})',
+            content, _re.IGNORECASE):
+            seq = m.group(1).strip()
+            first_word = seq.split()[0].lower()
+            self._insert_fact(session, message_idx, 'sequence', first_word, seq[:120],
+                              self._context_snippet(content, m.start()), 0.6)
+            counts["sequence"] += 1
+
+        # Instructions (IF support): explicit user constraints/requirements
+        for m in _re.finditer(
+            r'(?:always|never|must|must not|should(?: not)?|need to(?: not)?|required to|'
+            r'prefer(?: not)? to|want to(?: avoid| ensure| use| keep))\s+([^.,;!?\n]{10,120})',
+            content, _re.IGNORECASE):
+            instr = m.group(0).strip()
+            topic = m.group(1).strip()[:40]
+            self.conn.execute(
+                "INSERT INTO memoria_instructions (session_id, message_idx, instruction, topic, context_snippet) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session, message_idx, instr[:200], topic, self._context_snippet(content, m.start())))
+            counts["instruction"] = counts.get("instruction", 0) + 1
+
+        # Preferences (PF support): evolving user tastes
+        for m in _re.finditer(
+            r'(?:I(?: |\')?(?:like|love|prefer|hate|dislike|enjoy|want|need|tend to|usually|would rather|'
+            r"don't like|don't want|not a fan of|use|stick with|switched to|moved to|changed to))"
+            r'\s+([^.,;!?\n]{10,120})',
+            content, _re.IGNORECASE):
+            pref = m.group(0).strip()
+            topic = m.group(1).strip()[:40]
+            # Check for evolution: did this topic already have a preference?
+            existing = self.conn.execute(
+                "SELECT preference FROM memoria_preferences "
+                "WHERE session_id = ? AND topic LIKE ? ORDER BY message_idx DESC LIMIT 1",
+                (session, f'%{topic[:30]}%')
+            ).fetchone()
+            evolution = None
+            if existing:
+                evolution = f"was: {existing[0][:80]}"
+            self.conn.execute(
+                "INSERT INTO memoria_preferences (session_id, message_idx, preference, topic, evolution, context_snippet) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session, message_idx, pref[:200], topic, evolution, self._context_snippet(content, m.start())))
+            counts["preference"] = counts.get("preference", 0) + 1
+
+        self.conn.commit()
+        return counts
+
+    def _insert_fact(self, session: str, msg_idx: int, ftype: str,
+                     key: str, value: str, ctx: str, importance: float):
+        # Dates all share generic keys (e.g. "named_date", "iso_date").
+        # Versioning would create false evolution chains when different
+        # events happen on different dates. Skip versioning for dates.
+        if ftype == 'date':
+            self.conn.execute(
+                "INSERT INTO memoria_facts (session_id, message_idx, fact_type, key, value, "
+                "context_snippet, importance, valid_from_msg_idx) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (session, msg_idx, ftype, key, value, ctx, importance, msg_idx))
+            return
+
+        # Check if this key already has a fact with a different value
+        existing = self.conn.execute(
+            "SELECT id, value FROM memoria_facts "
+            "WHERE session_id = ? AND key = ? AND fact_type = ? AND valid_to_msg_idx IS NULL "
+            "ORDER BY version_id DESC LIMIT 1",
+            (session, key, ftype)
+        ).fetchone()
+        if existing and existing[1] != value:
+            # Mark old row as replaced
+            self.conn.execute(
+                "UPDATE memoria_facts SET valid_to_msg_idx = ?, previous_value = value "
+                "WHERE id = ?",
+                (msg_idx, existing[0])
+            )
+            # Insert new version with previous_value pointer
+            prev_version = self.conn.execute(
+                "SELECT version_id FROM memoria_facts WHERE id = ?",
+                (existing[0],)
+            ).fetchone()
+            new_version = (prev_version[0] + 1) if prev_version else 1
+            self.conn.execute(
+                "INSERT INTO memoria_facts (session_id, message_idx, fact_type, key, value, "
+                "context_snippet, importance, version_id, previous_value, updated_msg_idx, "
+                "valid_from_msg_idx) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (session, msg_idx, ftype, key, value, ctx, importance,
+                 new_version, existing[1], msg_idx, msg_idx))
+        else:
+            self.conn.execute(
+                "INSERT INTO memoria_facts (session_id, message_idx, fact_type, key, value, "
+                "context_snippet, importance, valid_from_msg_idx) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (session, msg_idx, ftype, key, value, ctx, importance, msg_idx))
+
+    def _insert_timeline(self, session: str, date: str, msg_idx: int,
+                         desc: str, source: str = 'extraction'):
+        self.conn.execute(
+            "INSERT INTO memoria_timelines (session_id, date, message_idx, description, source) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session, date, msg_idx, desc, source))
+
+    def _insert_kg(self, session: str, subject: str, predicate: str,
+                   obj: str, msg_idx: int, confidence: float = 0.7):
+        self.conn.execute(
+            "INSERT INTO memoria_kg (session_id, subject, predicate, object, message_idx, confidence) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session, subject, predicate, obj, msg_idx, confidence))
+
+    @staticmethod
+    def _context_snippet(content: str, pos: int, width: int = 60) -> str:
+        """Extract surrounding context around a position in content."""
+        start = max(0, pos - width)
+        end = min(len(content), pos + width)
+        snippet = content[start:end].strip()
+        if start > 0:
+            snippet = f"...{snippet}"
+        if end < len(content):
+            snippet = f"{snippet}..."
+        return snippet[:200]
+
+    # ------------------------------------------------------------------
+    # MEMORIA: Structured Fact Retrieval (Phase 2)
+    # ------------------------------------------------------------------
+    def memoria_retrieve(self, query: str, ability: str = None, top_k: int = 10) -> dict:
+        """Route a query to the appropriate MEMORIA specialist table.
+        Returns dict with keys: context (str), facts (list), source (str).
+        Falls back to {'context': '', 'facts': [], 'source': 'fallback'} when empty."""
+        result = {"context": "", "facts": [], "source": "fallback"}
+
+        # Determine ability from query if not provided
+        if not ability:
+            ability = self._classify_ability(query)
+
+        if ability in ('IE', 'KU'):
+            return self._memoria_fact_retrieve(query, top_k)
+        elif ability == 'TR':
+            return self._memoria_timeline_retrieve(query, top_k)
+        elif ability == 'CR':
+            return self._memoria_negation_retrieve(query, top_k)
+        elif ability == 'MR':
+            return self._memoria_entity_retrieve(query, top_k)
+        elif ability == 'EO':
+            return self._memoria_chrono_retrieve(query, top_k)
+        elif ability == 'IF':
+            return self._memoria_instruction_retrieve(query, top_k)
+        elif ability == 'PF':
+            return self._memoria_preference_retrieve(query, top_k)
+        else:
+            return result
+
+    @staticmethod
+    def _classify_ability(query: str) -> str:
+        """Classify a question into BEAM ability based on keywords.
+        Returns ability string or empty for unclassified."""
+        q = query.lower()
+
+        # Temporal reasoning
+        if any(w in q for w in ['how many days', 'how many weeks', 'how many months',
+                                'how long', 'how much time', 'what date', 'what day',
+                                'when did', 'when does', 'what is the deadline',
+                                'how many years', 'between which dates',
+                                'timeline', 'how far apart']):
+            return 'TR'
+
+        # Event ordering
+        if any(w in q for w in ['list the order', 'walk me through', 'order in which',
+                                'chronological', 'in what order', 'sequence of events']):
+            return 'EO'
+
+        # Contradiction
+        if any(w in q for w in ['have i', 'did i', 'am i', 'has this',
+                                'contradict', 'contradiction', 'conflict']):
+            return 'CR'
+
+        # Information extraction / knowledge update (factual)
+        if any(w in q for w in ['how many', 'what is the', 'what are the',
+                                'what was the', 'what were the', 'what was my',
+                                'when does', 'what is', 'what was',
+                                'what version', 'which version',
+                                'when was', 'when were',
+                                'how much', 'how big', 'how large', 'how fast']):
+            if not any(w in q for w in ['how many days', 'how many weeks',
+                                        'how many months', 'how many years',
+                                        'how far apart']):  # not TR
+                return 'IE'
+
+        # Abstention
+        if any(w in q for w in ['tell me about my background', 'previous development',
+                                'work experience', 'personal background']):
+            return 'ABS'
+
+        # Multi-hop
+        if any(w in q for w in ['across my', 'across all', 'in my project',
+                                'in my sessions', 'across sessions']):
+            return 'MR'
+
+        # Catch-all: any question starting with a wh-word that wasn't caught
+        # by a more specific ability (TR/EO/CR) defaults to IE.
+        if q.startswith(('what ', 'when ', 'where ', 'which ', 'who ', 'how ')):
+            return 'IE'
+
+        return ''
+
+    def _memoria_fact_retrieve(self, query: str, top_k: int = 10) -> dict:
+        """Query memoria_facts table for exact metric/version/entity matches.
+        Uses multi-pass strategy:
+          Pass 1: numbers from query → search fact values
+          Pass 2: capitalized terms → search keys + values
+          Pass 3: synonym map (latency→ms, version→version, etc.) → search by type+unit
+          Pass 4: context_snippet fallback → search raw surrounding text
+        Returns {'context': str, 'facts': list, 'source': str} or fallback."""
+        import re as _re
+        facts = []
+        seen = set()
+        cursor = self.conn
+        q_lower = query.lower()
+
+        # -- Pass 1: Numbers in query → find matching fact values --
+        numbers = _re.findall(r'\b(\d+)\b', query)
+        for num in numbers[:3]:
+            rows = cursor.execute(
+                "SELECT fact_type, key, value, context_snippet, previous_value, updated_msg_idx, version_id FROM memoria_facts "
+                "WHERE value LIKE ? AND session_id = ? LIMIT ?",
+                (f'%{num}%', self.session_id, top_k)
+            ).fetchall()
+            for row in rows:
+                fk = (row[1], row[2])
+                if fk not in seen:
+                    seen.add(fk)
+                    facts.append(dict(zip(['type', 'key', 'value', 'context', 'previous_value', 'updated_msg_idx', 'version_id'], row)))
+
+        # -- Pass 2: Capitalized/key terms in query → search key + value --
+        terms = _re.findall(r'\b[A-Z][a-z]+(?:[-][A-Z][a-z]+)*\b', query)
+        stop_words = {'Have', 'Did', 'Do', 'Can', 'Will', 'Would', 'Should', 'What',
+                      'When', 'Where', 'Which', 'Who', 'How', 'Why', 'Is', 'Are',
+                      'Was', 'Were', 'The', 'A', 'An', 'This', 'That', 'My', 'Me',
+                      'I', 'You', 'How', 'Many', 'Much'}
+        terms = [t for t in terms if t not in stop_words]
+        for term in terms[:5]:
+            rows = cursor.execute(
+                "SELECT fact_type, key, value, context_snippet, previous_value, updated_msg_idx, version_id FROM memoria_facts "
+                "WHERE (key LIKE ? OR value LIKE ?) AND session_id = ? LIMIT ?",
+                (f'%{term}%', f'%{term}%', self.session_id, top_k)
+            ).fetchall()
+            for row in rows:
+                fk = (row[1], row[2])
+                if fk not in seen:
+                    seen.add(fk)
+                    facts.append(dict(zip(['type', 'key', 'value', 'context', 'previous_value', 'updated_msg_idx', 'version_id'], row)))
+
+        # -- Pass 3: Synonym/keyword mapping --
+        # Maps common question words to (fact_type, [unit_hints]).
+        # unit_hints=None means return all facts of that type.
+        _SYNONYM_MAP = [
+            ('version', 'version', None),
+            ('latency', 'metric', ['ms']),
+            ('speed', 'metric', ['ms']),
+            ('response time', 'metric', ['ms']),
+            ('how many', 'metric', None),
+            ('how much', 'metric', None),
+            ('what date', 'date', None),
+            ('what day', 'date', None),
+            ('deployed', 'date', None),
+            ('deploy', 'date', None),
+            ('released', 'date', None),
+            ('release', 'date', None),
+            ('launched', 'date', None),
+        ]
+        if not facts:
+            for phrase, ftype, unit_hints in _SYNONYM_MAP:
+                if phrase in q_lower:
+                    if unit_hints:
+                        for unit in unit_hints:
+                            rows = cursor.execute(
+                                "SELECT fact_type, key, value, context_snippet, previous_value, updated_msg_idx, version_id FROM memoria_facts "
+                                "WHERE fact_type = ? AND key LIKE ? AND session_id = ? LIMIT ?",
+                                (ftype, f'%{unit}%', self.session_id, top_k)
+                            ).fetchall()
+                    else:
+                        rows = cursor.execute(
+                            "SELECT fact_type, key, value, context_snippet, previous_value, updated_msg_idx, version_id FROM memoria_facts "
+                            "WHERE fact_type = ? AND session_id = ? LIMIT ?",
+                            (ftype, self.session_id, top_k)
+                        ).fetchall()
+                    for row in rows:
+                        fk = (row[1], row[2])
+                        if fk not in seen:
+                            seen.add(fk)
+                            facts.append(dict(zip(['type', 'key', 'value', 'context', 'previous_value', 'updated_msg_idx', 'version_id'], row)))
+                    if facts:
+                        break
+
+        # -- Pass 4: context_snippet fallback --
+        # Search the original surrounding text for meaningful query words.
+        # Catches "What is the latency?" where "latency" is in the snippet
+        # but not in the structured key/value fields.
+        if not facts:
+            q_stop = {'what', 'when', 'where', 'which', 'who', 'how', 'why',
+                      'is', 'are', 'was', 'were', 'do', 'does', 'did',
+                      'can', 'will', 'would', 'should', 'could', 'may',
+                      'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for',
+                      'of', 'with', 'my', 'me', 'i', 'you', 'it', 'its',
+                      'this', 'that', 'these', 'those', 'tell', 'list',
+                      'describe', 'explain', 'walk', 'me', 'through'}
+            q_words = [w for w in _re.findall(r'\b[a-zA-Z]{3,}\b', q_lower)
+                       if w not in q_stop]
+            for word in q_words[:5]:
+                rows = cursor.execute(
+                    "SELECT fact_type, key, value, context_snippet, previous_value, updated_msg_idx, version_id FROM memoria_facts "
+                    "WHERE context_snippet LIKE ? AND session_id = ? LIMIT ?",
+                    (f'%{word}%', self.session_id, top_k)
+                ).fetchall()
+                for row in rows:
+                    fk = (row[1], row[2])
+                    if fk not in seen:
+                        seen.add(fk)
+                        facts.append(dict(zip(['type', 'key', 'value', 'context', 'previous_value', 'updated_msg_idx', 'version_id'], row)))
+                if facts:
+                    break
+
+        if facts:
+            # Group by key, keep only the latest (highest version_id) per key.
+            # Multiple versions of the same key confuse the LLM: it sees
+            # contradictory values without knowing which is current.
+            from collections import defaultdict
+            by_key: dict = defaultdict(list)
+            for f in facts:
+                by_key[f['key']].append(f)
+            latest: list = []
+            for key, versions in by_key.items():
+                versions.sort(key=lambda x: x.get('version_id', 0), reverse=True)
+                newest = versions[0]
+                if len(versions) > 1:
+                    # Build a compact evolution chain
+                    prevs = [v['value'] for v in versions[1:]]
+                    newest['evolution'] = ' -> '.join(reversed(prevs)) + f" -> {newest['value']}"
+                latest.append(newest)
+            # Sort by version_id descending so recently-updated facts are prominent
+            latest.sort(key=lambda x: x.get('version_id', 0), reverse=True)
+
+            ctx_lines = []
+            for f in latest[:top_k]:
+                line = f"[Fact {f['type']}] {f['key']}: {f['value']}"
+                if f.get('evolution'):
+                    line += f" (evolved: {f['evolution']})"
+                elif f.get('previous_value') and f.get('version_id', 0) > 0:
+                    line += f" (was: {f['previous_value']}, updated at msg_idx {f.get('updated_msg_idx', '?')})"
+                ctx_lines.append(line)
+            return {
+                "context": "\n".join(ctx_lines),
+                "facts": latest[:top_k],
+                "source": "memoria_facts"
+            }
+        return {"context": "", "facts": [], "source": "fallback"}
+
+    def _memoria_timeline_retrieve(self, query: str, top_k: int = 10) -> dict:
+        """Query memoria_timelines for chronological events matching query terms."""
+        import re as _re
+        cursor = self.conn
+
+        # Extract dates from query
+        date_terms = _re.findall(r'\b(\d{4}-\d{2}-\d{2})\b', query)
+        month_names = ['january', 'february', 'march', 'april', 'may', 'june',
+                       'july', 'august', 'september', 'october', 'november', 'december']
+        months_in_query = [m for m in month_names if m in query.lower()]
+
+        if date_terms:
+            rows = cursor.execute(
+                "SELECT date, description, message_idx FROM memoria_timelines "
+                "WHERE date LIKE ? AND session_id = ? ORDER BY date LIMIT ?",
+                (f'%{date_terms[0]}%', self.session_id, top_k)
+            ).fetchall()
+        elif months_in_query:
+            month = months_in_query[0][:3]
+            rows = cursor.execute(
+                "SELECT date, description, message_idx FROM memoria_timelines "
+                "WHERE date LIKE ? AND session_id = ? ORDER BY date LIMIT ?",
+                (f'{month}%', self.session_id, top_k)
+            ).fetchall()
+        else:
+            # Recent timeline events
+            rows = cursor.execute(
+                "SELECT date, description, message_idx FROM memoria_timelines "
+                "WHERE session_id = ? ORDER BY date DESC LIMIT ?",
+                (self.session_id, top_k)
+            ).fetchall()
+
+        if rows:
+            facts = [dict(zip(['date', 'description', 'msg_idx'], r)) for r in rows]
+            ctx_lines = [f"[{r[0]}] {r[1][:120]}" for r in rows]
+            return {"context": "\n".join(ctx_lines), "facts": facts, "source": "memoria_timelines"}
+        return {"context": "", "facts": [], "source": "fallback"}
+
+    def _memoria_negation_retrieve(self, query: str, top_k: int = 10) -> dict:
+        """Query memoria_kg for negation predicates matching query terms."""
+        import re as _re
+        cursor = self.conn
+
+        terms = _re.findall(r'\b[A-Z][a-z]+\b', query)
+        stop_words = {'Have', 'Did', 'Do', 'Can', 'Will', 'Would', 'Should'}
+        terms = [t for t in terms if len(t) > 3 and t not in stop_words]
+
+        if not terms:
+            terms = [w for w in query.split() if len(w) > 3][:3]
+
+        for term in terms:
+            rows = cursor.execute(
+                "SELECT subject, object, message_idx FROM memoria_kg "
+                "WHERE predicate='negation' AND (subject LIKE ? OR object LIKE ?) "
+                "AND session_id = ? LIMIT ?",
+                (f'%{term}%', f'%{term}%', self.session_id, top_k)
+            ).fetchall()
+            if rows:
+                facts = [dict(zip(['subject', 'object', 'msg_idx'], r)) for r in rows]
+                ctx_lines = [f"[Negation] user said never/not: {r[1]}" for r in rows]
+                return {"context": "\n".join(ctx_lines), "facts": facts, "source": "memoria_kg_negation"}
+
+        return {"context": "", "facts": [], "source": "fallback"}
+
+    def _memoria_entity_retrieve(self, query: str, top_k: int = 10) -> dict:
+        """Query memoria_kg for entity-action pairs (predicates: requires, decision)."""
+        import re as _re
+        cursor = self.conn
+
+        terms = _re.findall(r'\b[A-Z][a-z]+\b', query)
+        stop_words = {'Have', 'Did', 'Do', 'Can', 'Will', 'Would', 'Should',
+                      'What', 'When', 'Where', 'Which', 'Who', 'How', 'Why'}
+        entities = [t.lower() for t in terms if t not in stop_words and len(t) > 3]
+
+        rows = []
+        if entities:
+            for entity in entities[:3]:
+                rows = cursor.execute(
+                    "SELECT subject, predicate, object, message_idx FROM memoria_kg "
+                    "WHERE (subject LIKE ? OR object LIKE ?) AND session_id = ? LIMIT ?",
+                    (f'%{entity}%', f'%{entity}%', self.session_id, top_k)
+                ).fetchall()
+                if rows:
+                    break
+
+        if not rows:
+            rows = cursor.execute(
+                "SELECT subject, predicate, object, message_idx FROM memoria_kg "
+                "WHERE session_id = ? ORDER BY message_idx LIMIT ?",
+                (self.session_id, top_k)
+            ).fetchall()
+
+        if rows:
+            facts = [dict(zip(['subject', 'predicate', 'object', 'msg_idx'], r)) for r in rows]
+            ctx_lines = [f"[{r[1]}] {r[0]} -> {r[2]}" for r in rows]
+            return {"context": "\n".join(ctx_lines), "facts": facts, "source": "memoria_kg"}
+        return {"context": "", "facts": [], "source": "fallback"}
+
+    def _memoria_chrono_retrieve(self, query: str, top_k: int = 10) -> dict:
+        """Query memoria_facts for sequence markers, ordered by message_idx."""
+        cursor = self.conn
+        rows = cursor.execute(
+            "SELECT value, message_idx FROM memoria_facts "
+            "WHERE fact_type='sequence' AND session_id = ? "
+            "ORDER BY message_idx ASC LIMIT ?",
+            (self.session_id, top_k)
+        ).fetchall()
+        if rows:
+            facts = [dict(zip(['sequence', 'msg_idx'], r)) for r in rows]
+            ctx_lines = [f"[{i+1}] {r[0]}" for i, r in enumerate(rows)]
+            return {"context": "\n".join(ctx_lines), "facts": facts, "source": "memoria_sequences"}
+        return {"context": "", "facts": [], "source": "fallback"}
+
+    def _memoria_instruction_retrieve(self, query: str, top_k: int = 10) -> dict:
+        """Query memoria_instructions for user constraints matching query terms."""
+        import re as _re
+        cursor = self.conn
+        q_lower = query.lower()
+
+        # Extract topic words from query
+        stop_words = {'what', 'when', 'where', 'which', 'who', 'how', 'why',
+                      'is', 'are', 'was', 'were', 'do', 'does', 'did',
+                      'can', 'will', 'would', 'should', 'could', 'may',
+                      'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for',
+                      'of', 'with', 'my', 'me', 'i', 'you', 'it', 'its',
+                      'this', 'that', 'these', 'those', 'tell', 'list',
+                      'describe', 'explain', 'have', 'has', 'had', 'am'}
+        q_words = [w for w in _re.findall(r'\b[a-zA-Z]{3,}\b', q_lower)
+                   if w not in stop_words]
+
+        rows = []
+        if q_words:
+            for word in q_words[:5]:
+                rows = cursor.execute(
+                    "SELECT instruction, topic, message_idx, context_snippet FROM memoria_instructions "
+                    "WHERE (instruction LIKE ? OR topic LIKE ?) AND session_id = ? AND active = 1 LIMIT ?",
+                    (f'%{word}%', f'%{word}%', self.session_id, top_k)
+                ).fetchall()
+                if rows:
+                    break
+
+        if not rows:
+            # Fallback: return all active instructions
+            rows = cursor.execute(
+                "SELECT instruction, topic, message_idx, context_snippet FROM memoria_instructions "
+                "WHERE session_id = ? AND active = 1 ORDER BY message_idx DESC LIMIT ?",
+                (self.session_id, top_k)
+            ).fetchall()
+
+        if rows:
+            facts = [dict(zip(['instruction', 'topic', 'msg_idx', 'context'], r)) for r in rows]
+            ctx_lines = [f"[Instruction] {r[0][:120]}" for r in rows]
+            return {"context": "\n".join(ctx_lines), "facts": facts, "source": "memoria_instructions"}
+        return {"context": "", "facts": [], "source": "fallback"}
+
+    def _memoria_preference_retrieve(self, query: str, top_k: int = 10) -> dict:
+        """Query memoria_preferences for evolving user tastes matching query terms."""
+        import re as _re
+        cursor = self.conn
+        q_lower = query.lower()
+
+        stop_words = {'what', 'when', 'where', 'which', 'who', 'how', 'why',
+                      'is', 'are', 'was', 'were', 'do', 'does', 'did',
+                      'can', 'will', 'would', 'should', 'could', 'may',
+                      'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for',
+                      'of', 'with', 'my', 'me', 'i', 'you', 'it', 'its',
+                      'this', 'that', 'these', 'those', 'tell', 'list',
+                      'describe', 'explain', 'have', 'has', 'had', 'am'}
+        q_words = [w for w in _re.findall(r'\b[a-zA-Z]{3,}\b', q_lower)
+                   if w not in stop_words]
+
+        rows = []
+        if q_words:
+            for word in q_words[:5]:
+                rows = cursor.execute(
+                    "SELECT preference, topic, message_idx, evolution, context_snippet FROM memoria_preferences "
+                    "WHERE (preference LIKE ? OR topic LIKE ?) AND session_id = ? LIMIT ?",
+                    (f'%{word}%', f'%{word}%', self.session_id, top_k)
+                ).fetchall()
+                if rows:
+                    break
+
+        if not rows:
+            # Fallback: return all preferences
+            rows = cursor.execute(
+                "SELECT preference, topic, message_idx, evolution, context_snippet FROM memoria_preferences "
+                "WHERE session_id = ? ORDER BY message_idx DESC LIMIT ?",
+                (self.session_id, top_k)
+            ).fetchall()
+
+        if rows:
+            facts = [dict(zip(['preference', 'topic', 'msg_idx', 'evolution', 'context'], r)) for r in rows]
+            ctx_lines = []
+            for r in rows:
+                line = f"[Preference] {r[0][:120]}"
+                if r[3]:
+                    line += f" ({r[3]})"
+                ctx_lines.append(line)
+            return {"context": "\n".join(ctx_lines), "facts": facts, "source": "memoria_preferences"}
+        return {"context": "", "facts": [], "source": "fallback"}
 
     def recall(self, query: str, top_k: int = 40, *,
                from_date: Optional[str] = None, to_date: Optional[str] = None,
