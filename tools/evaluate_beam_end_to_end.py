@@ -32,6 +32,7 @@ import argparse
 import ast
 import gc
 import json
+import logging
 import math
 import os
 import sys
@@ -871,7 +872,6 @@ def _recall_safe(beam: BeamMemory, query: str, top_k: int, temporal_weight: floa
     """Safe recall wrapper with timeout + fresh connection isolation.
     Prevents indefinite hangs and thread-contention on shared connections."""
     import threading
-    import logging
     import sqlite3
     _log = logging.getLogger("recall_safe")
     _thread_id = threading.get_ident()
