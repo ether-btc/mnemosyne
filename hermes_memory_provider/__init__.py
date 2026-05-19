@@ -597,7 +597,10 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if auto_sleep is None:
             auto_sleep = self._read_config_key("auto_sleep")
         if auto_sleep is not None:
-            self._auto_sleep_enabled = bool(auto_sleep)
+            if isinstance(auto_sleep, str):
+                self._auto_sleep_enabled = auto_sleep.lower() in ("true", "1", "yes", "on")
+            else:
+                self._auto_sleep_enabled = bool(auto_sleep)
         # env var is already applied in __init__, so it is the base default
 
         # sleep_threshold: prefer kwargs, then config.yaml, then default 50
@@ -631,7 +634,10 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if profile_isolation is None:
             profile_isolation = self._read_config_key("profile_isolation")
         if profile_isolation is not None:
-            self._profile_isolation_enabled = bool(profile_isolation)
+            if isinstance(profile_isolation, str):
+                self._profile_isolation_enabled = profile_isolation.lower() in ("true", "1", "yes", "on")
+            else:
+                self._profile_isolation_enabled = bool(profile_isolation)
 
     def _should_filter(self, content: str) -> bool:
         """Check if content matches any ignore pattern. Returns True if it should be skipped."""
