@@ -1,8 +1,10 @@
 # Benchmarking and Testing Infrastructure
 
-**Audience:** maintainers and contributors running benchmarks against the Mnemosyne recall stack. This is not part of the normal user-facing setup -- see [getting-started.md](getting-started.md) and [configuration.md](configuration.md) for those.
+**v3.0.0 (MEMORIA).** See [beam-benchmark.md](beam-benchmark.md) for published results and the quick-start guide for running BEAM on your own hardware.
 
-This document is the single source of truth for the levers that affect benchmark results: env vars, recall modes, diagnostic instrumentation, and the methodology for running rigorous A/B tests. It exists because Mnemosyne has multiple recall paths (linear + polyphonic), per-tool toggles, and harness modes that aren't relevant to normal usage but matter a great deal when measuring per-component contribution to scores.
+This document is the maintainer reference for the levers that affect benchmark results: env vars, recall modes, diagnostic instrumentation, and the methodology for running rigorous A/B tests. It exists because Mnemosyne has multiple recall paths (linear + polyphonic, plus MEMORIA structured retrieval), per-tool toggles, and harness modes that aren't relevant to normal usage but matter a great deal when measuring per-component contribution to scores.
+
+**Audience:** maintainers and contributors running benchmarks against the Mnemosyne recall stack. For end-users who want to run BEAM on their hardware, start with [beam-benchmark.md](beam-benchmark.md).
 
 ---
 
@@ -53,10 +55,12 @@ The benchmark harness (`tools/evaluate_beam_end_to_end.py`) imports `numpy` and 
 
 | Resource | 100K scale (3 conversations) | 250K scale (3 conversations) |
 |---|---|---|
-| Wall clock | ~20-30 min | ~60-90 min |
+| Wall clock | ~15-25 min | ~60-90 min |
 | Peak RSS | ~2-4 GB | ~4-8 GB |
 | Disk for DB | ~500 MB | ~2-4 GB |
 | LLM API spend | ~$0.50-$2 | ~$5-$15 |
+
+v3.0.0 ingestion with full MEMORIA extraction: 188 messages in ~36 seconds (host extraction, no external API calls). Embedding adds per-message overhead; `fastembed` recommended for production runs.
 
 API spend is dominated by per-question answer LLM calls. Caching identical queries can lower this; quantify on the first phase before committing to a long run.
 
@@ -148,6 +152,14 @@ If you don't enable this for benchmarks ≥100K, expect FTS-driven recall to mis
 | `MNEMOSYNE_SLEEP_BATCH` | `5000` | Max rows pulled per `sleep()` invocation. Larger batches reduce sleep overhead; smaller batches reduce peak memory during summarization. |
 | `MNEMOSYNE_SLEEP_PROMPT` | *(built-in)* | Optional consolidation prompt override. Pin this across multilingual benchmark arms because it changes episodic summary language/content. |
 | `MNEMOSYNE_LLM_ENABLED` | `true` | When `false`, `sleep()` skips local LLM summarization and falls back to AAAK encoding. Useful for benchmark runs that want deterministic summaries without per-row LLM latency. |
+
+### MEMORIA Fact Engine (v3.0.0+)
+
+| Variable | Default | Effect |
+|---|---|---|
+| `MNEMOSYNE_STRICT_FACT_MATCH` | unset (`0`) | When truthy, fact retrieval uses conservative token-based matching (`wysie`, #143). Filters stopwords, requires multi-token overlap or distinctive structural markers. Reduces false positives at the cost of lower recall on partial matches. |
+| `MNEMOSYNE_PROACTIVE_LINKING` | `0` | When set to `1`, creates zero-LLM graph edges at ingestion via content similarity (FTS5) and entity overlap strategies. Adds ~5% ingestion overhead but enables graph-traversal recall without external LLM calls. |
+| `MNEMOSYNE_AUTO_MIGRATE` | `1` | When `0`, disables automatic creation of MEMORIA tables (`memoria_facts`, `memoria_timelines`, `memoria_kg`, `memoria_instructions`, `memoria_preferences`). For operators who want explicit control over schema migration. |
 
 ---
 
@@ -292,5 +304,6 @@ Pin each toggle in your `.env` or shell environment across an A/B run. The harne
 When a new env var is added that affects recall ranking or benchmark behavior, update the [Environment variable reference](#environment-variable-reference) table here. When a new diagnostic counter ships, add it to [Diagnostic instrumentation](#diagnostic-instrumentation). When a new experiment runs, add a dated artifact under `docs/experiments/`.
 
 Past experiment artifacts:
-- [2026-05-12 -- BEAM-recovery Arms A/B/C](experiments/2026-05-12-beam-recovery-arms-abc.md)
-- (older runs documented in [beam-benchmark.md](beam-benchmark.md) -- note that those pre-date the May 2026 fix bundle and aren't credible for per-tool claims)
+- [v3.0.0 published results — 65.2% at 100K with MEMORIA](beam-benchmark.md)
+- [2026-05-12 — BEAM-recovery Arms A/B/C](experiments/2026-05-12-beam-recovery-arms-abc.md)
+- (older runs documented in previous beam-benchmark versions — note that those pre-date the May 2026 fix bundle and aren't credible for per-tool claims)
