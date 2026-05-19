@@ -22,9 +22,9 @@ Mnemosyne is evaluated on the [BEAM](https://github.com/mohammadtavakoli78/BEAM)
 
 | Scale | Mnemosyne v3 | Honcho | Hindsight | LIGHT | RAG |
 |-------|-------------|--------|-----------|-------|-----|
-| **100K** | **65.2%** | 63.0% | 64.1% | 26.6% | 24.9% |
+| **100K** | **65.2%** | 63.0% | 73.4% | 35.8% | 32.3% |
 
-**Mnemosyne v3.0.0 leads SOTA at 100K scale.** Up from 35.4% in v2.5.
+**Mnemosyne v3.0.0 is competitive at 100K scale in a local-first setup.** Up from 35.4% in v2.5. Hindsight's 73.4% is SOTA (published Apr 2026, Llama-4-Maverick judge). Our run uses Llama 3.3 70B + DeepSeek V4 Flash judge; scores are not directly comparable across different judges.
 
 **Per-ability (100K):** IE 91.5% · MR 87.5% · TR 75.0% · ABS 100.0% · CR 50.0% · KU 50.0% · EO 25.0% · IF 62.5% · PF 54.5% · SUM 55.6%
 

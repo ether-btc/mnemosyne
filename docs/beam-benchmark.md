@@ -11,13 +11,20 @@
 
 Full BEAM protocol. Mnemosyne ingests conversations, retrieves context, LLM answers, LLM judges.
 
+**Important:** Our run uses Llama 3.3 70B (system model) + DeepSeek V4 Flash (judge). Hindsight's published result (73.4%) uses Llama-4-Maverick as judge. Scores are not directly comparable across different judges — this is disclosed transparently.
+
 | Scale | Mnemosyne v3 | Honcho | Hindsight | LIGHT | RAG |
 |-------|-------------|--------|-----------|-------|-----|
-| **100K** | **65.2%** | 63.0% | 64.1% | 26.6% | 24.9% |
+| **100K** | **65.2%** | 63.0% | 73.4% | 35.8% | 32.3% |
 
-Published baselines from Tavakoli et al. (ICLR 2026) and Hindsight blog (Apr 2026). Identical BEAM dataset and LLM-as-judge protocol for valid comparison.
+Published baselines from Tavakoli et al. (ICLR 2026) and Hindsight blog (Apr 2026). Mnemosyne is competitive at 100K scale in a local-first setup. We have not yet published 10M-scale results.
 
-**Mnemosyne v3.0.0 leads SOTA at 100K scale.**
+| Tier | Hindsight | Honcho | LIGHT | RAG |
+|-------|-----------|--------|-------|-----|
+| 100K | 73.4% | 63.0% | 35.8% | 32.3% |
+| 500K | 71.1% | 64.9% | 35.9% | 33.0% |
+| 1M | 73.9% | 63.1% | 33.6% | 30.7% |
+| 10M | 64.1% | 40.6% | 26.6% | 24.9% |
 
 ---
 
