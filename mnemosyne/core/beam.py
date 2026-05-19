@@ -4241,6 +4241,33 @@ class BeamMemory:
         results = self._dedup_cross_tier_summary_links(
             results, ep_summary_of_map=ep_summary_of_map
         )
+        # --- MEMORIA structured fact supplement ---
+        # Queries the regex-populated memoria_facts / memoria_timelines /
+        # memoria_kg / memoria_instructions / memoria_preferences tables
+        # for exact fact matches that FTS5/vector search may miss.
+        # Injected as a high-score synthetic entry so structured facts
+        # surface ahead of fuzzy text matches. Best-effort; failures
+        # are silent.
+        try:
+            _memoria_result = self.memoria_retrieve(query, top_k=3)
+            if _memoria_result and _memoria_result.get("source") != "fallback":
+                _ctx = _memoria_result.get("context", "")
+                if _ctx:
+                    results.insert(0, {
+                        "id": f"memoria_{_memoria_result['source']}",
+                        "content": f"[MEMORIA {_memoria_result['source']}]\n{_ctx}",
+                        "source": f"memoria_{_memoria_result['source']}",
+                        "score": 0.95,
+                        "tier": "memoria",
+                        "fts_score": 0.0,
+                        "dense_score": 0.0,
+                        "importance": 0.9,
+                        "timestamp": "",
+                        "session_id": self.session_id,
+                    })
+        except Exception:
+            pass  # MEMORIA retrieval is best-effort
+
         final_results = results[:top_k]
 
         # --- Recall tracking: increment counts + set last_recalled ---
@@ -4689,6 +4716,27 @@ class BeamMemory:
             )
         if recalled_episodic_ids or recalled_working_ids:
             self.conn.commit()
+
+        # --- MEMORIA structured fact supplement (polyphonic path) ---
+        try:
+            _memoria_result = self.memoria_retrieve(query, top_k=3)
+            if _memoria_result and _memoria_result.get("source") != "fallback":
+                _ctx = _memoria_result.get("context", "")
+                if _ctx:
+                    final.insert(0, {
+                        "id": f"memoria_{_memoria_result['source']}",
+                        "content": f"[MEMORIA {_memoria_result['source']}]\n{_ctx}",
+                        "source": f"memoria_{_memoria_result['source']}",
+                        "score": 0.95,
+                        "tier": "memoria",
+                        "fts_score": 0.0,
+                        "dense_score": 0.0,
+                        "importance": 0.9,
+                        "timestamp": "",
+                        "session_id": self.session_id,
+                    })
+        except Exception:
+            pass
 
         return final
 
