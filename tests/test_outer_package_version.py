@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 import textwrap
 from pathlib import Path
 
@@ -35,33 +36,41 @@ def test_outer_package_reexports_version_and_author():
     # Run a subprocess with sys.path manipulated so the outer mnemosyne stub
     # is the resolved `mnemosyne` module — exactly the layout Hermes' plugin
     # loader produces when symlinking the repo root into ~/.hermes/plugins.
-    script = textwrap.dedent(f"""
-        import sys
-        # Put the parent of the repo first so `mnemosyne` resolves to the
-        # outer __init__.py at the repo root, mirroring the plugin layout.
-        sys.path.insert(0, {str(REPO_ROOT.parent)!r})
-        # Drop the inner-package path (if present) so we don't accidentally
-        # resolve to the inner __init__.py instead.
-        sys.path = [p for p in sys.path if p != {str(REPO_ROOT)!r}]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        plugin_parent = Path(tmpdir)
+        plugin_package = plugin_parent / "mnemosyne"
+        plugin_package.symlink_to(REPO_ROOT, target_is_directory=True)
 
-        import mnemosyne
-        # Sanity check: we loaded the OUTER stub, not the inner library.
-        assert mnemosyne.__file__.endswith({str(REPO_ROOT / "__init__.py")!r}), (
-            "test setup failed: did not load outer package, got " + mnemosyne.__file__
+        script = textwrap.dedent(f"""
+            import sys
+            # Put a parent directory containing a repo-root symlink named
+            # `mnemosyne` first on sys.path. This mirrors the Hermes plugin
+            # layout without depending on the checkout directory itself being
+            # named `mnemosyne`.
+            sys.path.insert(0, {str(plugin_parent)!r})
+            # Drop editable-install/source paths that would otherwise resolve
+            # directly to the inner library package.
+            blocked = {{{str(REPO_ROOT)!r}, {str(REPO_ROOT.parent)!r}}}
+            sys.path = [p for p in sys.path if p not in blocked]
+
+            import mnemosyne
+            # Sanity check: we loaded the OUTER stub, not the inner library.
+            assert __import__('pathlib').Path(mnemosyne.__file__).resolve() == __import__('pathlib').Path({str(REPO_ROOT / "__init__.py")!r}), (
+                "test setup failed: did not load outer package, got " + mnemosyne.__file__
+            )
+
+            # The actual contract:
+            from mnemosyne import __version__, __author__
+            print("VERSION=" + __version__)
+            print("AUTHOR=" + __author__)
+        """)
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            cwd=str(plugin_parent),
         )
-
-        # The actual contract:
-        from mnemosyne import __version__, __author__
-        print("VERSION=" + __version__)
-        print("AUTHOR=" + __author__)
-    """)
-
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        cwd=str(REPO_ROOT.parent),  # avoid CWD on path leaking inner package
-    )
 
     assert result.returncode == 0, (
         f"subprocess failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"

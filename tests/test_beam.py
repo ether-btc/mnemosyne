@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from datetime import datetime, timedelta
 
+from mnemosyne.core import beam as beam_module
 from mnemosyne.core.beam import BeamMemory, init_beam, _find_memories_by_fact
 from mnemosyne.core.memory import Mnemosyne
 
@@ -87,6 +88,27 @@ class TestBeamSchema:
         assert "consolidation_log" in tables
         # FTS5 virtual table
         assert "fts_episodes" in tables
+        conn.close()
+
+    def test_vec_type_probe_does_not_rollback_schema_ddl(self, temp_db, monkeypatch):
+        """Vector capability probing must not undo unrelated schema DDL.
+
+        Some sqlite-vec builds reject a requested vector type. The probe used
+        to call connection.rollback(), which could erase earlier CREATE TABLE
+        statements in init_beam() before the schema transaction was committed.
+        """
+        conn = sqlite3.connect(temp_db)
+        conn.execute("CREATE TABLE filler_table (id TEXT PRIMARY KEY)")
+
+        monkeypatch.setattr(beam_module, "_SQLITE_VEC_AVAILABLE", True)
+        monkeypatch.setattr(beam_module, "VEC_TYPE", "int8")
+
+        assert beam_module._detect_vec_type(conn) == "float32"
+
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()]
+        assert "filler_table" in tables
         conn.close()
 
 

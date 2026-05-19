@@ -394,30 +394,39 @@ def _detect_vec_type(conn: sqlite3.Connection) -> str:
     """
     Detect whether sqlite-vec supports int8/bit.
     Falls back to float32 if the requested type is unavailable.
+
+    Keep the probe rollback scoped to the temporary vec test table. This
+    function runs during schema initialization, before init_beam() commits its
+    CREATE TABLE statements; a connection-wide rollback here can otherwise
+    undo unrelated schema DDL such as scratchpad.
     """
     if not _SQLITE_VEC_AVAILABLE:
         return "float32"
     if VEC_TYPE == "float32":
         return "float32"
+
     cursor = conn.cursor()
+
+    def _probe(candidate: str) -> bool:
+        cursor.execute("SAVEPOINT vec_type_probe")
+        try:
+            cursor.execute(
+                f"CREATE VIRTUAL TABLE _vec_test USING vec0(embedding {candidate}[{EMBEDDING_DIM}])"
+            )
+            cursor.execute("DROP TABLE IF EXISTS _vec_test")
+            cursor.execute("RELEASE SAVEPOINT vec_type_probe")
+            return True
+        except Exception:
+            cursor.execute("ROLLBACK TO SAVEPOINT vec_type_probe")
+            cursor.execute("RELEASE SAVEPOINT vec_type_probe")
+            return False
+
     test_type = VEC_TYPE  # int8 or bit
-    try:
-        cursor.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS _vec_test USING vec0(embedding {test_type}[{EMBEDDING_DIM}])")
-        cursor.execute("DROP TABLE IF EXISTS _vec_test")
-        conn.commit()
+    if _probe(test_type):
         return test_type
-    except Exception:
-        conn.rollback()
-        # Try int8 as fallback from bit
-        if test_type == "bit":
-            try:
-                cursor.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS _vec_test USING vec0(embedding int8[{EMBEDDING_DIM}])")
-                cursor.execute("DROP TABLE IF EXISTS _vec_test")
-                conn.commit()
-                return "int8"
-            except Exception:
-                conn.rollback()
-        return "float32"
+    if test_type == "bit" and _probe("int8"):
+        return "int8"
+    return "float32"
 
 
 def init_beam(db_path: Path = None):
@@ -5565,9 +5574,14 @@ class BeamMemory:
         method = "llm" if llm_used_count == summaries_created else ("llm+aaak" if llm_used_count > 0 else "aaak")
         if not dry_run:
             cursor.execute("""
-                INSERT INTO consolidation_log (session_id, items_consolidated, summary_preview)
-                VALUES (?, ?, ?)
-            """, (self.session_id, len(consolidated_ids), f"{summaries_created} summaries ({method}) from {len(consolidated_ids)} items"))
+                INSERT INTO consolidation_log (session_id, items_consolidated, summary_preview, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (
+                self.session_id,
+                len(consolidated_ids),
+                f"{summaries_created} summaries ({method}) from {len(consolidated_ids)} items",
+                datetime.now().isoformat(),
+            ))
             self.conn.commit()
 
         # Run tiered degradation after consolidation
