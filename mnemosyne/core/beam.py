@@ -5026,6 +5026,19 @@ class BeamMemory:
                 pass
         return {"total": total, "last": last[0] if last else None, "vectors": vec_count, "vec_type": vec_type}
 
+    def get_memoria_stats(self) -> Dict:
+        """Return MEMORIA structured-fact table counts."""
+        cursor = self.conn.cursor()
+        stats = {}
+        for table in ("memoria_facts", "memoria_timelines", "memoria_kg",
+                       "memoria_instructions", "memoria_preferences"):
+            try:
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                stats[table] = cursor.fetchone()[0]
+            except Exception:
+                stats[table] = 0
+        return stats
+
     # ------------------------------------------------------------------
     # Scratchpad
     # ------------------------------------------------------------------

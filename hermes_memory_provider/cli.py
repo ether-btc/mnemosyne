@@ -80,7 +80,8 @@ def mnemosyne_command(args):
         else:
             working = beam.get_working_stats()
         episodic = beam.get_episodic_stats()
-        print(json.dumps({"working": working, "episodic": episodic}, indent=2))
+        memoria = beam.get_memoria_stats()
+        print(json.dumps({"working": working, "episodic": episodic, "memoria": memoria}, indent=2))
 
     elif cmd == "version":
         from mnemosyne import __version__, __author__

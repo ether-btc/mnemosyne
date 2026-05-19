@@ -1136,7 +1136,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
     def _handle_stats(self, args: Dict[str, Any]) -> str:
         working = self._beam.get_working_stats()
         episodic = self._beam.get_episodic_stats()
-        return json.dumps({"provider": "mnemosyne", "session_id": self._session_id, "working": working, "episodic": episodic})
+        memoria = self._beam.get_memoria_stats()
+        return json.dumps({"provider": "mnemosyne", "session_id": self._session_id, "working": working, "episodic": episodic, "memoria": memoria})
 
     def _handle_invalidate(self, args: Dict[str, Any]) -> str:
         memory_id = args.get("memory_id", "")
