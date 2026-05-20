@@ -22,12 +22,14 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
-from mnemosyne.core.episodic_graph import GraphEdge
 
 # Ensure mnemosyne core is importable from this directory
+# MUST be before any `from mnemosyne.*` imports
 _mnemosyne_root = Path(__file__).resolve().parent.parent
 if str(_mnemosyne_root) not in sys.path:
     sys.path.insert(0, str(_mnemosyne_root))
+
+from mnemosyne.core.episodic_graph import GraphEdge
 
 logger = logging.getLogger(__name__)
 
