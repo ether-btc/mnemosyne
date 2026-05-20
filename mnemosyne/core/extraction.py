@@ -39,19 +39,33 @@ from mnemosyne.core.local_llm import (
 )
 
 # --- Config ------------------------------------------------------------------
-EXTRACTION_PROMPT = os.environ.get(
+EXTRACTION_PROMPT_TEMPLATE = os.environ.get(
     "MNEMOSYNE_EXTRACTION_PROMPT",
-    "Extract 2-5 concise factual statements from the following text. "
-    "Each fact should be a complete sentence describing something true about the subject. "
-    "Focus on preferences, opinions, experiences, and factual claims. "
-    "Return one fact per line. Do not number them. "
-    "If no facts can be extracted, return 'NO_FACTS'.\n\nText: {text}\n\nFacts:"
+    "You are an expert structured memory extractor for Mnemosyne v3.0+ MEMORIA tables.\n"
+    "The user message below may be in English, German, or another language.\n"
+    "First detect the language, then extract ONLY high-signal, long-term relevant items.\n"
+    "Categories to extract (return valid JSON only, no extra text):\n"
+    "- facts: persistent user metrics, states, knowledge, or personal data\n"
+    "- instructions: rules or commands directed at me the agent\n"
+    "- preferences: likes, dislikes, and their evolution\n"
+    "- timelines: real events with dates/times\n"
+    "- kg: knowledge-graph triples in subject-predicate-object form\n\n"
+    "Rules:\n"
+    "- Only extract persistent, non-transient content. Ignore weather, one-off chat, system text.\n"
+    "- Use semantic understanding — do NOT rely on English keywords.\n"
+    "- Preserve original casing and language.\n"
+    "- If nothing qualifies, return empty arrays.\n\n"
+    "Return JSON in this exact format:\n"
+    '{"facts": [], "instructions": [], "preferences": [], "timelines": [], "kg": []}\n\n'
+    "User message: {text}\n\n"
+    "Extraction:"
 )
 
 
-def _build_extraction_prompt(text: str) -> str:
-    """Build the extraction prompt with the user text inserted."""
-    return EXTRACTION_PROMPT.format(text=text)
+def _build_extraction_prompt(text: str, detected_lang: str = 'en') -> str:
+    """Build the extraction prompt with the user text and language context."""
+    prompt = EXTRACTION_PROMPT_TEMPLATE.replace("{text}", text).replace("{lang}", detected_lang)
+    return prompt
 
 
 def _parse_facts(raw_output: str) -> List[str]:
