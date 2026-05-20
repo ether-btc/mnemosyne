@@ -18,7 +18,7 @@ from mnemosyne.core.extraction import (
     _build_extraction_prompt,
     _call_local_extraction_llm,
     _parse_facts,
-    EXTRACTION_PROMPT,
+    EXTRACTION_PROMPT_TEMPLATE,
 )
 from mnemosyne.core.triples import init_triples
 
@@ -219,7 +219,7 @@ def test_extraction_prompt_configurable():
         
         # Re-import to pick up new env var
         # (In real usage, you'd restart; here we test the constant directly)
-        from mnemosyne.core.extraction import EXTRACTION_PROMPT as ep
+        from mnemosyne.core.extraction import EXTRACTION_PROMPT_TEMPLATE as ep
         # Note: module-level constants are set at import time, so this tests
         # that the code structure supports it. The actual override requires
         # re-import or setting before import.
