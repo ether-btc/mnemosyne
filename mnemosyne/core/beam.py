@@ -2652,14 +2652,61 @@ class BeamMemory:
     # ------------------------------------------------------------------
     # MEMORIA: Structured Fact Extraction (Phase 1)
     # ------------------------------------------------------------------
+    def detect_language(self, text: str) -> str:
+        """Ultra-fast language detection, zero deps, <0.1ms.
+        Returns ISO 639-1 code ('en', 'de', etc.). Extendable."""
+        if not text or not isinstance(text, str):
+            return 'en'
+        text_lower = text.lower()
+        if any(c in text_lower for c in 'äöüß'):
+            return 'de'
+        german_markers = {'ich', 'du', 'wir', 'ist', 'nicht', 'für', 'und',
+                          'der', 'die', 'das', 'ein', 'eine', 'kein', 'keine',
+                          'mein', 'meine', 'dann', 'auch', 'immer', 'nie', 'niemals'}
+        words = set(text_lower.split())
+        if len(words & german_markers) >= 2:
+            return 'de'
+        return 'en'
+
+    MULTILINGUAL_PATTERNS = {
+        'en': {
+            'negation': r'(I(?: have|\'ve)?\s*(?:never|not)\s+[^.,;!?\n]{15,120})',
+            'decision': r'(?:decided to|chose to|opted for|selected|picked|switching to)\s+([^.,;!?\n]{10,120})',
+            'entity': r'(?:the|my|our|your)\s+([a-z_]+(?:\s+(?:table|model|schema|API|endpoint|function|module|route|handler|tool|plugin|script|config|setting|workflow|pipeline|process|system|server|client|service|database|query|file|repo|branch|PR|issue|task|job)))\s+(?:needs?|requires?|should|could|would|will|has|have|uses?|runs?|handles?|processes?|supports?)\s+([^.,;!?\n]{10,80})',
+            'sequence': r'((?:first|second|third|fourth|fifth|finally|next|then|after that)[^.,;!?\n]{15,120})',
+            'instruction_false_positives': ['i think you should leave', 'should behave', 'their work style'],
+            'instruction_imperative': 'always|never|remember|use|keep|avoid|ensure|check|verify|run|test|build|deploy|push|pull|merge|commit|close|open|update|install|configure|set|enable|disable|add|remove|create|delete|start|stop|restart|reload|reset|try|implement|write|read|switch|move|copy|rename|send|reply|respond',
+            'preference': r'(?:I(?: |\')?(?:like|love|prefer|hate|dislike|enjoy|use|stick with|switched to|moved to|changed to|want|need|tend to|usually|would rather|don\'t like|don\'t want|not a fan of|am okay with|am comfortable with|am used to|am happy with|am tired of|am sick of|prefer not to|try to avoid|find it easier to|find it better to|find it useful to))\s+([^.,;!?\n]{10,200})',
+            'event_keywords': ['meeting', 'call', 'scheduled', 'happened', 'occurred', 'plan to', 'will be on', 'due on', 'release', 'deadline', 'launched', 'deployed', 'released', 'published', 'posted', 'started', 'began', 'finished', 'completed', 'ended', 'event', 'conference', 'workshop', 'appointment'],
+            'named_months': r'((?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?,?\s*(?:\d{4})?)',
+        },
+        'de': {
+            'negation': r'(Ich(?: habe|\'ve)?\s+(?:nie|niemals|nicht)\s+[^.,;!?\n]{15,120})',
+            'decision': r'(?:entschied(?: mich|en)?|habe mich entschieden|wechselte zu|umgestellt auf|umgestiegen auf|gewählt habe|ausgesucht|ausgewählt|genommen habe)\s+([^.,;!?\n]{10,120})',
+            'entity': r'(?:der|die|das|mein|meine|dein|deine|unser|unsere|Ihr|Ihre)\s+([a-z_]+(?:\s+(?:Tabelle|Modell|Schema|API|Endpunkt|Funktion|Modul|Route|Handler|Tool|Plugin|Script|Konfiguration|Einstellung|Workflow|Pipeline|Prozess|System|Server|Client|Service|Datenbank|Query|Datei|Repo|Branch|PR|Issue|Task|Job)))\s+(?:braucht|benötigt|sollte|könnte|würde|wird|hat|hat|nutzt|verwendet|läuft|bearbeitet|verarbeitet|unterstützt)\s+([^.,;!?\n]{10,80})',
+            'sequence': r'((?:zuerst|als erstes|als zweites|als drittes|als viertes|als fünftes|schließlich|als nächstes|dann|danach|daraufhin)[^.,;!?\n]{15,120})',
+            'instruction_false_positives': [],
+            'instruction_imperative': 'immer|nie|niemals|merke|denk|verwende|nutze|behalte|vermeide|stelle sicher|prüfe|überprüfe|teste|baue|implementiere|schreibe|lösche|installiere|konfiguriere|aktualisiere|erstelle|entferne|starte|stoppe|setze|aktiviere|deaktiviere|füge hinzu|benenne um|sende|antworte',
+            'preference': r'(?:Ich(?: |\')?(?:mag|liebe|bevorzuge|hasse|mag nicht|nutze|verwende|benutze|bin bei geblieben|habe gewechselt zu|bin umgestiegen auf|bin umgestellt auf|will|möchte|brauche|tendiere zu|normalerweise|würde lieber|finde es einfacher|finde es besser|finde es nützlich|bin zufrieden mit|bin okay mit|bin es leid|versuche zu vermeiden))\s+([^.,;!?\n]{10,200})',
+            'event_keywords': ['treffen', 'meeting', 'termin', 'anruf', 'geplant', 'passiert', 'stattgefunden', 'fällig', 'release', 'deadline', 'veröffentlicht', 'deployed', 'gestartet', 'begonnen', 'beendet', 'abgeschlossen', 'konferenz', 'workshop', 'termin'],
+            'named_months': r'((?:Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember|Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez)\s+\d{1,2}(?:\.)?\s*(?:\d{4})?)',
+        }
+    }
+
     def extract_and_store_facts(self, content: str, message_idx: int = 0) -> dict:
         """Extract structured facts from a message and store in facts/timelines/kg tables.
-        Uses regex patterns to match the same fact types as the BEAM benchmark oracles.
+        Uses regex patterns matching the BEAM benchmark oracles.
+        Language-aware: detects language and uses language-specific patterns.
         Returns dict of counts per fact_type."""
         import re as _re
         counts = {"metric": 0, "date": 0, "version": 0, "entity": 0,
                   "sequence": 0, "timeline": 0, "negation": 0, "decision": 0}
         session = self.session_id
+
+        # Language detection
+        lang = self.detect_language(content)
+        pat = self.MULTILINGUAL_PATTERNS.get(lang, self.MULTILINGUAL_PATTERNS['en'])
+
         # Metrics: numbers with units — use finditer for position info
         _metric_re_iter = list(_re.finditer(
             r'(\d+(?:[.,]\d+)?)\s*(ms|sec|seconds?|minutes?|hours?|days?|'
@@ -2725,20 +2772,13 @@ class BeamMemory:
 
         # ISO Dates — require event context within 100 chars to avoid
         # file paths, report dates, and passing mentions as timeline entries
+        _EVENT_KEYWORDS = pat['event_keywords']
         for m in _re.finditer(r'\b(\d{4}-\d{2}-\d{2})\b', content):
             dt = m.group(1)
             ctx = self._context_snippet(content, m.start(), width=100)
-            # Check for event verbs in context to filter out passing date mentions
+            # Check for event verbs in context (language-aware)
             _ctx_lower = ctx.lower()
-            _has_event_context = any(
-                kw in _ctx_lower for kw in [
-                    'meeting', 'call', 'scheduled', 'happened', 'occurred',
-                    'plan to', 'will be on', 'due on', 'release', 'deadline',
-                    'launched', 'deployed', 'released', 'published', 'posted',
-                    'started', 'began', 'finished', 'completed', 'ended',
-                    'event', 'conference', 'workshop', 'appointment', 'deadline',
-                ]
-            )
+            _has_event_context = any(kw in _ctx_lower for kw in _EVENT_KEYWORDS)
             if not _has_event_context:
                 # Still store as a fact (date mention), but skip timeline entry
                 self._insert_fact(session, message_idx, 'date', 'iso_date', dt, ctx, 0.5)
@@ -2749,12 +2789,8 @@ class BeamMemory:
                 counts["date"] += 1
                 counts["timeline"] += 1
 
-        # Named dates (e.g. March 29, 2024)
-        for m in _re.finditer(
-            r'((?:January|February|March|April|May|June|July|August|September|'
-            r'October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)'
-            r'[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?,?\s*(?:\d{4})?)',
-            content, _re.IGNORECASE):
+        # Named dates (e.g. March 29, 2024 — language-aware)
+        for m in _re.finditer(pat['named_months'], content, _re.IGNORECASE):
             dt = m.group(1).strip()
             ctx = self._context_snippet(content, m.start())
             self._insert_fact(session, message_idx, 'date', 'named_date', dt, ctx, 0.7)
@@ -2784,72 +2820,51 @@ class BeamMemory:
                                   self._context_snippet(content, m.start()), 0.7)
                 counts["version"] += 1
 
-        # Negations (critical for CR)
-        for m in _re.finditer(
-            r'(I(?: have|\'ve)?\s*(?:never|not)\s+[^.,;!?\n]{15,120})',
-            content, _re.IGNORECASE):
+        # Negations (critical for CR) — language-aware
+        for m in _re.finditer(pat['negation'], content, _re.IGNORECASE):
             neg_text = m.group(1).strip()
-            obj = neg_text.split("never", 1)[-1].split("not", 1)[-1].strip() if "never" in neg_text.lower() or " not " in neg_text.lower() else neg_text
+            # Language-aware split for "never"/"nie" vs "not"/"nicht"
+            neg_lower = neg_text.lower()
+            if lang == 'de':
+                split_words = ['nie', 'niemals', 'nicht']
+            else:
+                split_words = ['never', 'not']
+            obj = neg_text
+            for sw in split_words:
+                if sw in neg_lower:
+                    parts = neg_text.split(sw, 1)
+                    if len(parts) > 1:
+                        obj = parts[-1].strip()
+                        break
             self._insert_kg(session, 'user', 'negation', obj[:80], message_idx, 0.75)
             counts["negation"] += 1
 
-        # Decisions
-        for m in _re.finditer(
-            r'(?:decided to|chose to|opted for|selected|picked|switching to)\s+([^.,;!?\n]{10,120})',
-            content, _re.IGNORECASE):
+        # Decisions — language-aware
+        for m in _re.finditer(pat['decision'], content, _re.IGNORECASE):
             decision = m.group(1).strip()
             self._insert_kg(session, 'user', 'decision', decision, message_idx, 0.65)
             counts["decision"] += 1
 
-        # Entity-action pairs (MR support) — expanded with preference/instruction patterns
-        for m in _re.finditer(
-            r'(?:the|my|our|your)\s+([a-z_]+'
-            r'(?:\s+(?:table|model|schema|API|endpoint|function|module|route|handler|'
-            r'tool|plugin|script|config|setting|workflow|pipeline|process|system|'
-            r'server|client|service|database|query|file|repo|branch|PR|issue|task|job)))'
-            r'\s+(?:needs?|requires?|should|could|would|will|has|have|uses?|runs?|'
-            r'handles?|processes?|supports?)\s+([^.,;!?\n]{10,80})',
-            content, _re.IGNORECASE):
+        # Entity-action pairs (MR support) — language-aware
+        for m in _re.finditer(pat['entity'], content, _re.IGNORECASE):
             entity = m.group(1).strip()
             action = m.group(2).strip()
             self._insert_kg(session, entity, 'requires', action, message_idx, 0.65)
             counts["decision"] += 1
 
-        # Sequence markers (EO support)
-        for m in _re.finditer(
-            r'((?:first|second|third|fourth|fifth|finally|next|then|after that)[^.,;!?\n]{15,120})',
-            content, _re.IGNORECASE):
+        # Sequence markers (EO support) — language-aware
+        for m in _re.finditer(pat['sequence'], content, _re.IGNORECASE):
             seq = m.group(1).strip()
             first_word = seq.split()[0].lower()
             self._insert_fact(session, message_idx, 'sequence', first_word, seq[:120],
                               self._context_snippet(content, m.start()), 0.6)
             counts["sequence"] += 1
 
-        # Instructions (IF support): explicit user constraints/requirements
-        # The "should" pattern is the biggest noise source — conversational "should I/we"
-        # and system prompt phrases get extracted as instructions.
-        # Fix: add negative filters for known false positives, require imperative
-        # context for bare "should" matches.
-        _INSTRUCTION_FALSE_POSITIVES = [
-            'i think you should leave',  # Netflix show title
-            'should behave',             # system prompt phrase
-            'their work style',          # system prompt phrase
-        ]
-        _INSTR_IMPERATIVE_VERBS = (
-            'always|never|remember|use|keep|avoid|ensure|check|verify|'
-            'run|test|build|deploy|push|pull|merge|commit|close|open|'
-            'update|install|configure|set|enable|disable|add|remove|'
-            'create|delete|start|stop|restart|reload|reset|try|implement|'
-            'write|read|switch|move|copy|rename|send|reply|respond'
-        )
-        for m in _re.finditer(
-            r'(?:always|never|must|must not|'
-            r'should(?: not)?(?=\s+(?:you|we|i|one)\s+(?:'
-            r'' + _INSTR_IMPERATIVE_VERBS + r'))|'
-            r'need(?:s)? to(?: not)?|required to|'
-            r'prefer(?: not)? to|want to(?: avoid| ensure| use| keep))'
-            r'\s+([^.,;!?\n]{10,200})',
-            content, _re.IGNORECASE):
+        # Instructions (IF support): language-aware
+        _INSTRUCTION_FALSE_POSITIVES = pat['instruction_false_positives']
+        _INSTR_IMPERATIVE_VERBS = pat['instruction_imperative']
+        _instr_re = pat['instruction'].replace('IMPVERBS', _INSTR_IMPERATIVE_VERBS)
+        for m in _re.finditer(_instr_re, content, _re.IGNORECASE):
             instr = m.group(0).strip()
             topic = m.group(1).strip()[:60]
             # Skip known false positives
@@ -2865,16 +2880,8 @@ class BeamMemory:
                 (session, message_idx, instr[:200], topic, self._context_snippet(content, m.start())))
             counts["instruction"] = counts.get("instruction", 0) + 1
 
-        # Preferences (PF support): evolving user tastes — expanded patterns
-        for m in _re.finditer(
-            r'(?:I(?: |\')?(?:like|love|prefer|hate|dislike|enjoy|use|stick with|'
-            r'switched to|moved to|changed to|want|need|'
-            r'tend to|usually|would rather|don\'t like|don\'t want|not a fan of|'
-            r'am okay with|am comfortable with|am used to|am happy with|'
-            r'am tired of|am sick of|prefer not to|try to avoid|'
-            r'find it easier to|find it better to|find it useful to))'
-            r'\s+([^.,;!?\n]{10,200})',
-            content, _re.IGNORECASE):
+        # Preferences (PF support): evolving user tastes — language-aware
+        for m in _re.finditer(pat['preference'], content, _re.IGNORECASE):
             pref = m.group(0).strip()
             topic = m.group(1).strip()[:60]
             # Extract a clean topic key from the preference for dedup
@@ -2899,6 +2906,7 @@ class BeamMemory:
             counts["preference"] = counts.get("preference", 0) + 1
 
         self.conn.commit()
+        counts["_lang"] = lang  # Tag extraction with detected language
         return counts
 
     def _insert_fact(self, session: str, msg_idx: int, ftype: str,
