@@ -69,13 +69,46 @@ def _build_extraction_prompt(text: str, detected_lang: str = 'en') -> str:
 
 
 def _parse_facts(raw_output: str) -> List[str]:
-    """Parse LLM output into individual facts."""
+    """Parse LLM output into individual facts.
+    Handles both JSON format (new MEMORIA prompt) and line-by-line format (legacy).
+    JSON format: {"facts": [...], "instructions": [...], ...}
+    Legacy format: one fact per line, optionally numbered."""
     if not raw_output or raw_output.strip().upper() == "NO_FACTS":
         return []
-    
-    # Split on newlines, filter empty lines
+
+    # Try JSON parsing first (new MEMORIA prompt format)
+    import json as _json
+    raw_clean = raw_output.strip()
+    # Find JSON block if wrapped in backticks
+    if raw_clean.startswith("```"):
+        raw_clean = raw_clean.split("```\n")[-1] if "```\n" in raw_clean else raw_clean.removeprefix("```json").removesuffix("```").strip()
+    if raw_clean.startswith("{"):
+        try:
+            parsed = _json.loads(raw_clean)
+            if isinstance(parsed, dict):
+                # Collect all extracted items across categories
+                all_items = []
+                for category in ('facts', 'instructions', 'preferences', 'timelines'):
+                    items = parsed.get(category, [])
+                    if isinstance(items, list):
+                        all_items.extend(str(item) for item in items if item)
+                if all_items:
+                    return all_items
+        except (_json.JSONDecodeError, Exception):
+            pass
+        # Partial JSON — try to extract from streaming output
+        try:
+            import re as _re
+            # Match incomplete JSON and extract any complete strings in arrays
+            matches = _re.findall(r'"([^"]{10,})"', raw_output)
+            if matches:
+                return matches[:5]
+        except Exception:
+            pass
+
+    # Legacy: split on newlines, filter empty lines
     lines = [line.strip() for line in raw_output.split("\n") if line.strip()]
-    
+
     # Clean up any numbering or bullet prefixes
     cleaned = []
     for line in lines:
@@ -83,6 +116,8 @@ def _parse_facts(raw_output: str) -> List[str]:
         line = line.lstrip("0123456789.-* ").strip()
         if line and len(line) > 10:  # Minimum fact length
             cleaned.append(line)
+
+    return cleaned[:5]  # Cap at 5 facts
     
     return cleaned[:5]  # Cap at 5 facts
 
