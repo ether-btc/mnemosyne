@@ -246,6 +246,22 @@ INVALIDATE_SCHEMA = {
     },
 }
 
+GET_SCHEMA = {
+    "name": "mnemosyne_get",
+    "description": (
+        "Retrieve a single memory by its primary key. Pure read, no side effects. "
+        "No semantic search. Returns the exact memory with the given ID or None. "
+        "Use this when you already know the memory ID from a previous recall response."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string", "description": "The memory ID to retrieve."},
+        },
+        "required": ["memory_id"],
+    },
+}
+
 TRIPLE_ADD_SCHEMA = {
     "name": "mnemosyne_triple_add",
     "description": (
@@ -456,7 +472,7 @@ GRAPH_LINK_SCHEMA = {
 
 ALL_TOOL_SCHEMAS = [
     REMEMBER_SCHEMA, RECALL_SCHEMA, SLEEP_SCHEMA, STATS_SCHEMA,
-    INVALIDATE_SCHEMA, TRIPLE_ADD_SCHEMA, TRIPLE_QUERY_SCHEMA,
+    INVALIDATE_SCHEMA, GET_SCHEMA, TRIPLE_ADD_SCHEMA, TRIPLE_QUERY_SCHEMA,
     SCRATCHPAD_WRITE_SCHEMA, SCRATCHPAD_READ_SCHEMA, SCRATCHPAD_CLEAR_SCHEMA,
     EXPORT_SCHEMA, UPDATE_SCHEMA, FORGET_SCHEMA, IMPORT_SCHEMA, DIAGNOSE_SCHEMA,
     GRAPH_QUERY_SCHEMA, GRAPH_LINK_SCHEMA,
@@ -1030,6 +1046,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 return self._handle_stats(args)
             elif tool_name == "mnemosyne_invalidate":
                 return self._handle_invalidate(args)
+            elif tool_name == "mnemosyne_get":
+                return self._handle_get(args)
             elif tool_name == "mnemosyne_triple_add":
                 return self._handle_triple_add(args)
             elif tool_name == "mnemosyne_triple_query":
@@ -1154,6 +1172,15 @@ class MnemosyneMemoryProvider(MemoryProvider):
             return json.dumps({"error": "memory_id is required"})
         self._beam.invalidate(memory_id, replacement_id=replacement_id if replacement_id else None)
         return json.dumps({"status": "invalidated", "memory_id": memory_id})
+
+    def _handle_get(self, args: Dict[str, Any]) -> str:
+        memory_id = args.get("memory_id", "")
+        if not memory_id:
+            return json.dumps({"error": "memory_id is required"})
+        result = self._beam.get(memory_id)
+        if result is None:
+            return json.dumps({"status": "not_found", "memory_id": memory_id})
+        return json.dumps({"status": "ok", "memory": result})
 
     def _handle_triple_add(self, args: Dict[str, Any]) -> str:
         subject = args.get("subject", "")

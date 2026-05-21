@@ -150,6 +150,12 @@ def register(ctx):
         handler=tools.mnemosyne_invalidate
     )
     ctx.register_tool(
+        name="mnemosyne_get",
+        toolset="mnemosyne",
+        schema=tools.GET_SCHEMA,
+        handler=tools.mnemosyne_get
+    )
+    ctx.register_tool(
         name="mnemosyne_export",
         toolset="mnemosyne",
         schema=tools.EXPORT_SCHEMA,

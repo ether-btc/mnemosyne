@@ -492,6 +492,13 @@ class Mnemosyne:
             }
         }
 
+    def get(self, memory_id: str) -> Optional[Dict]:
+        """Retrieve a single memory by its primary key.
+        Pure read, no side effects.
+        Delegates to BeamMemory.get() which checks working_memory
+        first (fast path), then episodic_memory (fallback)."""
+        return self.beam.get(memory_id)
+
     def forget(self, memory_id: str) -> bool:
         """Delete a memory by ID from legacy table and working_memory."""
         cursor = self.conn.cursor()
@@ -807,6 +814,13 @@ def get_stats(bank: str = None) -> Dict:
 def forget(memory_id: str, bank: str = None) -> bool:
     """Delete memory using the global instance"""
     return _get_default(bank).forget(memory_id)
+
+
+def get(memory_id: str, bank: str = None) -> Optional[Dict]:
+    """Retrieve a single memory by its primary key using the global instance.
+    Pure read, no side effects.
+    Returns None if not found."""
+    return _get_default(bank).get(memory_id)
 
 
 def update(memory_id: str, content: str = None, importance: float = None, bank: str = None) -> bool:

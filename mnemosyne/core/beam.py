@@ -2545,6 +2545,64 @@ class BeamMemory:
         self.conn.commit()
         return affected > 0
 
+    def get(self, memory_id: str) -> Optional[Dict]:
+        """
+        Retrieve a single memory by its primary key (id).
+        Pure read -- no side effects, no recall_count bump, no FTS trigger.
+
+        Checks working_memory first (faster, higher hit rate),
+        then episodic_memory (fallback).
+
+        Returns None if not found in either table.
+        """
+        cursor = self.conn.cursor()
+
+        # Working memory first (fast path)
+        cursor.execute("""
+            SELECT id, content, source, timestamp, session_id,
+                   importance, metadata_json, veracity, created_at
+            FROM working_memory
+            WHERE id = ? AND session_id = ?
+        """, (memory_id, self.session_id))
+        row = cursor.fetchone()
+        if row:
+            return {
+                "id": row[0],
+                "content": row[1],
+                "source": row[2],
+                "timestamp": row[3],
+                "session_id": row[4],
+                "importance": row[5],
+                "metadata": row[6],
+                "veracity": row[7],
+                "created_at": row[8],
+                "memory_store": "working",
+            }
+
+        # Episodic memory (fallback)
+        cursor.execute("""
+            SELECT id, content, source, timestamp, session_id,
+                   importance, metadata_json, veracity, created_at
+            FROM episodic_memory
+            WHERE id = ? AND (session_id = ? OR scope = 'global')
+        """, (memory_id, self.session_id))
+        row = cursor.fetchone()
+        if row:
+            return {
+                "id": row[0],
+                "content": row[1],
+                "source": row[2],
+                "timestamp": row[3],
+                "session_id": row[4],
+                "importance": row[5],
+                "metadata": row[6],
+                "veracity": row[7],
+                "created_at": row[8],
+                "memory_store": "episodic",
+            }
+
+        return None
+
     def forget_working(self, memory_id: str) -> bool:
         # E6.a: the cascade-delete of annotations must be authorized by the
         # session-scoped working_memory DELETE. The annotations table has no

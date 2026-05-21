@@ -201,6 +201,21 @@ INVALIDATE_SCHEMA = {
     }
 }
 
+GET_SCHEMA = {
+    "name": "mnemosyne_get",
+    "description": "Retrieve a single memory by its primary key. Pure read, no side effects, no semantic search. Returns the exact memory with the given ID or None if not found. Use this when you already know the memory ID and want to read its content directly.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {
+                "type": "string",
+                "description": "The memory ID to retrieve"
+            }
+        },
+        "required": ["memory_id"]
+    }
+}
+
 SCRATCHPAD_WRITE_SCHEMA = {
     "name": "mnemosyne_scratchpad_write",
     "description": "Write a temporary note to the Mnemosyne scratchpad.",
@@ -625,6 +640,22 @@ def mnemosyne_invalidate(args: dict, **kwargs) -> str:
             "memory_id": memory_id,
             "replacement_id": replacement_id
         })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def mnemosyne_get(args: dict, **kwargs) -> str:
+    """Retrieve a single memory by its primary key"""
+    try:
+        memory_id = args.get("memory_id", "").strip()
+        if not memory_id:
+            return json.dumps({"error": "memory_id is required"})
+
+        mem = _get_memory()
+        result = mem.get(memory_id)
+        if result is None:
+            return json.dumps({"status": "not_found", "memory_id": memory_id})
+        return json.dumps({"status": "ok", "memory": result})
     except Exception as e:
         return json.dumps({"error": str(e)})
 

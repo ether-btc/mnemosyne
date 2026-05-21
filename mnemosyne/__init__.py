@@ -23,6 +23,7 @@ _lazy_exports = {
     "recall": (".core.memory", "recall"),
     "get_context": (".core.memory", "get_context"),
     "get_stats": (".core.memory", "get_stats"),
+    "get": (".core.memory", "get"),
     "forget": (".core.memory", "forget"),
     "update": (".core.memory", "update"),
 }
