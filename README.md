@@ -20,6 +20,26 @@
 
 ---
 
+## Table of Contents
+
+- [Works With Everything](#works-with-everything)
+- [Quick Start](#quick-start)
+  - [Add to your agent](#add-to-your-agent)
+- [Benchmark](#benchmark)
+- [CLI Usage](#cli-usage)
+- [Python API](#python-api)
+  - [BEAM Direct Access](#advanced-beam-direct-access)
+- [Architecture](#architecture)
+- [Why Mnemosyne?](#why-mnemosyne)
+- [Configuration](#configuration)
+  - [Environment Variables](#environment-variables)
+- [Hermes Plugin](#hermes-plugin-17-tools)
+- [Contributing](#contributing)
+- [Support](#support)
+- [License](#license)
+
+---
+
 ## Works With Everything
 
 | Platform | Method | Setup |
