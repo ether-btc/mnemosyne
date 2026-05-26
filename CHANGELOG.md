@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Simple Versioning](https://github.com/AxDSan/mnemosyne) (MAJOR.MINOR).
 
+## [3.1.0] — 2026-05-26
+
+### Added
+
+- **Shared surface memory CRUD.** Cross-agent shared memory database with dedicated read/write/search/delete/stats API. Each agent's shared surfaces are fully isolated from private memories. (`5a0b16a`)
+- **Multilingual MEMORIA.** Language detection pipelines for German, Russian, and Chinese. MEMORIA now auto-detects the input language and applies language-specific extraction patterns. (`afd53c3`, `669a7cf`, `0f486cc`)
+- **Custom embedding endpoints.** Configure any OpenAI-compatible embedding provider via `MNEMOSYNE_EMBEDDING_BASE_URL`, with Jina model dimension auto-detection and custom SSL cert support. (`d0a8421`)
+- **Deterministic `get(id)` primitive.** Direct memory retrieval by memory ID — no vector search, no ranking, just the exact memory. Useful for tool calls, confirmation UI, and graph traversal seed points. (`022929b`)
+- **`hermes mnemosyne stats` command.** Exposes memoria-specific statistics (fact count, instruction count, preference count, language distribution) via the CLI. (`8b146dd`)
+- **Chinese and multilingual embedding models.** Auto-dimension detection for models that don't expose fixed output sizes, enabling seamless use of multilingual embedding providers. (`f37f4bb`)
+- **Community health files.** `CODE_OF_CONDUCT.md`, `SECURITY.md`, and a GitHub PR template for smoother community contributions. (`c2bf1d3`)
+- **Community badges.** 100% Python badge added to README via shields.io. (`22e212f`)
+
+### Fixed
+
+- **sqlite-vec int8 search syntax.** The `AND k=N` clause (required by sqlite-vec's int8 vector type for proper search) replaces the standard `LIMIT` clause in vec_search. Without this fix, `int8` vector search silently returned wrong results. (`0a41e3b`)
+- **Hermes plugin tool schemas.** All 6 hermes_plugin tool schemas now include the `bank` parameter, enabling multi-bank operation from the Hermes plugin layer. (`8cd718d`)
+- **sqlite-vec extension loading.** `_get_connection` now correctly loads the `sqlite-vec` extension before any vector operations, preventing `no such function: vec_distance_cosine` crashes. (`a0de5f3`)
+- **Working memory vector generation.** `remember()` now generates and persists the vector embedding on every call, not just during recall-time lazy generation. (`892f136`)
+- **Active DB path in diagnose.** `mnemosyne diagnose` now reports the actual provider-level database path instead of the base config path. (`00ca612`)
+- **Timezone normalization in temporal recall.** Temporal queries now properly normalize timezone-aware timestamps, fixing off-by-hour windowing errors. (`f4b18f7`)
+- **MEMORIA regex cross-session dedup.** Tightened regex patterns to prevent fact duplication across sessions and improved metric extraction. (`81cc6fc`)
+- **MULTILINGUAL_PATTERNS deduplication.** Removed duplicate `instruction` keys and false positive German patterns across multiple iterations. (`3f0e250`, `a16aa6e`, `cd3b1b2`)
+- **E1 ingest type safety.** Fixed `tool count assertion` and `_lang string/int TypeError` during conversation ingestion. (`ed85e51`)
+- **Fact accumulation metadata skip.** Fixed metadata keys being incorrectly counted in fact accumulation during `ingest_conversation`. (`86d8c1e`)
+- **MEMORIA JSON parsing.** `_parse_facts` now handles both structured JSON and raw text output from the MEMORIA extraction prompt. (`d863220`)
+- **String boolean config handling.** YAML config `true`/`false` strings are now properly coerced to Python booleans in `_apply_provider_config`. (`21a157d`)
+- **Vector type probing.** Schema preservation during vector type probing prevents table corruption on re-probe. (`67fca7a`)
+- **Sys.path ordering.** Fixed import resolution for `Hermes MemoryProvider` by moving sys.path setup before mnemosyne imports. (`62b0218`)
+- **Test stability.** Patched lambda mocks and disabled embeddings in recall diagnostics tests to prevent CI flakiness. (`4ba74eb`, `066a3c6`, `e3bdc63`)
+- **Config import in eval tool.** Moved logging import to module level in evaluation tool to prevent CI import errors.
+
+### Changed
+
+- **UPDATING.md rewritten.** Complete restructuring covering v2.7→v3.1 path, PEP 668 troubleshooting, and schema verification steps. (`dc170ce`)
+- **README overhaul.** Centered hero section, table of contents, imperative tone throughout. (`887c8c0`)
+- **BEAM benchmarks accuracy.** Corrected Hindsight benchmark from false 64.1% to 73.4% and removed unsupported SOTA claims. (`341c82e`)
+
+### Removed
+
+- **DEVOPS.md from git tracking.** Private operational doc removed from version control. (`34483af`)
+- **Local scratch and benchmark artifacts.** Cleaned up development artifacts from the repo. (`7826de9`)
+- **Personal emails from source files.** PII filter-repo scrub with .mailmap and PII pre-commit hook added. (`58507ea`)
+
 ## [3.0.0] — 2026-05-18
 
 ### Added
