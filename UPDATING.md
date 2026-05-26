@@ -3,8 +3,10 @@
 Covers all upgrade paths: v2.7 → latest, source installs, PyPI installs,
 and systems with Python's `externally-managed-environment` (PEP 668).
 
-If you're on **v2.7** and want the latest (v3.0.0), jump to
+If you're on **v2.7** and want the latest (v3.1.0), jump to
 [Upgrading from v2.7 to v3.0.0](#upgrading-from-v27-to-v300).
+
+Already on v3.0.0? See [Upgrading to v3.1.0](#upgrading-to-v310-shared-surface--multilingual-memoria).
 
 ---
 
@@ -180,7 +182,58 @@ They are harmless. If you want them gone, export, delete DB, re-import.
 
 ---
 
-### Upgrading to v2.9.0 (MCP SDK Compatibility)
+### Upgrading to v3.1.0 (Shared Surface & Multilingual MEMORIA)
+
+The v3.1.0 release adds shared surface memory, multilingual MEMORIA, custom embedding endpoints, and many fixes.
+
+**New capabilities:**
+
+- **Shared surface memory.** Cross-agent shared persistence via `mnemosyne_shared_*` tools. Each agent gets an isolated shared surface. Activate with `hermes memory` surface commands.
+- **Multilingual MEMORIA.** Language auto-detection for German, Russian, and Chinese. Extraction now applies language-specific patterns based on detected input language.
+- **Custom embedding endpoints.** Configure any OpenAI-compatible embedding provider via `MNEMOSYNE_EMBEDDING_BASE_URL`. Jina model dimensions auto-detected. Custom SSL cert via `MNEMOSYNE_EMBEDDING_SSL_CERT`.
+- **Deterministic `get(id)`.** Direct memory retrieval by ID — no vector search, no ranking. Call `mnemosyne.get(memory_id)` for exact lookup.
+
+**New environment variables:**
+
+| Variable | Default | What it does |
+|---|---|---|
+| `MNEMOSYNE_EMBEDDING_BASE_URL` | not set | Override the embedding API provider URL |
+| `MNEMOSYNE_EMBEDDING_SSL_CERT` | not set | Path to custom SSL certificate for embedding API |
+| `MNEMOSYNE_EMBEDDING_DIMENSIONS` | auto | Force embedding dimensions (auto-detected for most providers) |
+
+**Fixes included:**
+
+- sqlite-vec int8 search now uses `AND k=N` syntax (was silently wrong with `LIMIT`)
+- Hermes plugin: all 6 tool schemas now include `bank` parameter for multi-bank operation
+- sqlite-vec extension loaded before vector operations (fixes `vec_distance_cosine` crashes)
+- Timezone normalization in temporal recall (fixes off-by-hour windowing)
+- Working memory vectors generated and persisted on every `remember()` call
+- MEMORIA regex dedup and language pattern fixes across German, Russian, Chinese
+- Config string booleans properly coerced from YAML
+
+**What to verify after update:**
+
+```bash
+pip install --upgrade mnemosyne-memory
+hermes gateway restart
+
+# Verify version
+python3 -c "from mnemosyne import __version__; print(__version__)"
+# Expected: 3.1.0
+```
+
+**Rollback:**
+
+```bash
+pip install 'mnemosyne-memory==3.0.0'
+hermes gateway restart
+```
+
+Shared surface tables remain in the database but are ignored by v3.0.0.
+
+---
+
+
 
 MCP server transport updated for SDK v1.x. Code-only change — no schema
 migration needed.
