@@ -9,6 +9,9 @@ Local-first, zero-cloud memory for AI agents. SQLite-backed. Sub-millisecond. Fu
 | [Getting Started](getting-started.md) | Installation, quickstart, storing your first memory |
 | [Architecture](architecture.md) | BEAM tiers, SQLite backend, hybrid search, knowledge graph |
 | [API Reference](api-reference.md) | Python API: `remember`, `recall`, `sleep`, triples, stats |
+| [Integrations](integrations/README.md) | Platform guides: Cursor, Claude Code, Codex, OpenWebUI, Windsurf, OpenClaw, Hermes |
+| [OpenWebUI Deep Integration](integrations/openwebui-deep.md) | Auto-save every chat, memory browser dashboard, cross-session recall |
+| [Integration Template](integrations/integration-template.md) | ~100-line pattern for adding any new platform |
 | [Hermes Integration](hermes-integration.md) | Using Mnemosyne as a Hermes memory backend |
 | [LLM Installation Guide](llm-installation-guide.md) | Installation instructions for AI agents/LLMs |
 | [Configuration](configuration.md) | Environment variables, data directory, vector compression |
