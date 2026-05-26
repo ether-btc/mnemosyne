@@ -289,9 +289,7 @@ Full docs: [`docs/`](docs/README.md) | Changelog: [`CHANGELOG.md`](CHANGELOG.md)
 
 <div align="center">
 
-**Discord:** [Join the Mnemosyne community](https://discord.gg/Cgzpw9x3R)
-**Issues:** [GitHub Issues](https://github.com/AxDSan/mnemosyne/issues)
-**Email:** 1641797+AxDSan@users.noreply.github.com
+**Discord:** [Join the Mnemosyne community](https://discord.gg/Cgzpw9x3R)\n**Issues:** [GitHub Issues](https://github.com/AxDSan/mnemosyne/issues)
 
 <a href="https://github.com/sponsors/AxDSan"><img src="https://img.shields.io/badge/💖_GitHub_Sponsors-30363D?style=for-the-badge&logo=github&logoColor=white" alt="GitHub Sponsors"/></a>
 <a href="https://ko-fi.com/axdsan"><img src="https://img.shields.io/badge/☕_Ko‑fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white" alt="Ko-fi"/></a>
