@@ -117,6 +117,17 @@ except ImportError:
             return norm
         return "unknown"
 
+# Enhanced recall modules (gated by MNEMOSYNE_ENHANCED_RECALL=1)
+try:
+    from mnemosyne.core.synonyms import expand_query, normalize_query
+except ImportError:
+    expand_query = None
+    normalize_query = None
+try:
+    from mnemosyne.core.query_cache import QueryCache
+except ImportError:
+    QueryCache = None
+
 # ------------------------------------------------------------------
 # Trust tier derivation from ingestion source (plugin-first architecture)
 # ------------------------------------------------------------------
@@ -375,7 +386,19 @@ def _get_connection(db_path: Path = None) -> sqlite3.Connection:
     plain sqlite3.Connection.
     """
     path = Path(db_path) if db_path else _default_db_path()
-    if not hasattr(_thread_local, 'conn') or _thread_local.conn is None or getattr(_thread_local, 'db_path', None) != str(path):
+    needs_reconnect = (
+        not hasattr(_thread_local, 'conn')
+        or _thread_local.conn is None
+        or getattr(_thread_local, 'db_path', None) != str(path)
+    )
+    if not needs_reconnect:
+        # Verify the cached connection is still alive
+        try:
+            _thread_local.conn.execute("SELECT 1")
+        except Exception:
+            needs_reconnect = True
+
+    if needs_reconnect:
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(
             str(path),
@@ -2145,6 +2168,11 @@ class BeamMemory:
             self._ingest_graph_and_veracity(existing_id, content, source, veracity)
             self._emit_event("MEMORY_UPDATED", existing_id, content=content,
                              source=source, importance=importance, metadata=metadata)
+
+            # Invalidate enhanced recall cache on memory update
+            if hasattr(self, "_query_cache") and self._query_cache is not None:
+                self._query_cache.invalidate()
+
             return existing_id
 
         memory_id = memory_id or _generate_id(content)
@@ -2182,6 +2210,11 @@ class BeamMemory:
 
         self._emit_event("MEMORY_ADDED", memory_id, content=content,
                          source=source, importance=importance, metadata=metadata)
+
+        # Invalidate enhanced recall cache on new memory
+        if hasattr(self, "_query_cache") and self._query_cache is not None:
+            self._query_cache.invalidate()
+
         return memory_id
 
     def remember_batch(self, items: List[Dict],
