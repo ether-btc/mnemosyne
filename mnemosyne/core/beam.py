@@ -1366,6 +1366,35 @@ def _contains_spaceless_cjk(text: str) -> bool:
     )
 
 
+def _cjk_fts_terms(text: str) -> List[str]:
+    """Generate FTS-safe terms for CJK text.
+
+    The default unicode61 tokenizer indexes each CJK character as an
+    individual token. Unquoted character terms match directly. Bigrams
+    are quoted as phrases for multi-character matching.
+    """
+    cjk_chars = [
+        ch for ch in text
+        if "\u4e00" <= ch <= "\u9fff"
+        or "\u3040" <= ch <= "\u30ff"
+        or "\uac00" <= ch <= "\ud7af"
+    ]
+    if not cjk_chars:
+        return []
+    terms: List[str] = []
+    seen: Set[str] = set()
+    for ch in cjk_chars:
+        if ch not in seen:
+            seen.add(ch)
+            terms.append(ch)  # bare unigram matches individual token
+    for i in range(len(cjk_chars) - 1):
+        bigram = cjk_chars[i] + cjk_chars[i + 1]
+        if bigram not in seen:
+            seen.add(bigram)
+            terms.append(f'"{bigram}"')  # quoted bigram phrase match
+    return terms
+
+
 def _lexical_relevance(query_tokens: List[str], content: str, query_lower: str = "") -> float:
     """Conservative lexical score in [0, 1]. Returns 0 for no real token overlap.
 
@@ -1620,6 +1649,73 @@ def _fts_query_terms(query: str) -> List[str]:
     return terms
 
 
+def _has_cjk(text: str) -> bool:
+    """Check if text contains any CJK characters."""
+    return any(
+        "\u4e00" <= ch <= "\u9fff"
+        or "\u3040" <= ch <= "\u30ff"
+        or "\uac00" <= ch <= "\ud7af"
+        for ch in text
+    )
+
+
+def _cjk_like_search(conn: sqlite3.Connection, query: str, k: int = 20, working: bool = False) -> List[Dict]:
+    """Fallback LIKE search for CJK text.
+
+    The default unicode61 FTS5 tokenizer does not index CJK characters
+    on this SQLite build. When a CJK query produces zero FTS results,
+    fall back to scanning content via LIKE for each unique CJK character
+    in the query. Rows matching more query characters rank higher.
+
+    This is slower than FTS but correctness matters more than speed for
+    underserved CJK users. Once FTS5 gets tokenchars or ICU support,
+    this function can be removed.
+    """
+    cjk_chars = sorted(set(
+        ch for ch in query
+        if "\u4e00" <= ch <= "\u9fff"
+        or "\u3040" <= ch <= "\u30ff"
+        or "\uac00" <= ch <= "\ud7af"
+    ))
+    if not cjk_chars:
+        return []
+
+    if working:
+        table = "working_memory"
+        id_col = "id"
+    else:
+        table = "episodic_memory"
+        id_col = "rowid"
+
+    # Build parameterized LIKE clauses for each CJK character
+    conditions = " OR ".join(f"content LIKE ? ESCAPE '\\'" for _ in cjk_chars)
+    params = [f"%{ch}%" for ch in cjk_chars]
+    # Also search for mixed CJK+ASCII: any of the CJK chars must be present
+    try:
+        all_rows = conn.execute(
+            f"SELECT {id_col}, content FROM {table} WHERE {conditions} LIMIT ?",
+            params + [k * 5]
+        ).fetchall()
+    except Exception:
+        return []
+
+    if not all_rows:
+        return []
+
+    # Score: count how many unique CJK chars from the query appear in each row
+    scored = []
+    for row in all_rows:
+        rid = row[id_col]
+        content = row["content"]
+        score = sum(1 for ch in cjk_chars if ch in content) / max(len(cjk_chars), 1)
+        if score > 0:
+            scored.append((rid, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    result_key = "id" if working else "rowid"
+    return [{result_key: rid, "rank": -score} for rid, score in scored[:k]]
+
+
 def _fts_search(conn: sqlite3.Connection, query: str, k: int = 20) -> List[Dict]:
     """Search FTS5 episodes and return rowids with ranks.
 
@@ -1629,12 +1725,18 @@ def _fts_search(conn: sqlite3.Connection, query: str, k: int = 20) -> List[Dict]
     """
     terms = _fts_query_terms(query)
     if not terms:
+        # CJK text produces zero FTS terms on builds without tokenchars.
+        # Fall back to LIKE-based CJK search.
+        if _has_cjk(query):
+            return _cjk_like_search(conn, query, k=k, working=False)
         return []
     fts_query = " OR ".join(terms)
     rows = conn.execute(
         "SELECT rowid, rank FROM fts_episodes WHERE fts_episodes MATCH ? ORDER BY rank, rowid LIMIT ?",
         (fts_query, k)
     ).fetchall()
+    if not rows and _has_cjk(query):
+        return _cjk_like_search(conn, query, k=k, working=False)
     return [{"rowid": r["rowid"], "rank": r["rank"]} for r in rows]
 
 
@@ -1642,12 +1744,16 @@ def _fts_search_working(conn: sqlite3.Connection, query: str, k: int = 20) -> Li
     """Search FTS5 working memory and return ids with ranks."""
     terms = _fts_query_terms(query)
     if not terms:
+        if _has_cjk(query):
+            return _cjk_like_search(conn, query, k=k, working=True)
         return []
     fts_query = " OR ".join(terms)
     rows = conn.execute(
         "SELECT id, rank FROM fts_working WHERE fts_working MATCH ? ORDER BY rank, id LIMIT ?",
         (fts_query, k)
     ).fetchall()
+    if not rows and _has_cjk(query):
+        return _cjk_like_search(conn, query, k=k, working=True)
     return [{"id": r["id"], "rank": r["rank"]} for r in rows]
 
 
