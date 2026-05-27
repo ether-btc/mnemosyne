@@ -127,6 +127,11 @@ try:
     from mnemosyne.core.query_cache import QueryCache
 except ImportError:
     QueryCache = None
+try:
+    from mnemosyne.core.temporal_parser import extract_temporal, parse_nl_date
+except ImportError:
+    extract_temporal = None
+    parse_nl_date = None
 
 # ------------------------------------------------------------------
 # Trust tier derivation from ingestion source (plugin-first architecture)
@@ -917,6 +922,18 @@ def init_beam(db_path: Path = None):
         """)
     except (sqlite3.OperationalError, RuntimeError):
         pass  # sqlite-vec not available
+
+    # --- Temporal architecture migration ---
+    _add_column_if_missing(conn, "working_memory", "event_date", "TEXT DEFAULT NULL")
+    _add_column_if_missing(conn, "working_memory", "event_date_precision", "TEXT DEFAULT 'unknown'")
+    _add_column_if_missing(conn, "working_memory", "temporal_tags", "TEXT DEFAULT '[]'")
+    _add_column_if_missing(conn, "working_memory", "corrected_by", "INTEGER DEFAULT NULL")
+    _add_column_if_missing(conn, "episodic_memory", "event_date", "TEXT DEFAULT NULL")
+    _add_column_if_missing(conn, "episodic_memory", "event_date_precision", "TEXT DEFAULT 'unknown'")
+    _add_column_if_missing(conn, "episodic_memory", "temporal_tags", "TEXT DEFAULT '[]'")
+    _add_column_if_missing(conn, "episodic_memory", "corrected_by", "INTEGER DEFAULT NULL")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_wm_event_date ON working_memory(event_date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_em_event_date ON episodic_memory(event_date)")
 
 
 class _BeamConnection(sqlite3.Connection):
@@ -2191,6 +2208,23 @@ class BeamMemory:
 
         # Auto-generate temporal triple
         self._add_temporal_triple(memory_id, timestamp, source, content)
+
+        # --- Temporal extraction ---
+        if extract_temporal is not None:
+            try:
+                temporal_info = extract_temporal(content)
+                if temporal_info and temporal_info.get("event_date"):
+                    import json as _json_tmp
+                    cursor.execute(
+                        "UPDATE working_memory SET event_date=?, event_date_precision=?, temporal_tags=? WHERE id=?",
+                        (temporal_info["event_date"],
+                         temporal_info["event_date_precision"],
+                         _json_tmp.dumps(temporal_info["temporal_tags"]),
+                         memory_id)
+                    )
+                    self.conn.commit()
+            except Exception:
+                pass  # Temporal extraction is best-effort
 
         # --- Entity extraction ---
         if extract_entities:
