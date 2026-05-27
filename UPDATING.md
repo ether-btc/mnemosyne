@@ -190,16 +190,15 @@ The v3.1.0 release adds shared surface memory, multilingual MEMORIA, custom embe
 
 - **Shared surface memory.** Cross-agent shared persistence via `mnemosyne_shared_*` tools. Each agent gets an isolated shared surface. Activate with `hermes memory` surface commands.
 - **Multilingual MEMORIA.** Language auto-detection for German, Russian, and Chinese. Extraction now applies language-specific patterns based on detected input language.
-- **Custom embedding endpoints.** Configure any OpenAI-compatible embedding provider via `MNEMOSYNE_EMBEDDING_BASE_URL`. Jina model dimensions auto-detected. Custom SSL cert via `MNEMOSYNE_EMBEDDING_SSL_CERT`.
+- **Custom embedding endpoints.** Configure any OpenAI-compatible embedding provider via `OPENROUTER_BASE_URL` (set to your own server URL). Jina model dimensions auto-detected. Set `MNEMOSYNE_EMBEDDINGS_VIA_API=true` if you want to use OpenRouter-hosted embedding models specifically.
 - **Deterministic `get(id)`.** Direct memory retrieval by ID — no vector search, no ranking. Call `mnemosyne.get(memory_id)` for exact lookup.
 
 **New environment variables:**
 
 | Variable | Default | What it does |
 |---|---|---|
-| `MNEMOSYNE_EMBEDDING_BASE_URL` | not set | Override the embedding API provider URL |
-| `MNEMOSYNE_EMBEDDING_SSL_CERT` | not set | Path to custom SSL certificate for embedding API |
-| `MNEMOSYNE_EMBEDDING_DIMENSIONS` | auto | Force embedding dimensions (auto-detected for most providers) |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Override the embedding API provider URL |
+| `MNEMOSYNE_EMBEDDINGS_VIA_API` | not set | Set to `true` to route all embedding models through the API |
 
 **Fixes included:**
 

@@ -11,7 +11,7 @@ and this project adheres to [Simple Versioning](https://github.com/AxDSan/mnemos
 
 - **Shared surface memory CRUD.** Cross-agent shared memory database with dedicated read/write/search/delete/stats API. Each agent's shared surfaces are fully isolated from private memories. (`5a0b16a`)
 - **Multilingual MEMORIA.** Language detection pipelines for German, Russian, and Chinese. MEMORIA now auto-detects the input language and applies language-specific extraction patterns. (`afd53c3`, `669a7cf`, `0f486cc`)
-- **Custom embedding endpoints.** Configure any OpenAI-compatible embedding provider via `MNEMOSYNE_EMBEDDING_BASE_URL`, with Jina model dimension auto-detection and custom SSL cert support. (`d0a8421`)
+- **Custom embedding endpoints.** Configure any OpenAI-compatible embedding provider via `OPENROUTER_BASE_URL` (set to your own server URL), with Jina model dimension auto-detection and custom SSL cert support. Add `MNEMOSYNE_EMBEDDINGS_VIA_API=true` if using OpenRouter-hosted models. (`d0a8421`)
 - **Deterministic `get(id)` primitive.** Direct memory retrieval by memory ID — no vector search, no ranking, just the exact memory. Useful for tool calls, confirmation UI, and graph traversal seed points. (`022929b`)
 - **`hermes mnemosyne stats` command.** Exposes memoria-specific statistics (fact count, instruction count, preference count, language distribution) via the CLI. (`8b146dd`)
 - **Chinese and multilingual embedding models.** Auto-dimension detection for models that don't expose fixed output sizes, enabling seamless use of multilingual embedding providers. (`f37f4bb`)
