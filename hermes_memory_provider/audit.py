@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS memory_events (
     profile TEXT,
     session_id TEXT,
     source_tool TEXT,
+    tokens_used INTEGER,
     reason TEXT,
     metadata_json TEXT
 )
@@ -34,8 +35,12 @@ CREATE TABLE IF NOT EXISTS memory_events (
 
 _INSERT = """
 INSERT INTO memory_events
-    (timestamp, action, memory_id, bank, scope, profile, session_id, source_tool, reason, metadata_json)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (timestamp, action, memory_id, bank, scope, profile, session_id, source_tool, tokens_used, reason, metadata_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+_MIGRATE_TOKENS = """
+ALTER TABLE memory_events ADD COLUMN tokens_used INTEGER
 """
 
 
@@ -51,6 +56,11 @@ class AuditLog:
         try:
             self._conn = sqlite3.connect(str(self._db_path), timeout=5)
             self._conn.execute(_CREATE_TABLE)
+            # Migration: add tokens_used column for existing databases
+            try:
+                self._conn.execute(_MIGRATE_TOKENS)
+            except Exception:
+                pass  # Column already exists
             self._conn.commit()
         except Exception as exc:
             logger.warning("audit: failed to create table: %s", exc)
@@ -66,6 +76,7 @@ class AuditLog:
         profile: Optional[str] = None,
         session_id: Optional[str] = None,
         source_tool: Optional[str] = None,
+        tokens_used: Optional[int] = None,
         reason: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
@@ -85,6 +96,7 @@ class AuditLog:
                     profile,
                     session_id,
                     source_tool,
+                    tokens_used,
                     reason,
                     meta_str,
                 ),
@@ -100,7 +112,7 @@ class AuditLog:
         try:
             cur = self._conn.execute(
                 "SELECT event_id, timestamp, action, memory_id, bank, scope, "
-                "profile, session_id, source_tool, reason, metadata_json "
+                "profile, session_id, source_tool, tokens_used, reason, metadata_json "
                 "FROM memory_events ORDER BY event_id DESC LIMIT ?",
                 (limit,),
             )
