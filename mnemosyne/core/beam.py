@@ -3010,6 +3010,19 @@ class BeamMemory:
         words = set(re.findall(r'\w+', text_lower))
         if len(words & german_markers) >= 2:
             return 'de'
+        # Italian: detect accent chars + Italian markers
+        if any(c in text_lower for c in 'àèéìòù'):
+            italian_markers = {
+                'e', 'il', 'la', 'i', 'le', 'di', 'che', 'non', 'un', 'una',
+                'per', 'è', 'in', 'sono', 'mi', 'ha', 'ma', 'lo', 'se', 'su',
+                'con', 'da', 'come', 'questo', 'quello', 'anche', 'o', 'ho',
+                'ci', 'si', 'perché', 'perche', 'quando', 'chi', 'dove', 'molto',
+                'del', 'della', 'delle', 'dei', 'degli', 'nel', 'nella', 'sul',
+                'sulla', 'sui', 'sulle', 'al', 'alla', 'agli', 'alle',
+            }
+            words = set(re.findall(r'\w+', text_lower))
+            if len(words & italian_markers) >= 2:
+                return 'it'
         return 'en'
 
     MULTILINGUAL_PATTERNS = {
@@ -3054,8 +3067,28 @@ class BeamMemory:
             'preference': r'(?:(?:Я(?: |\')?(?:люблю|ненавижу|предпочитаю|терпеть не могу|не люблю|не нравится|использую|пользуюсь|остаюсь на|перешёл на|переключился на|хочу|нуждаюсь|обычно|скорее|предпочитаю не|стараюсь избегать|привык|надоело|устал от|доволен|устраивает))|мне\s+(?:нравится|не нравится|проще|удобнее|лень|надоело)|терпеть не могу|надоело|привык|устраивает)\s+([^.,;!?\n]{3,200})',
             'event_keywords': ['встреча', 'созвон', 'запланировано', 'состоялось', 'произошло', 'планирую', 'будет', 'дедлайн', 'релиз', 'запуск', 'деплой', 'опубликовано', 'начал', 'начался', 'закончил', 'завершил', 'событие', 'конференция', 'воркшоп', 'встреча'],
             'named_months': r'(?:(?:(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря|янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{1,2}(?:-го)?,?\s*(?:\d{4})?)|(?:\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(?:\s+\d{4})?))',
-            'instruction': r'(?:всегда|никогда|должен|не должен|нужно|не нужно|обязательно|нельзя|не забывай|запомни|помни|следует|стоит)\s+([^.,;!?\n]{6,200})',
-        }
+            'instruction': r'(?:всегда|никогда|должен|не должен|нужно|не нужно|обязательно|нельзя|не забывай|запомни|помни|следует|стоит)\\s+([^.,;!?\\n]{6,200})',
+        },
+        'it': {
+            'negation': r"(?:Non(?: |')?(?:ho|ho mai|mai|non)\s+[^.,;!?\n]{15,120})",
+            'decision': r'(?:ho deciso|mi sono deciso|ho scelto|ho optato|ho cambiato|sono passato|sono passata|ho selezionato|scelto)\s+([^.,;!?\n]{10,120})',
+            'entity': r"(?:il|la|i|le|il mio|la mia|i miei|le mie|il tuo|la tua|il nostro|la nostra)\s+([a-z_]+(?:\s+(?:tabella|modello|schema|API|endpoint|funzione|modulo|route|handler|tool|plugin|script|config|impostazione|workflow|pipeline|processo|sistema|server|client|servizio|database|query|file|repo|branch|PR|issue|task|job|progetto)))\s+(?:ha bisogno|richiede|dovrebbe|potrebbe|vorra|ha|hanno|usa|usano|funziona|gestisce|processa|supporta)\s+([^.,;!?\n]{10,80})",
+            'sequence': r'((?:primo|prima|secondo|seconda|terzo|terza|quarto|quinta|infine|poi|dopo|dopodiche|successivamente|quindi)[^.,;!?\n]{15,120})',
+            'instruction_false_positives': [
+                'dovresti andare',
+                'penso che dovresti',
+                'dovrebbe funzionare',
+                'dovrebbe andare',
+                'dovrebbe andare bene',
+                'dovrebbe essere',
+                'dovrebbe bastare',
+            ],
+            'instruction_imperative': 'sempre|mai|ricorda|usa|tieni|evita|assicurati|controlla|verifica|esegui|testa|costruisci|distribuisci|fai push|fai pull|fai merge|chiudi|apri|aggiorna|installa|configura|imposta|abilita|disabilita|aggiungi|rimuovi|crea|elimina|avvia|ferma|riavvia|resetta|prova|implementa|scrivi|leggi|passa|sposta|copia|rinomina|invia|rispondi',
+            'instruction': r'(?:sempre|mai|non deve|non devono|dovrebbe(?: non)?(?=\s+(?:tu|voi|noi|io|si)\s+(?:IMPVERBS))|ha bisogno di|deve|devono|preferisci(?: non)?|vuole(?: evitare|assicurarsi|usare|tenere))\s+([^.,;!?\n]{10,200})',
+            'preference': r"(?:Io(?: |')?(?:mi piace|amo|preferisco|odio|non mi piace|uso|utilizzo|sono passato a|ho cambiato a|voglio|ho bisogno|tendo a|di solito|preferirei|non mi piace per niente|non voglio|non sono un fan di|mi va bene|mi trovo bene|sono abituato a|sono felice con|sono stanco di|cerco di evitare|trovo piu facile|trovo meglio|trovo utile))\s+([^.,;!?\n]{10,200})",
+            'event_keywords': ['riunione', 'chiamata', 'incontro', 'programmato', 'successo', 'accaduto', 'pianifico', 'sara il', 'scadenza', 'rilascio', 'lancio', 'pubblicato', 'iniziato', 'cominciato', 'finito', 'completato', 'evento', 'conferenza', 'workshop', 'appuntamento'],
+            'named_months': r'(?:(?:(?:Gennaio|Febbraio|Marzo|Aprile|Maggio|Giugno|Luglio|Agosto|Settembre|Ottobre|Novembre|Dicembre|gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+\d{1,2}(?:°)?,?\s*(?:\d{4})?))',
+        },
     }
 
     def extract_and_store_facts(self, content: str, message_idx: int = 0,
@@ -3241,8 +3274,8 @@ class BeamMemory:
             _instr_lower = instr.lower()
             if any(fp in _instr_lower for fp in _INSTRUCTION_FALSE_POSITIVES):
                 continue
-            # Skip bare "should"/"sollte" questions not directed at anyone
-            if _re.match(r'^(?:should|sollte)\s+(?:i|we|it|they|he|she|the|ich|wir|es|man|der|die|das)\b', instr, _re.IGNORECASE):
+            # Skip bare "should"/"sollte"/"dovrebbe"/"dovresti" questions not directed at anyone
+            if _re.match(r'^(?:should|sollte|dovrebbe|dovresti)\s+(?:i|we|it|they|he|she|the|ich|wir|es|man|der|die|das|io|noi|lui|lei|loro)\b', instr, _re.IGNORECASE):
                 continue
             self.conn.execute(
                 "INSERT INTO memoria_instructions (session_id, message_idx, instruction, topic, context_snippet, source_memory_id) "
