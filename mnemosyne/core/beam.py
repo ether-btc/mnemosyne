@@ -2791,6 +2791,127 @@ class BeamMemory:
         self.conn.commit()
         return cursor.rowcount > 0
 
+    def _detect_conflicts(self, rows: List[Dict], similarity_threshold: float = 0.92) -> List[tuple]:
+        """
+        Heuristic-only conflict detection for consolidation time.
+
+        For each pair of memories in rows (already sorted by timestamp ASC):
+        1. Get their embeddings from memory_embeddings table
+        2. Compute cosine similarity
+        3. If similarity > threshold AND timestamps differ >1h AND
+           they share overlapping tokens AND they're not duplicates...
+           flag the older as potentially superseded
+
+        Returns list of (older_id, newer_id) tuples.
+        No LLM calls. Pure vector math.
+        """
+        if len(rows) < 2:
+            return []
+
+        # Collect embeddings for all memory IDs in one query
+        memory_ids = [r["id"] for r in rows]
+        cursor = self.conn.cursor()
+        placeholders = ",".join("?" * len(memory_ids))
+        try:
+            cursor.execute(f"""
+                SELECT memory_id, embedding_json
+                FROM memory_embeddings
+                WHERE memory_id IN ({placeholders})
+            """, memory_ids)
+        except Exception:
+            return []
+
+        emb_map = {}
+        for row in cursor.fetchall():
+            try:
+                emb_map[row["memory_id"]] = np.array(
+                    json.loads(row["embedding_json"]), dtype=np.float32
+                )
+            except Exception:
+                continue
+
+        # Skip rows that are already superseded
+        superseded_ids = {r["id"] for r in rows if r.get("superseded_by")}
+
+        # Stop words for content overlap heuristics
+        _stop_words = frozenset({
+            "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+            "of", "with", "by", "from", "as", "is", "was", "are", "were", "be",
+            "been", "being", "have", "has", "had", "do", "does", "did", "will",
+            "would", "could", "should", "may", "might", "shall", "can", "need",
+            "this", "that", "these", "those", "it", "its", "they", "them", "their",
+            "we", "us", "our", "you", "your", "he", "she", "him", "her", "his",
+            "not", "no", "nor", "so", "if", "then", "than", "too", "very", "just",
+            "about", "also", "more", "some", "any", "each", "every", "all", "both",
+            "what", "when", "where", "why", "how", "which", "who", "whom",
+            "get", "got", "make", "made", "take", "took", "use", "used", "like",
+            "said", "says", "know", "knew", "think", "thinks", "thought",
+            "see", "saw", "seen", "come", "came", "give", "gave", "tell", "told",
+        })
+
+        def _significant_tokens(text: str) -> Set[str]:
+            words = re.findall(r"[A-Za-z]{3,}", text.lower())
+            return {w for w in words if w not in _stop_words and not w.isdigit()}
+
+        def _edit_dist_ratio(s1: str, s2: str) -> float:
+            """Normalized distance (0=identical, 1=completely different)."""
+            import difflib
+            if not s1 and not s2:
+                return 0.0
+            if not s1 or not s2:
+                return 1.0
+            return 1.0 - difflib.SequenceMatcher(None, s1, s2).ratio()
+
+        conflicts = []
+        n = len(rows)
+        for i in range(n):
+            a = rows[i]
+            a_id = a["id"]
+            if a_id in superseded_ids or a_id not in emb_map:
+                continue
+            for j in range(i + 1, n):
+                b = rows[j]
+                b_id = b["id"]
+                if b_id in superseded_ids or b_id not in emb_map:
+                    continue
+
+                # --- Heuristic 1: timestamps > 1 hour apart ---
+                try:
+                    ts_a = datetime.fromisoformat(a["timestamp"])
+                    ts_b = datetime.fromisoformat(b["timestamp"])
+                    hours_diff = abs((ts_b - ts_a).total_seconds()) / 3600.0
+                    if hours_diff < 1.0:
+                        continue
+                except (ValueError, TypeError):
+                    continue
+
+                # --- Heuristic 2: cosine similarity > threshold ---
+                vec_a = emb_map[a_id]
+                vec_b = emb_map[b_id]
+                norm_a = np.linalg.norm(vec_a)
+                norm_b = np.linalg.norm(vec_b)
+                if norm_a == 0 or norm_b == 0:
+                    continue
+                cos_sim = float(np.dot(vec_a / norm_a, vec_b / norm_b))
+                if cos_sim <= similarity_threshold:
+                    continue
+
+                # --- Heuristic 3: at least 2 overlapping significant tokens ---
+                tokens_a = _significant_tokens(a["content"])
+                tokens_b = _significant_tokens(b["content"])
+                overlapping = tokens_a & tokens_b
+                if len(overlapping) < 2:
+                    continue
+
+                # --- Heuristic 4: not near-duplicates (edit distance > 0.3) ---
+                if _edit_dist_ratio(a["content"], b["content"]) <= 0.3:
+                    continue
+
+                # Rows are sorted ASC, so a is older. Flag older as superseded.
+                conflicts.append((a_id, b_id))
+
+        return conflicts
+
     def get_working_stats(self, author_id: str = None, author_type: str = None,
                           channel_id: str = None) -> Dict:
         cursor = self.conn.cursor()
@@ -6391,6 +6512,7 @@ class BeamMemory:
         consolidated_ids = []
         summaries_created = 0
         llm_used_count = 0
+        conflicts_resolved = 0
         for source, items in grouped.items():
             lines = [item["content"] for item in items]
             ids = [item["id"] for item in items]
@@ -6413,6 +6535,14 @@ class BeamMemory:
             aggregated_veracity = aggregate_veracity(
                 [item.get("veracity") for item in items]
             )
+
+            # --- Phase 1: heuristic conflict detection (no LLM) ---
+            if len(items) >= 2:
+                conflicts = self._detect_conflicts(items)
+                for older_id, newer_id in conflicts:
+                    if not dry_run:
+                        self.invalidate(older_id, replacement_id=newer_id)
+                conflicts_resolved += len(conflicts)
 
             # --- Try LLM summarization (chunked to fit context) ---
             summary = None
@@ -6508,6 +6638,7 @@ class BeamMemory:
             "status": "dry_run" if dry_run else "consolidated",
             "items_consolidated": len(consolidated_ids),
             "summaries_created": summaries_created,
+            "conflicts_resolved": conflicts_resolved,
             "llm_used": llm_used_count,
             "method": method,
             "consolidated_ids": consolidated_ids,
