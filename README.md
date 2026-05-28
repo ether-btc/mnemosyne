@@ -275,6 +275,8 @@ When used with Hermes Agent, Mnemosyne exposes 17 tools for memory lifecycle man
 
 See [docs/hermes-integration.md](docs/hermes-integration.md).
 
+**Updating:** `git pull && hermes gateway restart` (source install) or `pip install --upgrade mnemosyne-memory && hermes gateway restart` (PyPI). See [UPDATING.md](UPDATING.md) for all update paths.
+
 ---
 
 ## Contributing
