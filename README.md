@@ -33,7 +33,7 @@
 - [Why Mnemosyne?](#why-mnemosyne)
 - [Configuration](#configuration)
   - [Environment Variables](#environment-variables)
-- [Hermes Plugin](#hermes-plugin-17-tools)
+- [Hermes Plugin (23 tools)](#hermes-plugin-23-tools)
 - [Contributing](#contributing)
 - [Support](#support)
 - [License](#license)
@@ -269,13 +269,37 @@ Full reference: [docs/configuration.md](docs/configuration.md)
 
 ---
 
-## Hermes Plugin (17 tools)
+## Hermes Plugin (23 tools)
 
-When used with Hermes Agent, Mnemosyne exposes 17 tools for memory lifecycle management — 3 lifecycle hooks (`pre_llm_call`, `on_session_start`, `post_tool_call`) for automatic context injection, plus full MCP support.
+When used with Hermes Agent, Mnemosyne exposes **23 tools** for full memory lifecycle management — 3 lifecycle hooks (`pre_llm_call`, `on_session_start`, `post_tool_call`) for automatic context injection, plus MCP support.
 
-See [docs/hermes-integration.md](docs/hermes-integration.md).
+**Install (Hermes users):**
+```bash
+pip install mnemosyne-hermes
+hermes config set memory.provider mnemosyne
+hermes memory setup
+```
 
-**Updating:** `git pull && hermes gateway restart` (source install) or `pip install --upgrade mnemosyne-memory && hermes gateway restart` (PyPI). See [UPDATING.md](UPDATING.md) for all update paths.
+Then disable Hermes' built-in file memory to avoid duplication:
+```bash
+hermes tools disable memory
+```
+
+See [docs/hermes-integration.md](docs/hermes-integration.md) for the full setup guide.
+
+### Tool categories
+
+| Category | Tools |
+|---|---|
+| **Core memory** (9) | `remember`, `recall`, `sleep`, `stats`, `get`, `update`, `forget`, `invalidate`, `validate` |
+| **Knowledge graph** (4) | `triple_add`, `triple_query`, `graph_query`, `graph_link` |
+| **Multi-agent surface** (4) | `shared_remember`, `shared_recall`, `shared_forget`, `shared_stats` |
+| **Working notes** (3) | `scratchpad_write`, `scratchpad_read`, `scratchpad_clear` |
+| **Ops** (3) | `export`, `import`, `diagnose` |
+
+All 23 tools surface through the `mnemosyne-hermes` package, which wraps the `mnemosyne-memory` core library. The plugin manifest at `integrations/hermes/` is also discoverable by Hermes' plugin system.
+
+**Updating:** `pip install --upgrade mnemosyne-hermes && hermes gateway restart` or `git pull && pip install --upgrade integrations/hermes && hermes gateway restart` (source).
 
 ---
 
