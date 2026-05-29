@@ -3,8 +3,8 @@
 Covers all upgrade paths: v2.7 → latest, source installs, PyPI installs,
 and systems with Python's `externally-managed-environment` (PEP 668).
 
-If you're on **v2.7** and want the latest (v3.1.0), jump to
-[Upgrading from v2.7 to v3.0.0](#upgrading-from-v27-to-v300).
+If you're on **v3.1.0** and want the latest (v3.1.2), jump to
+[Upgrading to v3.1.2](#upgrading-to-v312-strict-fact-matching--entity-prefix-guard).
 
 Already on v3.0.0? See [Upgrading to v3.1.0](#upgrading-to-v310-shared-surface--multilingual-memoria).
 
@@ -73,6 +73,38 @@ Editable mode means future `git pull` is all you need — no re-install
 for most updates.
 
 ---
+
+---
+
+## Upgrading to v3.1.2 — Strict Fact Matching + Entity Prefix Guard
+
+Released 2026-05-28. Pure bug fix release — no schema changes, no new features.
+
+### What changed
+
+Three fixes for [#198](https://github.com/AxDSan/mnemosyne/issues/198) — irrelevant context injection in recall:
+
+1. **Strict fact matching is now the default.** The old permissive path matched any query word against any stored fact, pulling in unrelated memories with a false +20% score boost. Set `MNEMOSYNE_LENIENT_FACT_MATCH=1` to opt back in.
+
+2. **Entity prefix guard added.** The prefix match in entity similarity now requires a minimum 30% length ratio. Short query prefixes like "her" no longer match "Hermes" at 0.828.
+
+3. **Single-token strict matching fixed.** Queries like "hermes", "python", "react" (single 5+ char tokens) now pass the strict fact matcher. Previously required 8+ chars with structural characters.
+
+### User action
+
+```bash
+pip install --upgrade mnemosyne-memory
+hermes gateway restart
+```
+
+Zero manual migration needed. If you relied on the lenient fact matching, set:
+```bash
+export MNEMOSYNE_LENIENT_FACT_MATCH=1
+```
+
+### Known issues
+
+Non-strict recall is still the default for **entity** and **fact** paths (`MNEMOSYNE_ENHANCED_RECALL=0`). Strict mode only applies to the built-in fact matcher (`_find_memories_by_fact`). The entity/fact recall paths also don't propagate `from_date`/`to_date`/`veracity` filters — tracked as a low-priority follow-up.
 
 ## Upgrading from v2.7 to v3.0.0
 
