@@ -50,8 +50,39 @@ def _get_hermes_agent_path() -> Path | None:
     return None
 
 
-def _ensure_symlink() -> bool:
-    """Create the symlink from ~/.hermes/plugins/mnemosyne -> hermes_memory_provider."""
+def _is_windows() -> bool:
+    return sys.platform.startswith("win32")
+
+
+def _remove_link(link_path: Path) -> None:
+    """Remove a symlink or junction. Works cross-platform."""
+    if _is_windows():
+        # Windows: junctions aren't detected by is_symlink(), and rmdir /
+        # shutil.rmtree may follow the reparse point. Use rmdir which
+        # removes the junction itself on Windows (like a directory symlink).
+        import subprocess
+        try:
+            subprocess.run(
+                ["cmd", "/c", "rmdir", str(link_path)],
+                check=True, capture_output=True, text=True,
+            )
+            return
+        except subprocess.CalledProcessError:
+            pass  # fall through to fallback
+
+    # Fallback: normal removal
+    if link_path.is_symlink():
+        link_path.unlink()
+    elif link_path.exists():
+        import shutil
+        shutil.rmtree(link_path)
+
+
+def _ensure_link() -> bool:
+    """Create the plugin link from ~/.hermes/plugins/mnemosyne -> hermes_memory_provider.
+
+    Uses symlinks on POSIX, directory junctions on Windows (no admin required).
+    """
     hermes_home = _get_hermes_home()
     if not hermes_home:
         print("❌ Hermes not found. Is Hermes installed?")
@@ -68,17 +99,24 @@ def _ensure_symlink() -> bool:
         print(f"❌ Mnemosyne MemoryProvider not found at {source}")
         return False
 
-    # Remove existing
+    # Remove existing link or directory
     if target.is_symlink() or target.exists():
-        if target.is_symlink():
-            target.unlink()
-        else:
-            import shutil
-            shutil.rmtree(target)
+        _remove_link(target)
         print(f"🔄 Removed existing {target}")
 
-    target.symlink_to(source, target_is_directory=True)
-    print(f"✅ Symlinked: {target} -> {source}")
+    if _is_windows():
+        import subprocess
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(target), str(source)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"❌ Failed to create junction: {result.stderr.strip()}")
+            return False
+        print(f"✅ Junction: {target} -> {source}")
+    else:
+        target.symlink_to(source, target_is_directory=True)
+        print(f"✅ Symlinked: {target} -> {source}")
     return True
 
 
@@ -158,8 +196,8 @@ def install():
     print("=" * 40)
     print()
 
-    # Step 1: Symlink
-    if not _ensure_symlink():
+    # Step 1: Link (symlink on POSIX, junction on Windows)
+    if not _ensure_link():
         print()
         print("❌ Install failed at symlink step.")
         sys.exit(1)
@@ -190,13 +228,15 @@ def uninstall():
         return
 
     target = hermes_home / "plugins" / "mnemosyne"
-    if target.exists() or target.is_symlink():
-        if target.is_symlink():
+    if target.is_symlink() or target.exists():
+        if _is_windows():
+            _remove_link(target)
+        elif target.is_symlink():
             target.unlink()
         else:
             import shutil
             shutil.rmtree(target)
-        print(f"🗑️  Removed {target}")
+        print(f"Removed {target}")
     else:
         print("ℹ️  Mnemosyne plugin not found in Hermes.")
 
