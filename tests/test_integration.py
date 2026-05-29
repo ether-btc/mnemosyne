@@ -17,7 +17,7 @@ import numpy as np
 from pathlib import Path
 
 from mnemosyne.core.typed_memory import classify_memory, MemoryType, get_type_priority
-from mnemosyne.core.binary_vectors import BinaryVectorStore
+from mnemosyne.core.binary_vectors import BinaryVectorStore, EMBEDDING_DIM, BYTES_PER_VECTOR
 from mnemosyne.core.episodic_graph import EpisodicGraph
 from mnemosyne.core.veracity_consolidation import VeracityConsolidator
 from mnemosyne.core.polyphonic_recall import PolyphonicRecallEngine
@@ -53,7 +53,7 @@ class TestBinaryVectors(unittest.TestCase):
     def setUp(self):
         self.temp_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.store = BinaryVectorStore(db_path=Path(self.temp_file.name))
-        self.embedding = np.random.randn(384).astype(np.float32)
+        self.embedding = np.random.randn(EMBEDDING_DIM).astype(np.float32)
     
     def tearDown(self):
         self.store.close()
@@ -61,7 +61,7 @@ class TestBinaryVectors(unittest.TestCase):
     
     def test_binarization(self):
         binary = self.store.maximally_informative_binarization(self.embedding)
-        self.assertEqual(len(binary), 48)  # 384 bits / 8 = 48 bytes
+        self.assertEqual(len(binary), BYTES_PER_VECTOR)  # EMBEDDING_DIM bits / 8
     
     def test_hamming_distance(self):
         binary_a = self.store.maximally_informative_binarization(self.embedding)

@@ -12,7 +12,7 @@ Replaces: float32 embeddings + HNSW index + cosine similarity
 With: binary vectors + exhaustive scan + Hamming distance
 
 Benefits:
-- 32x memory reduction
+- 32x memory reduction (model-dependent)
 - Deterministic retrieval (same query = same results)
 - No ANN index needed (no HNSW, no IVF, no PQ)
 - SQLite-native storage
@@ -25,11 +25,19 @@ import sqlite3
 from typing import List, Dict, Tuple, Optional
 from pathlib import Path
 
-
 # --- Configuration ---
-EMBEDDING_DIM = 384  # bge-small-en-v1.5 dimension
+# Derive EMBEDDING_DIM from the embeddings module so it always matches
+# the configured model (e.g. 384 for bge-small-en-v1.5, 1024 for
+# multilingual-e5-large).  Previously hardcoded to 384, which silently
+# truncated larger embeddings during binarization, losing up to 62.5%
+# of information when a 1024-dim model was in use.
+try:
+    from mnemosyne.core.embeddings import EMBEDDING_DIM as _EMB_DIM
+    EMBEDDING_DIM = _EMB_DIM
+except ImportError:
+    EMBEDDING_DIM = 384  # fallback for standalone / test use
 BITS_PER_BYTE = 8
-BYTES_PER_VECTOR = EMBEDDING_DIM // BITS_PER_BYTE  # 48 bytes for 384 bits
+BYTES_PER_VECTOR = EMBEDDING_DIM // BITS_PER_BYTE
 
 
 # --- Module-level function aliases for beam.py compatibility ---
@@ -90,7 +98,7 @@ class BinaryVectorStore:
             embedding: float32 numpy array of shape (EMBEDDING_DIM,)
             
         Returns:
-            bytes: Binary representation (48 bytes for 384 dims)
+            bytes: Binary representation (BYTES_PER_VECTOR bytes)
         """
         # Ensure correct shape
         embedding = embedding.flatten()[:EMBEDDING_DIM]
@@ -99,7 +107,7 @@ class BinaryVectorStore:
         binary_bits = (embedding > 0).astype(np.uint8)
         
         # Pack bits into bytes
-        # Reshape to (48, 8) for 384 bits
+        # n_bytes groups of 8 bits each
         n_bytes = (len(binary_bits) + 7) // 8
         padded = np.pad(binary_bits, (0, n_bytes * 8 - len(binary_bits)), mode='constant')
         
@@ -248,8 +256,8 @@ class BinaryVectorStore:
             "avg_bytes_per_vector": row["avg_bytes"] if row else 0,
             "max_bytes": row["max_bytes"] if row else 0,
             "min_bytes": row["min_bytes"] if row else 0,
-            "compression_ratio": 48.0 / (EMBEDDING_DIM * 4),  # 48 bytes vs 1536 bytes float32
-            "theoretical_size_mb": (count * 48) / (1024 * 1024)
+            "compression_ratio": BYTES_PER_VECTOR / (EMBEDDING_DIM * 4),
+            "theoretical_size_mb": (count * BYTES_PER_VECTOR) / (1024 * 1024)
         }
     
     def close(self):
