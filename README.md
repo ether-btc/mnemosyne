@@ -16,7 +16,7 @@
 
 </div>
 
-**Mnemosyne** is a universal memory layer for AI agents. Drop it into **any** agent framework — Hermes, Claude Code, Cursor, Codex, OpenWebUI, OpenClaw, or your own custom agent. One `pip install`, one SQLite database, zero cloud dependencies.
+**Mnemosyne** is a universal, Hermes-first memory layer that plays nicely with any agent framework — Claude Code, Cursor, Codex, OpenWebUI, OpenClaw, or your own custom agent. One `pip install`, one SQLite database, zero cloud dependencies.
 
 ---
 
