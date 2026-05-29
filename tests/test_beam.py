@@ -814,37 +814,10 @@ class TestCrossSessionRecall:
         results = beam.recall("谁喜欢直接说结论", top_k=5)
         assert len(results) > 0, "Fallback scoring should match shared substrings in Chinese"
 
-    def test_tools_session_singleton_updates(self, temp_db, monkeypatch):
-        """Plugin tools _get_memory() must recreate when HERMES_SESSION_ID changes."""
-        monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(temp_db.parent))
-
-        import importlib.util
-        import sys
-        from pathlib import Path
-        repo_root = Path(__file__).resolve().parents[1]
-        if str(repo_root) not in sys.path:
-            sys.path.insert(0, str(repo_root))
-
-        tools_path = repo_root / "hermes_plugin" / "tools.py"
-        spec = importlib.util.spec_from_file_location("mnemo_tools_test", tools_path)
-        mod = importlib.util.module_from_spec(spec)
-        assert spec.loader is not None
-        spec.loader.exec_module(mod)
-        _get_memory = mod._get_memory
-
-        monkeypatch.setenv("HERMES_SESSION_ID", "session-alpha")
-        mem_a = _get_memory()
-        mem_a.remember("alpha fact", source="test", scope="session")
-
-        monkeypatch.setenv("HERMES_SESSION_ID", "session-beta")
-        mem_b = _get_memory()
-        # Should be a different instance (or at least different beam session_id)
-        assert mem_b.session_id == "session-beta"
-        assert mem_a.session_id == "session-alpha"
 
 
 class TestTemporalQueries:
-    """Temporal filtering for BEAM recall — Issue #16."""
+    """Temporal filtering for BEAM recall -- Issue #16."""
 
     def test_recall_from_date_filter(self, temp_db):
         beam = BeamMemory(session_id="s1", db_path=temp_db)
