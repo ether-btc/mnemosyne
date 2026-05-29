@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="https://raw.githubusercontent.com/AxDSan/mnemosyne/main/assets/mnemosyne.jpg" alt="Mnemosyne" width="40%">
+
 # Mnemosyne for Hermes
 
 *Local-first memory provider for Hermes Agent. 23 tools. Zero cloud. Zero latency.*
