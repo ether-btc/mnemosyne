@@ -42,7 +42,13 @@ It gives Hermes:
 - **Shared surface**: compact cross-agent metadata for multi-agent workflows.
 - **Zero cloud**: SQLite on your machine. No network calls. No API keys. No quota limits.
 
-Hermes' built-in `MEMORY.md` and `USER.md` files remain active. Mnemosyne is additive: it does not mirror, edit, replace, or remove those files.
+When using Mnemosyne, disable Hermes' built-in file-based memory to avoid duplication:
+
+```bash
+hermes memory off
+```
+
+Mnemosyne handles everything: capture, recall, consolidation, knowledge graph, multi-agent validation. The built-in MEMORY.md/USER.md system is redundant and just burns tokens. One provider. One memory layer.
 
 ## How It Works
 
