@@ -64,7 +64,10 @@ def install_plugin(
             raise FileExistsError(
                 f"{target} already exists. Re-run with --force to replace it."
             )
-        shutil.rmtree(target)
+        if target.is_symlink() or os.path.islink(str(target)):
+            target.unlink()
+        else:
+            shutil.rmtree(target)
 
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, target, ignore=_ignore_copy_names)
@@ -87,7 +90,10 @@ def uninstall_plugin(*, hermes_home_path: str | Path | None = None) -> Path:
     """Remove the Mnemosyne provider from Hermes' user plugin directory."""
     target = plugin_target_dir(hermes_home_path)
     if target.exists():
-        shutil.rmtree(target)
+        if target.is_symlink() or os.path.islink(str(target)):
+            target.unlink()
+        else:
+            shutil.rmtree(target)
     return target
 
 
