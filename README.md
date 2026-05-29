@@ -7,7 +7,7 @@
 *Zero-dependency AI memory that works everywhere. SQLite-backed. Sub-millisecond. Fully private.*
 
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://python.org)
-[![PyPI](https://img.shields.io/pypi/v/mnemosyne-memory.svg?v=3.1.0)](https://pypi.org/project/mnemosyne-memory/)
+[![PyPI](https://img.shields.io/pypi/v/mnemosyne-memory.svg?v=3.1.2)](https://pypi.org/project/mnemosyne-memory/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/AxDSan/mnemosyne/actions/workflows/ci.yml/badge.svg)](https://github.com/AxDSan/mnemosyne/actions/workflows/ci.yml)
 [![BEAM](https://img.shields.io/badge/BEAM-ICLR%202026-purple.svg)](https://beam-benchmark.github.io/)
