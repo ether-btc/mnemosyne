@@ -45,7 +45,7 @@ It gives Hermes:
 When using Mnemosyne, disable Hermes' built-in file-based memory to avoid duplication:
 
 ```bash
-hermes memory off
+hermes tools disable memory
 ```
 
 Mnemosyne handles everything: capture, recall, consolidation, knowledge graph, multi-agent validation. The built-in MEMORY.md/USER.md system is redundant and just burns tokens. One provider. One memory layer.
