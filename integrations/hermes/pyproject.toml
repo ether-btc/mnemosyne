@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=60", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mnemosyne-hermes"
+version = "3.1.0"
+description = "Mnemosyne memory provider for Hermes Agent — local-first AI memory with SQLite, vector search, FTS5 hybrid ranking, and episodic consolidation."
+authors = [{name = "Abdias J", email = "abdi.moya@gmail.com"}]
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["hermes-agent", "memory", "mnemosyne", "ai-agents", "local-first", "long-term-memory"]
+dependencies = ["mnemosyne-memory>=3.1"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.entry-points."hermes_agent.plugins"]
+mnemosyne = "mnemosyne_hermes:register"
+
+[project.scripts]
+mnemosyne-hermes = "mnemosyne_hermes.install:main"
+
+[project.urls]
+Homepage = "https://github.com/AxDSan/mnemosyne"
+Documentation = "https://github.com/AxDSan/mnemosyne#readme"
+Repository = "https://github.com/AxDSan/mnemosyne"
+"Bug Tracker" = "https://github.com/AxDSan/mnemosyne/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mnemosyne_hermes = ["plugin.yaml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
