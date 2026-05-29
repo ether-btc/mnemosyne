@@ -47,6 +47,14 @@ from mnemosyne.core.veracity_consolidation import (
     compute_fact_id,
 )
 
+# Cached embedding dim for vector normalization — resolved once at import time.
+# Avoids a per-row import inside the bit-vec normalization hot path.
+try:
+    from mnemosyne.core.embeddings import EMBEDDING_DIM as _EMB_DIM
+except ImportError:
+    _EMB_DIM = 384
+_EMBEDDING_DIM_BITS = float(_EMB_DIM)
+
 
 def _env_disabled(name: str) -> bool:
     """A/B toggle helper: return True iff env var is set to a falsy
@@ -335,9 +343,8 @@ class PolyphonicRecallEngine:
                             #   raw f32: 1/(1+dist) (L2 → (0, 1])
                             raw_dist = float(dist)
                             if vec_type == "bit":
-                                # 384 dims for MiniLM-class embeddings
-                                # (matches binary_vectors.EMBEDDING_DIM)
-                                sim = 1.0 - (raw_dist / 384.0)
+                                # Resolved from configured model dim
+                                sim = 1.0 - (raw_dist / _EMBEDDING_DIM_BITS)
                             elif vec_type == "int8":
                                 sim = 1.0 - (raw_dist / 2.0)
                             else:
