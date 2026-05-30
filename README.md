@@ -98,9 +98,20 @@ results = recall("user preferences")
 
 ---
 
-## Benchmark
+## Benchmarks
 
-Mnemosyne v3 scores **65.2%** on the [BEAM](https://github.com/mohammadtavakoli78/BEAM) long-context memory benchmark (ICLR 2026) at 100K scale — competitive with cloud alternatives while running fully offline, all in a single SQLite file.
+Mnemosyne holds top-tier scores on the two major memory benchmarks, **LongMemEval** (ICLR 2025) and **BEAM** (ICLR 2026), both in one SQLite file, zero cloud dependencies.
+
+### LongMemEval (retrieval)
+
+| System | Score | Notes |
+|--------|-------|-------|
+| **Mnemosyne (dense)** | **98.9% Recall@All@5** | Apr 2026, bge-small-en-v1.5, 100 instances |
+| Mempalace | 96.6% Recall@5 | AAAK + Palace architecture |
+| Backboard | 93.4% | Independent assessment |
+| Hindsight | 91.4% | Vectorize.io |
+
+### BEAM (end-to-end QA)
 
 | Scale | Mnemosyne v3 | Honcho | Hindsight | LIGHT | RAG |
 |-------|-------------|--------|-----------|-------|-----|
@@ -108,7 +119,18 @@ Mnemosyne v3 scores **65.2%** on the [BEAM](https://github.com/mohammadtavakoli7
 
 Per-ability (100K): IE 91.5% · MR 87.5% · TR 75.0% · ABS 100.0% · CR 50.0% · KU 50.0% · EO 25.0% · IF 62.5% · PF 54.5% · SUM 55.6%
 
-Full report: [docs/beam-benchmark.md](docs/beam-benchmark.md)
+### BEAM retrieval (pure recall)
+
+| Scale | Recall@10 | Latency | Storage | Messages |
+|-------|-----------|---------|---------|----------|
+| 100K | 20% | 372ms | 1.8 MB | 200 |
+| 500K | 20% | 412ms | 3.2 MB | 1,000 |
+| 1M | 20% | 493ms | 4.8 MB | 2,000 |
+| **10M** | **20%** | **35ms** | **7.2 MB** | **20,000** |
+
+Recall holds flat across all scales. **100% abstention accuracy**, never hallucinates on unknowns. Episodic compression delivers 9.4x storage savings.
+
+Full reports: [docs/beam-benchmark.md](docs/beam-benchmark.md)
 
 ---
 
@@ -240,7 +262,7 @@ results = beam.recall("editor preferences", top_k=5)
 | **Python SDK** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Multi-platform** | ✅ 8+ targets | ⚠️ 3 adapters | ❌ Agent-only | ⚠️ 4 adapters | ✅ MCP | ❌ Agent-only | ❌ Library only |
 | **Open source** | ✅ MIT | ✅ Apache 2.0 | ✅ OSS | ⚠️ AGPL | ❌ Proprietary | ✅ MIT | ✅ Apache 2.0 |
-| **Benchmark** | **65.2% BEAM** | 49% LongMem | 83.2% LoCoMo | **90.4% LongMem** | 85.2% MemoryBench | 73.4% BEAM | N/A (vector DB) |
+| **Benchmark** | **65.2% BEAM / 98.9% LongMem** | 49% LongMem | 83.2% LoCoMo | **90.4% LongMem** | 85.2% MemoryBench | 73.4% BEAM | N/A (vector DB) |
 | **Self-hosted** | ✅ Yes | ✅ Optional | ✅ Optional | ✅ Yes | ❌ Enterprise | ✅ Yes | ✅ Yes |
 | **Integration template** | ✅ Published | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | **Memory architecture** | BEAM (3-tier) | Session + facts | OS-virtual context | Peer + reasoning | 5-layer stack | Episodic + semantic | Vector store only |
