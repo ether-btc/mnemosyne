@@ -21,7 +21,7 @@ Tools register as native Hermes commands.
 If you installed Mnemosyne via `deploy_hermes_provider.sh`, it's already active:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/AxDSan/mnemosyne/main/deploy_hermes_provider.sh | bash
+curl -sSL https://raw.githubusercontent.com/AxDSan/mnemosyne/main/scripts/install.sh | bash
 ```
 
 This symlinks the provider into `~/.hermes/plugins/mnemosyne`.
