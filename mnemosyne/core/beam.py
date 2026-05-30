@@ -2223,6 +2223,27 @@ class BeamMemory:
         self.conn.commit()
         self._trim_working_memory()
 
+        # --- Embedding storage for vector recall ---
+        # remember_batch() already does this; remember() was missing it,
+        # which meant the Hermes provider (which always calls remember())
+        # never populated memory_embeddings. This left _detect_conflicts
+        # with zero embeddings to compare, making Phase 1 conflict
+        # detection a no-op despite 3762+ working memories.
+        if _embeddings.available():
+            try:
+                vec = _embeddings.embed([content])
+                if vec is not None and len(vec) == 1:
+                    emb_json = _embeddings.serialize(vec[0])
+                    cursor.execute(
+                        "INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, ?)",
+                        (memory_id, emb_json, _embeddings._DEFAULT_MODEL)
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "remember: embedding storage failed for '%s' (%s): %s",
+                    memory_id, type(exc).__name__, exc,
+                )
+
         # Auto-generate temporal triple
         self._add_temporal_triple(memory_id, timestamp, source, content)
 
@@ -2795,7 +2816,7 @@ class BeamMemory:
         self.conn.commit()
         return cursor.rowcount > 0
 
-    def _detect_conflicts(self, rows: List[Dict], similarity_threshold: float = 0.92) -> List[tuple]:
+    def _detect_conflicts(self, rows: List[Dict], similarity_threshold: float = 0.88) -> List[tuple]:
         """
         Heuristic-only conflict detection for consolidation time.
 
@@ -6637,6 +6658,12 @@ class BeamMemory:
 
         # Run tiered degradation after consolidation
         degrade_result = self.degrade_episodic(dry_run=dry_run)
+
+        logger.info(
+            "sleep: consolidated=%d summaries=%d conflicts=%d llm=%s method=%s",
+            len(consolidated_ids), summaries_created, conflicts_resolved,
+            llm_used_count > 0, method,
+        )
 
         return {
             "status": "dry_run" if dry_run else "consolidated",
