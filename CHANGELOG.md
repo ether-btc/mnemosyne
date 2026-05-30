@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
+## [Unreleased]
+
+### Fixed
+
+- **Hardcoded embedding dimension in `binary_vectors.py`.** `EMBEDDING_DIM` was
+  hardcoded to 384 (bge-small-en-v1.5), causing `maximally_informative_binarization`
+  to silently truncate larger embeddings (e.g. 1024-dim multilingual-e5-large) to
+  the first 384 components, losing up to 62.5% of vector information. The dimension
+  is now derived from `mnemosyne.core.embeddings.EMBEDDING_DIM` at import time with
+  a 384 fallback when the embeddings module is unavailable. `BYTES_PER_VECTOR`,
+  `compression_ratio`, and `theoretical_size_mb` in `get_stats()` are likewise
+  computed from the resolved dimension instead of hardcoded constants.
+
 ## [3.1.2] — 2026-05-28
 
 ### Fixed

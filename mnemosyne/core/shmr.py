@@ -33,7 +33,7 @@ SHMR_MODEL = os.environ.get("MNEMOSYNE_SHMR_MODEL", "")
 SHMR_MIN_CLUSTER_SIZE = int(os.environ.get("MNEMOSYNE_SHMR_MIN_CLUSTER_SIZE", "2"))
 SHMR_TEMPERATURE = float(os.environ.get("MNEMOSYNE_SHMR_TEMPERATURE", "0.2"))
 
-EMBEDDING_DIM = 384  # bge-small-en-v1.5
+EMBEDDING_DIM = _embeddings.EMBEDDING_DIM  # derived from configured model
 
 # --- SQL Schema ---
 FACTS_SCHEMA_SQL = """
