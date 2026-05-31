@@ -30,10 +30,10 @@ mnemosyne = "mnemosyne_hermes:register"
 mnemosyne-hermes = "mnemosyne_hermes.install:main"
 
 [project.urls]
-Homepage = "https://github.com/AxDSan/mnemosyne"
-Documentation = "https://github.com/AxDSan/mnemosyne#readme"
-Repository = "https://github.com/AxDSan/mnemosyne"
-"Bug Tracker" = "https://github.com/AxDSan/mnemosyne/issues"
+Homepage = "https://github.com/kirocop/mnemosyne"
+Documentation = "https://github.com/kirocop/mnemosyne#readme"
+Repository = "https://github.com/kirocop/mnemosyne"
+"Bug Tracker" = "https://github.com/kirocop/mnemosyne/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
