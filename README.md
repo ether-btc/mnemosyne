@@ -4,7 +4,7 @@
 
 # Mnemosyne
 
-*Zero-dependency AI memory that works everywhere. SQLite-backed. Sub-millisecond. Fully private.*
+*Zero-dependency AI memory that works everywhere. SQLite-backed. Sub-millisecond.*
 
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://python.org)
 [![PyPI](https://img.shields.io/pypi/v/mnemosyne-memory.svg?v=3.1.2)](https://pypi.org/project/mnemosyne-memory/)
@@ -16,7 +16,7 @@
 
 </div>
 
-**Mnemosyne** is a universal, Hermes-first memory layer that plays nicely with any agent framework — Claude Code, Cursor, Codex, OpenWebUI, OpenClaw, or your own custom agent. One `pip install`, one SQLite database, zero cloud dependencies.
+**Mnemosyne** is a universal, Hermes-first memory layer that works with any agent framework (Claude Code, Cursor, Codex, OpenWebUI, OpenClaw, or your own custom agent). One `pip install`, one SQLite database. No external services required.
 
 ---
 

@@ -79,7 +79,7 @@ def _remove_link(link_path: Path) -> None:
 
 
 def _ensure_link() -> bool:
-    """Create the plugin link from ~/.hermes/plugins/mnemosyne -> hermes_memory_provider.
+    """Create the plugin link from ~/.hermes/plugins/hermes-mnemosyne -> hermes_memory_provider.
 
     Uses symlinks on POSIX, directory junctions on Windows (no admin required).
     """
@@ -92,7 +92,7 @@ def _ensure_link() -> bool:
     plugins_dir = hermes_home / "plugins"
     plugins_dir.mkdir(parents=True, exist_ok=True)
 
-    target = plugins_dir / "mnemosyne"
+    target = plugins_dir / "hermes-mnemosyne"
     source = _get_mnemosyne_root() / "hermes_memory_provider"
 
     if not source.exists():
@@ -227,7 +227,7 @@ def uninstall():
         print("❌ Hermes not found.")
         return
 
-    target = hermes_home / "plugins" / "mnemosyne"
+    target = hermes_home / "plugins" / "hermes-mnemosyne"
     if target.is_symlink() or target.exists():
         if _is_windows():
             _remove_link(target)

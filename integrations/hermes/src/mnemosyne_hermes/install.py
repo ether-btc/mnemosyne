@@ -9,7 +9,7 @@ import shutil
 import sys
 from pathlib import Path
 
-PLUGIN_NAME = "mnemosyne"
+PLUGIN_NAME = "hermes-mnemosyne"
 EXCLUDED_DIRS = {"__pycache__", ".pytest_cache", ".ruff_cache"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 
