@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "The Universal Memory Layer for Any AI Agent — Zero-Dependency, Sub-Millisecond, Fully Private"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     {name = "Abdias J", email = "1641797+AxDSan@users.noreply.github.com"},
 ]

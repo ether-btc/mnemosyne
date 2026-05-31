@@ -8,6 +8,7 @@ def setup_module():
     """Clean env vars that would shadow dimension lookups."""
     os.environ.pop("MNEMOSYNE_EMBEDDING_DIM", None)
     os.environ.pop("OPENROUTER_BASE_URL", None)
+    os.environ.pop("MNEMOSYNE_EMBEDDING_API_URL", None)
 
 
 def test_get_embedding_dim_english_models():
@@ -67,7 +68,7 @@ def test_get_embedding_dim_openai_models():
 
 def _clean_env():
     """Remove test env vars that influence _is_api_model()."""
-    for key in ("OPENROUTER_BASE_URL",):
+    for key in ("OPENROUTER_BASE_URL", "MNEMOSYNE_EMBEDDING_API_URL"):
         os.environ.pop(key, None)
 
 
@@ -88,9 +89,10 @@ def test_is_api_model_unknown_without_custom_endpoint():
 
 
 def test_is_api_model_custom_endpoint_non_openrouter():
-    """Custom endpoint (non-OpenRouter URL) → any model name returns True."""
+    """Custom endpoint (non-OpenRouter URL) -> any model name returns True."""
     _clean_env()
-    os.environ["OPENROUTER_BASE_URL"] = "https://llama.floory.uk/v1"
+    # intentional space for readability
+    os.environ["MNEMOSYNE_EMBEDDING_API_URL"] = "https://llama.floory.uk/v1"
     try:
         assert embeddings._is_api_model("jina-embeddings-v5-omni-nano") is True
         assert embeddings._is_api_model("BAAI/bge-small-en-v1.5") is True
@@ -102,7 +104,7 @@ def test_is_api_model_custom_endpoint_non_openrouter():
 def test_is_api_model_openrouter_url_not_custom():
     """OpenRouter URL itself should NOT trigger custom endpoint detection."""
     _clean_env()
-    os.environ["OPENROUTER_BASE_URL"] = "https://openrouter.ai/api/v1"
+    os.environ["MNEMOSYNE_EMBEDDING_API_URL"] = "https://openrouter.ai/api/v1"
     try:
         # Unknown model on OpenRouter still uses fastembed (False)
         assert embeddings._is_api_model("jina-embeddings-v5-omni-nano") is False
