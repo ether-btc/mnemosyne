@@ -14,6 +14,18 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
   Default `["user", "assistant"]` preserves existing behavior. Set to `["user"]`
   to save only user turns, or `[]` to disable conversation autosave while keeping
   explicit `mnemosyne_remember` calls working. Unknown roles are warned and ignored.
+- **`MNEMOSYNE_SYNC_TURN_USER_LIMIT` / `MNEMOSYNE_SYNC_TURN_ASSISTANT_LIMIT` env vars.**
+  `sync_turn()` now respects configurable truncation limits instead of hardcoded
+  500/800 slices. Defaults to `500` (user) and `800` (assistant) for backward
+  compatibility. Set to `0` to disable truncation.
+- **Fact recall merged into standard `beam.recall()` path.** Set
+  `MNEMOSYNE_FACT_RECALL_ENABLED=1` to merge LLM-extracted facts into recall
+  results. Facts are deduplicated against regular memories by content hash.
+- **Auto-default `scope=global` when `extract=true`.** If no explicit scope is
+  passed, setting `extract=true` infers `scope=global` instead of `session`.
+- **`fact_recall()` now searches `consolidated_facts`** in addition to the raw
+  `facts` table. Fact data stored with `extract=true` is now visible through
+  the default recall path without requiring polyphonic mode.
 
 ### Fixed
 

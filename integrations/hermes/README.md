@@ -109,6 +109,10 @@ No required config. Everything defaults to `~/.mnemosyne/`. Optional overrides:
 | `MNEMOSYNE_AUTO_SLEEP_ENABLED` | `false` | Auto-consolidate after N turns |
 | `MNEMOSYNE_AUTO_SLEEP_THRESHOLD` | `50` | Turns between auto-consolidation |
 | `MNEMOSYNE_PROFILE_ISOLATION` | `false` | Separate DB per Hermes profile |
+| `MNEMOSYNE_SYNC_TURN_USER_LIMIT` | `500` | User content truncation in `sync_turn()` (`0` = no limit) |
+| `MNEMOSYNE_SYNC_TURN_ASSISTANT_LIMIT` | `800` | Assistant content truncation in `sync_turn()` (`0` = no limit) |
+| `MNEMOSYNE_FACT_RECALL_ENABLED` | `false` | Merge LLM-extracted facts into standard recall |
+| `MNEMOSYNE_PREFETCH_CONTENT_CHARS` | `0` | Per-memory prefetch content cap (`0` = full content) |
 
 Or in `~/.hermes/config.yaml`:
 
