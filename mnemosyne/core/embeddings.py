@@ -89,6 +89,10 @@ def _get_embedding_dim(model_name: str) -> int:
         "intfloat/multilingual-e5-small": 384,
         "intfloat/multilingual-e5-base": 768,
         "intfloat/multilingual-e5-large": 1024,
+        # --- SentenceTransformers multilingual / local fastembed ---
+        "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": 384,
+        "sentence-transformers/all-MiniLM-L6-v2": 384,
+        "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": 768,
         # --- Multilingual BGE ---
         "BAAI/bge-m3": 1024,            # M3: multilingual (100+ langs), 1024-dim
         "BAAI/bge-multilingual-gemma2": 3584,

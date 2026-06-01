@@ -1350,7 +1350,16 @@ _FACT_MATCH_STOPWORDS: Set[str] = {
     "with", "you", "your",
 }
 
-_RECALL_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_.:/+-]*")
+# Unicode-aware recall tokenization.
+#
+# The previous ASCII-only pattern split words with diacritics, e.g.
+# "Stoßlüften" became "sto" + "ften" and "Bürgeramt" became
+# "b" + "rgeramt".  That weakened lexical gates and fallback scoring for
+# German and other Latin-script languages while dense multilingual embeddings
+# still saw the original text.  Keep path/version separators inside tokens
+# only when followed by another Unicode alphanumeric char so trailing
+# punctuation such as "Bürgeramt:" is not absorbed.
+_RECALL_TOKEN_RE = re.compile(r"(?u)[^\W_][\w]*(?:[_.:/+-]+[^\W_][\w]*)*")
 
 _RECALL_SYNONYMS: Dict[str, tuple[str, ...]] = {
     # Small, conservative query expansion for common user-facing wording.
