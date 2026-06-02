@@ -73,8 +73,8 @@ Switch the embedding model via env var:
 # Chinese embeddings
 MNEMOSYNE_EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
 
-# Multilingual embeddings (100+ languages)
-MNEMOSYNE_EMBEDDING_MODEL=BAAI/bge-m3
+# Low-resource local multilingual embeddings
+MNEMOSYNE_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 
 # Or any fastembed-supported model
 MNEMOSYNE_EMBEDDING_MODEL=intfloat/multilingual-e5-base
@@ -93,6 +93,10 @@ The embedding dimension is **auto-detected** from the model name. Supported mode
 | `intfloat/multilingual-e5-small` | 384 | Multilingual |
 | `intfloat/multilingual-e5-base` | 768 | Multilingual |
 | `intfloat/multilingual-e5-large` | 1,024 | Multilingual |
+| `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | 384 | Multilingual |
+| `sentence-transformers/all-MiniLM-L6-v2` | 384 | Multilingual |
+| `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` | 768 | Multilingual |
+| `BAAI/bge-m3` | 1,024 | Multilingual |
 | `openai/text-embedding-3-small` | 1,536 | API |
 | `openai/text-embedding-3-large` | 3,072 | API |
 
