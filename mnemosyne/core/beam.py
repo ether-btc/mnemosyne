@@ -3190,18 +3190,18 @@ class BeamMemory:
             vec = _embeddings.embed([summary])
             if vec is not None:
                 if _vec_available(self.conn):
-                    _vec_insert(self.conn, rowid, vec[0].tolist())
+                    _vec_insert(self.conn, rowid, np.asarray(vec[0]).tolist())
                 else:
                     # Fallback: store in memory_embeddings table for in-memory search
                     cursor.execute("""
                         INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding_json, model)
                         VALUES (?, ?, ?)
-                    """, (memory_id, _embeddings.serialize(vec[0]), _embeddings._DEFAULT_MODEL))
+                    """, (memory_id, _embeddings.serialize(np.asarray(vec[0])), _embeddings._DEFAULT_MODEL))
 
                 # Binary vector compression (Phase 2 -- 32x reduction)
                 if _mib is not None:
                     try:
-                        bv = _mib(vec[0])
+                        bv = _mib(np.asarray(vec[0]))
                         cursor.execute(
                             "UPDATE episodic_memory SET binary_vector = ? WHERE rowid = ?",
                             (bv, rowid)
@@ -6261,12 +6261,12 @@ class BeamMemory:
                 # DELETE+INSERT to refresh.
                 if vec_available_now:
                     cursor.execute("DELETE FROM vec_episodes WHERE rowid = ?", (rowid,))
-                    _vec_insert(self.conn, rowid, vec[0].tolist())
+                    _vec_insert(self.conn, rowid, np.asarray(vec[0]).tolist())
                 else:
                     cursor.execute("""
                         INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding_json, model)
                         VALUES (?, ?, ?)
-                    """, (memory_id, _embeddings.serialize(vec[0]), _embeddings._DEFAULT_MODEL))
+                    """, (memory_id, _embeddings.serialize(np.asarray(vec[0])), _embeddings._DEFAULT_MODEL))
 
                 if _mib is not None:
                     try:
