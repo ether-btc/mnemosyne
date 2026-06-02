@@ -110,7 +110,7 @@ def test_beam_integration_with_llm_conflict(mock_call, temp_db):
         mock_emb._DEFAULT_MODEL = "test_model"
         # Return mock embeddings vectors (must be length 1 for single content embed)
         import numpy as np
-        mock_emb.embed.return_value = np.array([[1.0] * 128])
+        mock_emb.embed.return_value = np.array([[1.0] * 384])
         mock_emb.serialize.return_value = "[1.0]"
 
         # Create two working memory rows that represent semantic overlap but timestamps differ
