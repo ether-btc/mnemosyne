@@ -1679,9 +1679,23 @@ def _effective_vec_type(conn: sqlite3.Connection) -> str:
 
 
 def _vec_insert(conn: sqlite3.Connection, rowid: int, embedding: List[float]):
-    """Insert embedding into sqlite-vec table with quantization via SQL functions."""
+    """Insert embedding into sqlite-vec table with quantization via SQL functions.
+
+    Manually normalizes the embedding to unit length before quantization.
+    ``vec_quantize_int8(x, 'unit')`` in sqlite-vec 0.1.9 fails to normalize
+    1024-dim vectors (works for 3-dim, silently passes through unnormalized
+    vectors at high dimensions).  Pre-normalizing works around the bug until
+    upstream sqlite-vec ships a fix.
+    """
     vec_type = _effective_vec_type(conn)
-    emb_json = json.dumps(embedding)
+    # Normalize to unit length before quantization
+    # (sqlite-vec 0.1.9 'unit' param fails at 1024-dim)
+    import numpy as _np
+    emb_arr = _np.array(embedding, dtype=_np.float32)
+    norm = _np.linalg.norm(emb_arr)
+    if norm > 0:
+        emb_arr = emb_arr / norm
+    emb_json = json.dumps(emb_arr.tolist())
     if vec_type == "bit":
         conn.execute(
             "INSERT INTO vec_episodes(rowid, embedding) VALUES (?, vec_quantize_binary(?))",
@@ -1708,9 +1722,21 @@ def _vec_insert(conn: sqlite3.Connection, rowid: int, embedding: List[float]):
 
 
 def _vec_search(conn: sqlite3.Connection, embedding: List[float], k: int = 20) -> List[Dict]:
-    """Search sqlite-vec and return rowids with distances."""
+    """Search sqlite-vec and return rowids with distances.
+
+    Normalizes the query embedding to unit length before quantization so
+    distances are commensurate with the stored int8 vectors (which are also
+    unit-normalized at insert time — see _vec_insert).
+    """
     vec_type = _effective_vec_type(conn)
-    emb_json = json.dumps(embedding)
+    # Normalize to unit length before quantization
+    # (sqlite-vec 0.1.9 'unit' param fails at 1024-dim)
+    import numpy as _np
+    emb_arr = _np.array(embedding, dtype=_np.float32)
+    norm = _np.linalg.norm(emb_arr)
+    if norm > 0:
+        emb_arr = emb_arr / norm
+    emb_json = json.dumps(emb_arr.tolist())
     # NOTE: sqlite-vec requires the KNN limit to be known at query planning time.
     # Parameter binding (LIMIT ?) fails on some versions because xBestIndex
     # can't resolve the parameter value. We inline k safely since it's
