@@ -161,11 +161,11 @@ def _build_sse_app(host: str = "127.0.0.1"):
             return [TextContent(type="text", text=json.dumps({"status": "error", "message": str(e)}, indent=2))]
 
     async def handle_sse(request):
-        async with transport.connect_sse(request.scope, request.receive, request.send) as streams:
+        async with transport.connect_sse(request.scope, request.receive, request._send) as streams:
             await server.run(streams[0], streams[1], server.create_initialization_options())
 
     async def handle_messages(request):
-        await transport.handle_post_message(request.scope, request.receive, request.send)
+        await transport.handle_post_message(request.scope, request.receive, request._send)
 
     middleware = []
     if require_auth:
