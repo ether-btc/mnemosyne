@@ -2261,7 +2261,10 @@ class BeamMemory:
             # Populates memoria_facts, memoria_timelines, memoria_kg for the
             # structured retrieval router. Runs silently on every remember()
             # so the MEMORIA tables stay current regardless of extract=True.
-            self.extract_and_store_facts(content, message_idx=0, source_memory_id=existing_id)
+            try:
+                self.extract_and_store_facts(content, message_idx=0, source_memory_id=existing_id)
+            except Exception:
+                pass  # regex extraction failures must not block memory storage
             # Phase 3-4: Extract graph and consolidate veracity for dedup update
             self._ingest_graph_and_veracity(existing_id, content, source, veracity)
             self._emit_event("MEMORY_UPDATED", existing_id, content=content,
@@ -2339,7 +2342,10 @@ class BeamMemory:
         # Phase 2: MEMORIA regex-based extraction (always-on, zero-LLM-cost).
         # Populates memoria_facts, memoria_timelines, memoria_kg for the
         # structured retrieval router. Runs on every remember() call.
-        self.extract_and_store_facts(content, message_idx=0, source_memory_id=memory_id)
+        try:
+            self.extract_and_store_facts(content, message_idx=0, source_memory_id=memory_id)
+        except Exception:
+            pass  # regex extraction failures must not block memory storage
 
         # Phase 3-4: Extract graph and consolidate veracity for new memory
         self._ingest_graph_and_veracity(memory_id, content, source, veracity)
@@ -2597,7 +2603,10 @@ class BeamMemory:
                 if extract:
                     _extract_and_store_facts(self, memory_id, row_content, item_source)
                 # Phase 2: MEMORIA regex-based extraction for every batch row.
-                self.extract_and_store_facts(row_content, message_idx=0, source_memory_id=memory_id)
+                try:
+                    self.extract_and_store_facts(row_content, message_idx=0, source_memory_id=memory_id)
+                except Exception:
+                    pass  # regex extraction failures must not block memory storage
                 # MEMORY_ADDED parity with remember() -- streaming
                 # observers + DeltaSync see batch rows the same way
                 # they see single-row writes.
@@ -3379,7 +3388,7 @@ class BeamMemory:
             'instruction_imperative': 'всегда|никогда|помни|запомни|используй|пользуйся|храни|избегай|убедись|проверь|запусти|тестируй|собери|задеплой|сделай пуш|сделай пулл|мёржи|закрой|открой|обнови|установи|настрой|включи|отключи|добавь|удали|создай|удали|запусти|останови|рестартни|перезагрузи|сбрось|попробуй|реализуй|напиши|прочитай|переключи|передвинь|скопируй|переименуй|отправь|ответь',
             'preference': r'(?:(?:Я(?: |\')?(?:люблю|ненавижу|предпочитаю|терпеть не могу|не люблю|не нравится|использую|пользуюсь|остаюсь на|перешёл на|переключился на|хочу|нуждаюсь|обычно|скорее|предпочитаю не|стараюсь избегать|привык|надоело|устал от|доволен|устраивает))|мне\s+(?:нравится|не нравится|проще|удобнее|лень|надоело)|терпеть не могу|надоело|привык|устраивает)\s+([^.,;!?\n]{3,200})',
             'event_keywords': ['встреча', 'созвон', 'запланировано', 'состоялось', 'произошло', 'планирую', 'будет', 'дедлайн', 'релиз', 'запуск', 'деплой', 'опубликовано', 'начал', 'начался', 'закончил', 'завершил', 'событие', 'конференция', 'воркшоп', 'встреча'],
-            'named_months': r'(?:(?:(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря|янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{1,2}(?:-го)?,?\s*(?:\d{4})?)|(?:\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(?:\s+\d{4})?))',
+            'named_months': r'((?:(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря|янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+\d{1,2}(?:-го)?,?\s*(?:\d{4})?)|(?:\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(?:\s+\d{4})?))',
             'instruction': r'(?:всегда|никогда|должен|не должен|нужно|не нужно|обязательно|нельзя|не забывай|запомни|помни|следует|стоит)\\s+([^.,;!?\\n]{6,200})',
         },
         'it': {
@@ -3400,7 +3409,7 @@ class BeamMemory:
             'instruction': r'(?:sempre|mai|non deve|non devono|dovrebbe(?: non)?(?=\s+(?:tu|voi|noi|io|si)\s+(?:IMPVERBS))|ha bisogno di|deve|devono|preferisci(?: non)?|vuole(?: evitare|assicurarsi|usare|tenere))\s+([^.,;!?\n]{10,200})',
             'preference': r"(?:Io(?: |')?(?:mi piace|amo|preferisco|odio|non mi piace|uso|utilizzo|sono passato a|ho cambiato a|voglio|ho bisogno|tendo a|di solito|preferirei|non mi piace per niente|non voglio|non sono un fan di|mi va bene|mi trovo bene|sono abituato a|sono felice con|sono stanco di|cerco di evitare|trovo piu facile|trovo meglio|trovo utile))\s+([^.,;!?\n]{10,200})",
             'event_keywords': ['riunione', 'chiamata', 'incontro', 'programmato', 'successo', 'accaduto', 'pianifico', 'sara il', 'scadenza', 'rilascio', 'lancio', 'pubblicato', 'iniziato', 'cominciato', 'finito', 'completato', 'evento', 'conferenza', 'workshop', 'appuntamento'],
-            'named_months': r'(?:(?:(?:Gennaio|Febbraio|Marzo|Aprile|Maggio|Giugno|Luglio|Agosto|Settembre|Ottobre|Novembre|Dicembre|gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+\d{1,2}(?:°)?,?\s*(?:\d{4})?))',
+            'named_months': r'((?:(?:Gennaio|Febbraio|Marzo|Aprile|Maggio|Giugno|Luglio|Agosto|Settembre|Ottobre|Novembre|Dicembre|gen|feb|mar|apr|mag|giu|lug|ago|set|ott|nov|dic)\s+\d{1,2}(?:°)?,?\s*(?:\d{4})?))',
         },
         'es': {
             'negation': r'(nunca|jamás|tampoco|ni\s+(?:siquiera|de coña|loc[ao]|de broma|hablar)|no\s+(?:me\s+(?:gusta|convence|interesa|molesta|duele)|lo\s+(?:hag[ao]s|haré|haría)|hace\s+falta|quiero|voy\s+a|sé|sabía|puedo|debo|es\s+(?:para\s+tanto|plan|momento)|tiene\s+sentido|estoy\s+(?:de\s+acuerdo|seguro)|hay\s+(?:derecho|manera|tipo|quien)|teng[ao]\s+(?:ni\s+idea|claro)|pienso|creo|son|era|está|estaba|será|está\s+mal|vamos\s+mal))\s+([^.,;!?¿¡\\n]{15,120})',
@@ -3455,7 +3464,7 @@ class BeamMemory:
                 'agendé', 'agende', 'ocurrió', 'ocurrio', 'sucedió', 'sucedio',
                 'pasó', 'paso',
             ],
-            'named_months': r'(\d{1,2})\s*de\s*(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s*(?:de\s*(\d{4}))?',
+            'named_months': r'((?:\d{1,2})\s*de\s*(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s*(?:de\s*(?:\d{4}))?)',
         },
     }
 
