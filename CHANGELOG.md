@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
+## [3.4.0] — 2026-06-01
+
+### Added
+
+- **Known dimensions for local SentenceTransformers multilingual models.**
+  `paraphrase-multilingual-MiniLM-L12-v2`, `all-MiniLM-L6-v2`, and
+  `paraphrase-multilingual-mpnet-base-v2` are now listed for low-resource
+  local multilingual embedding setups.
+
+### Fixed
+
+- **Unicode recall tokenization for Latin-script languages.** Recall lexical
+  gates now keep diacritics inside tokens, so words like `Stoßlüften`,
+  `Bürgeramt`, and `Primärquellen` are no longer split into ASCII fragments.
+
 ## [3.3.0] — 2026-06-01
 
 ### Added
