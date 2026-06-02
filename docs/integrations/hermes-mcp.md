@@ -18,13 +18,13 @@ Tools register as native Hermes commands.
 
 ## Path 2: Hermes Plugin (built-in)
 
-If you installed Mnemosyne via `deploy_hermes_provider.sh`, it's already active:
-
 ```bash
-curl -sSL https://raw.githubusercontent.com/AxDSan/mnemosyne/main/scripts/install.sh | bash
+pip install mnemosyne-hermes
+hermes config set memory.provider mnemosyne
+hermes memory setup
 ```
 
-This symlinks the provider into `~/.hermes/plugins/mnemosyne`.
+This gives you **23 tools** — remember, recall, forget, stats, knowledge graph ops, multi-agent shared surface, scratchpad, export/import, and more. All native Hermes commands.
 
 ## Usage
 
