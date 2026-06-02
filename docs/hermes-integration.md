@@ -7,7 +7,7 @@ Mnemosyne is designed as a native memory backend for the [Hermes Agent Framework
 ### Step 1: Install
 
 ```bash
-pip install mnemosyne-memory
+pip install mnemosyne-hermes
 ```
 
 Or from source:
@@ -15,25 +15,17 @@ Or from source:
 ```bash
 git clone https://github.com/AxDSan/mnemosyne.git
 cd mnemosyne
-pip install -e ".[all,dev]"
+pip install -e "integrations/hermes[dev]"
 ```
 
-### Step 2: Register with Hermes
+### Step 2: Activate
 
 ```bash
-python -m mnemosyne.install
-```
-
-This creates a plugin entry at `~/.hermes/plugins/mnemosyne/` and wires up the MemoryProvider.
-
-### Step 3: Activate
-
-```bash
+hermes config set memory.provider mnemosyne
 hermes memory setup
-# Select "mnemosyne" from the picker and press Enter
 ```
 
-### Step 4: Verify
+### Step 3: Verify
 
 ```bash
 hermes memory status       # Should show "Provider: mnemosyne"
@@ -132,6 +124,7 @@ Mnemosyne does not currently expose a standalone REST API server.
 ## Uninstall
 
 ```bash
-python -m mnemosyne.install --uninstall
-hermes memory setup              # Switch back to built-in memory
+pip uninstall mnemosyne-hermes
+hermes config set memory.provider memory   # Switch back to built-in
+hermes memory setup
 ```

@@ -66,6 +66,9 @@ pip install mnemosyne-memory
 
 # With all features (vector search + MCP server)
 pip install "mnemosyne-memory[all]"
+
+# Upgrade
+pip install --upgrade mnemosyne-memory
 ```
 
 ### Add to your agent
