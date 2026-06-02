@@ -1045,6 +1045,27 @@ def _deferred_commits(conn: sqlite3.Connection):
 def _generate_id(content: str) -> str:
     return hashlib.sha256(f"{content}{datetime.now().isoformat()}".encode()).hexdigest()[:16]
 
+def _sanitize_utf8(text: str) -> str:
+    """Ensure text is valid UTF-8, stripping or replacing invalid bytes.
+
+    SQLite TEXT columns enforce UTF-8 encoding. Corrupt bytes (e.g. 0xFE,
+    0xFF, or truncated multi-byte sequences from LLM output / AAAK
+    compression / buffer errors) cause OperationalError on subsequent reads.
+    This function sanitizes content at the write boundary so a single bad
+    write doesn't poison episodic_memory and crash future maintenance passes
+    (sleep_all_sessions, degrade_episodic).
+    """
+    if not isinstance(text, str):
+        return ""
+    try:
+        text.encode('utf-8')
+        return text
+    except UnicodeEncodeError:
+        # Replace invalid bytes with the Unicode replacement character.
+        # This preserves as much content as possible while guaranteeing
+        # the DB column stays valid UTF-8.
+        return text.encode('utf-8', errors='replace').decode('utf-8')
+
 
 def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, col_type: str):
     """Safely add a column if it doesn't already exist (SQLite migration helper)."""
@@ -3160,7 +3181,7 @@ class BeamMemory:
             (id, content, source, timestamp, session_id, importance, metadata_json, summary_of, valid_until, scope,
              author_id, author_type, channel_id, memory_type, veracity)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (memory_id, summary, source, timestamp, self.session_id, importance,
+        """, (memory_id, _sanitize_utf8(summary), source, timestamp, self.session_id, importance,
               json.dumps(metadata or {}), ",".join(source_wm_ids), valid_until, scope,
               self.author_id, self.author_type, self.channel_id, ep_type, row_veracity))
         rowid = cursor.lastrowid
@@ -6300,20 +6321,36 @@ class BeamMemory:
 
         # Tier 1 → Tier 2: old enough, still at tier 1.
         # rowid is selected so the embedding refresh can address vec_episodes.
-        cursor.execute("""
-            SELECT id, rowid, content, importance FROM episodic_memory
-            WHERE tier = 1 AND created_at < ?
-            ORDER BY created_at ASC LIMIT ?
-        """, (tier2_cutoff, DEGRADE_BATCH_SIZE))
-        tier1_rows = cursor.fetchall()
+        try:
+            cursor.execute("""
+                SELECT id, rowid, content, importance FROM episodic_memory
+                WHERE tier = 1 AND created_at < ?
+                ORDER BY created_at ASC LIMIT ?
+            """, (tier2_cutoff, DEGRADE_BATCH_SIZE))
+            tier1_rows = cursor.fetchall()
+        except Exception as exc:
+            logger.warning(
+                "degrade_episodic: tier1 SELECT failed (possibly corrupt UTF-8 "
+                "in episodic_memory.content): %s. Skipping tier-1→2 degradation.",
+                exc,
+            )
+            tier1_rows = []
 
         # Tier 2 → Tier 3: very old, at tier 2
-        cursor.execute("""
-            SELECT id, rowid, content FROM episodic_memory
-            WHERE tier = 2 AND created_at < ?
-            ORDER BY created_at ASC LIMIT ?
-        """, (tier3_cutoff, DEGRADE_BATCH_SIZE // 2))
-        tier2_rows = cursor.fetchall()
+        try:
+            cursor.execute("""
+                SELECT id, rowid, content FROM episodic_memory
+                WHERE tier = 2 AND created_at < ?
+                ORDER BY created_at ASC LIMIT ?
+            """, (tier3_cutoff, DEGRADE_BATCH_SIZE // 2))
+            tier2_rows = cursor.fetchall()
+        except Exception as exc:
+            logger.warning(
+                "degrade_episodic: tier2 SELECT failed (possibly corrupt UTF-8 "
+                "in episodic_memory.content): %s. Skipping tier-2→3 degradation.",
+                exc,
+            )
+            tier2_rows = []
 
         if dry_run:
             results["tier1_to_tier2"] = len(tier1_rows)
@@ -6340,7 +6377,7 @@ class BeamMemory:
                 final_content = compressed[:800]
                 cursor.execute(
                     "UPDATE episodic_memory SET content = ?, tier = 2, degraded_at = ? WHERE id = ?",
-                    (final_content, now.isoformat(), row["id"])
+                    (_sanitize_utf8(final_content), now.isoformat(), row["id"])
                 )
                 # Only refresh the embedding when content actually changed.
                 # If LLM was unavailable and content is unchanged the
@@ -6370,7 +6407,7 @@ class BeamMemory:
                         compressed += " [...]"
                 cursor.execute(
                     "UPDATE episodic_memory SET content = ?, tier = 3, degraded_at = ? WHERE id = ?",
-                    (compressed, now.isoformat(), row["id"])
+                    (_sanitize_utf8(compressed), now.isoformat(), row["id"])
                 )
                 if compressed != row["content"]:
                     self._refresh_episodic_embedding(row["id"], row["rowid"], compressed)
