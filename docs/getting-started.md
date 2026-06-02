@@ -35,13 +35,15 @@ cd mnemosyne
 pip install -e ".[all,dev]"
 ```
 
-### One-command Hermes Provider (no pip)
+### Hermes Provider
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/AxDSan/mnemosyne/main/deploy_hermes_provider.sh | bash
+pip install mnemosyne-hermes
+hermes config set memory.provider mnemosyne
+hermes gateway restart
 ```
 
-This symlinks the provider into `~/.hermes/plugins/mnemosyne`. No virtual environment required.
+No deploy script needed. The pip package handles everything.
 
 ## Your First Memory
 
