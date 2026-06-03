@@ -6101,7 +6101,7 @@ class BeamMemory:
         try:
             # Import lazily so the consolidator module is only loaded on-demand
             from mnemosyne.core.veracity_consolidation import VeracityConsolidator
-            consolidator = VeracityConsolidator(self.conn)
+            consolidator = VeracityConsolidator(conn=self.conn, db_path=self.db_path)
             seen_subjects: set = set()
             for word in query_lower.split()[:6]:
                 if len(word) < 3:
