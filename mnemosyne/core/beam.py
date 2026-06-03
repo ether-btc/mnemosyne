@@ -3380,7 +3380,7 @@ class BeamMemory:
             'named_months': r'((?:Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember|Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez)\s+\d{1,2}(?:\.)?\s*(?:\d{4})?)',
         },
         'ru': {
-            'negation': r'(?:Я(?: |\')?(?:никогда|не)|(?:никогда|не)\s+будет)\s+[^.,;!?\n]{6,120}',
+            'negation': r'((?:Я(?: |\')?(?:никогда|не)|(?:никогда|не)\s+будет)\s+[^.,;!?\n]{6,120})',
             'decision': r'(?:решил|решила|решили|выбрал|выбрала|выбрали|перешёл|перешла|перешли|переключился|переключилась|переключились|переехал|переехала|переехали|поменял|поменяла|поменяли)\s+([^.,;!?\n]{2,120})',
             'entity': r'(?:мой|моя|моё|мои|наш|наша|наше|наши|твой|твоя|твоё|твои|ваш|ваша|ваше|ваши)\s+([a-zA-Zа-яА-Я_]+(?:\s+(?:таблица|модель|схема|API|эндпоинт|функция|модуль|роут|обработчик|тул|плагин|скрипт|конфиг|настройка|воркфлоу|пайплайн|процесс|система|сервер|клиент|сервис|база|данных|запрос|файл|репозиторий|ветка|PR|ишью|таска|джоба|контейнер|образ|проект|релиз|версия))?)\s+(?:нуждается|требует|должен|должна|должны|может|могут|будет|будут|имеет|имеют|использует|используют|работает|работают|обрабатывает|поддерживает|запущен|запущена|настроен|настроена|готов|готова|готовы|запланирован|обновлён|обновлена|опубликован|опубликована|создан|создана)\s+([^.,;!?\n]{3,80})',
             'sequence': r'((?:во-первых|во-вторых|в-третьих|в-четвёртых|в-пятых|наконец|затем|потом|после этого|дальше|сначала)\s*,?\s*[^.,;!?\n]{6,120})',
@@ -3392,7 +3392,7 @@ class BeamMemory:
             'instruction': r'(?:всегда|никогда|должен|не должен|нужно|не нужно|обязательно|нельзя|не забывай|запомни|помни|следует|стоит)\\s+([^.,;!?\\n]{6,200})',
         },
         'it': {
-            'negation': r"(?:Non(?: |')?(?:ho|ho mai|mai|non)\s+[^.,;!?\n]{15,120})",
+            'negation': r"((?:Non(?: |')?(?:ho|ho mai|mai|non)\s+[^.,;!?\n]{15,120}))",
             'decision': r'(?:ho deciso|mi sono deciso|ho scelto|ho optato|ho cambiato|sono passato|sono passata|ho selezionato|scelto)\s+([^.,;!?\n]{10,120})',
             'entity': r"(?:il|la|i|le|il mio|la mia|i miei|le mie|il tuo|la tua|il nostro|la nostra)\s+([a-z_]+(?:\s+(?:tabella|modello|schema|API|endpoint|funzione|modulo|route|handler|tool|plugin|script|config|impostazione|workflow|pipeline|processo|sistema|server|client|servizio|database|query|file|repo|branch|PR|issue|task|job|progetto)))\s+(?:ha bisogno|richiede|dovrebbe|potrebbe|vorra|ha|hanno|usa|usano|funziona|gestisce|processa|supporta)\s+([^.,;!?\n]{10,80})",
             'sequence': r'((?:primo|prima|secondo|seconda|terzo|terza|quarto|quinta|infine|poi|dopo|dopodiche|successivamente|quindi)[^.,;!?\n]{15,120})',
