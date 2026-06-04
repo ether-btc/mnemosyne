@@ -14,8 +14,6 @@ from unittest.mock import MagicMock, patch
 # Test tool schemas
 from mnemosyne.mcp_tools import (
     TOOLS, get_tool_definitions, handle_tool_call,
-    _REMEMBER_SCHEMA, _RECALL_SCHEMA, _SLEEP_SCHEMA,
-    _SCRATCHPAD_READ_SCHEMA, _SCRATCHPAD_WRITE_SCHEMA, _GET_STATS_SCHEMA
 )
 
 
@@ -23,15 +21,35 @@ class TestToolSchemas:
     """Verify tool schemas match MCP spec and are valid JSON."""
 
     def test_all_tools_present(self):
-        """All 6 tools must be defined."""
+        """All 23 tools must be defined."""
         names = [t["name"] for t in TOOLS]
-        assert len(names) == 6
+        assert len(names) == 23
         assert "mnemosyne_remember" in names
         assert "mnemosyne_recall" in names
         assert "mnemosyne_sleep" in names
         assert "mnemosyne_scratchpad_read" in names
         assert "mnemosyne_scratchpad_write" in names
-        assert "mnemosyne_get_stats" in names
+        assert "mnemosyne_stats" in names  # renamed from get_stats
+        # New shared tools
+        assert "mnemosyne_shared_remember" in names
+        assert "mnemosyne_shared_recall" in names
+        assert "mnemosyne_shared_forget" in names
+        assert "mnemosyne_shared_stats" in names
+        # New validation/memory tools
+        assert "mnemosyne_invalidate" in names
+        assert "mnemosyne_validate" in names
+        assert "mnemosyne_get" in names
+        assert "mnemosyne_forget" in names
+        assert "mnemosyne_export" in names
+        assert "mnemosyne_import" in names
+        # New graph/triple tools
+        assert "mnemosyne_triple_add" in names
+        assert "mnemosyne_triple_query" in names
+        assert "mnemosyne_graph_query" in names
+        assert "mnemosyne_graph_link" in names
+        assert "mnemosyne_scratchpad_clear" in names
+        assert "mnemosyne_update" in names
+        assert "mnemosyne_diagnose" in names
 
     def test_tool_schemas_are_valid_json(self):
         """Each tool schema must be valid JSON-serializable."""
@@ -44,33 +62,37 @@ class TestToolSchemas:
 
     def test_remember_schema_has_required_fields(self):
         """mnemosyne_remember requires 'content'."""
-        schema = _REMEMBER_SCHEMA
+        remember_tool = next(t for t in TOOLS if t["name"] == "mnemosyne_remember")
+        schema = remember_tool["inputSchema"]
         assert "required" in schema
         assert "content" in schema["required"]
         assert "properties" in schema
         assert "source" in schema["properties"]
         assert "importance" in schema["properties"]
         assert "metadata" in schema["properties"]
+        # bank is not in the schema - handled via MCP server env var MNEMOSYNE_MCP_BANK
         assert "extract_entities" in schema["properties"]
         assert "extract" in schema["properties"]
-        assert "bank" in schema["properties"]
+        assert "veracity" in schema["properties"]
 
     def test_recall_schema_has_required_fields(self):
         """mnemosyne_recall requires 'query'."""
-        schema = _RECALL_SCHEMA
+        recall_tool = next(t for t in TOOLS if t["name"] == "mnemosyne_recall")
+        schema = recall_tool["inputSchema"]
         assert "required" in schema
         assert "query" in schema["required"]
-        assert "top_k" in schema["properties"]
-        assert "bank" in schema["properties"]
+        assert "limit" in schema["properties"]
+        # bank is not in the schema - handled via MCP server env var MNEMOSYNE_MCP_BANK
         assert "temporal_weight" in schema["properties"]
 
-    def test_no_destructive_tools(self):
-        """No forget, invalidate, or export/import tools exposed."""
+    def test_destructive_tools_exist(self):
+        """Destructive tools are now exposed (Phase 7+)."""
         names = [t["name"] for t in TOOLS]
-        assert "mnemosyne_forget" not in names
-        assert "mnemosyne_invalidate" not in names
-        assert "mnemosyne_export" not in names
-        assert "mnemosyne_import" not in names
+        # These tools now exist in the 23-tool set
+        assert "mnemosyne_forget" in names
+        assert "mnemosyne_invalidate" in names
+        assert "mnemosyne_export" in names
+        assert "mnemosyne_import" in names
 
 
 class TestToolHandlers:
@@ -268,9 +290,9 @@ class TestMCPIntegration:
         assert hasattr(mcp_tools, "handle_tool_call")
 
     def test_get_tool_definitions_returns_all(self):
-        """get_tool_definitions returns all 6 tools."""
+        """get_tool_definitions returns all 23 tools."""
         tools = get_tool_definitions()
-        assert len(tools) == 6
+        assert len(tools) == 23
         names = [t["name"] for t in tools]
         assert "mnemosyne_remember" in names
 
