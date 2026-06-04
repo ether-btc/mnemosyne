@@ -51,6 +51,24 @@ for _s in ALL_TOOL_SCHEMAS:
     TOOLS.append(_t)
 
 # ---------------------------------------------------------------------------
+# Individual tool schemas (for testing)
+# ---------------------------------------------------------------------------
+
+def _get_schema(name: str) -> Dict[str, Any]:
+    """Extract inputSchema from TOOLS by tool name."""
+    for tool in TOOLS:
+        if tool["name"] == name:
+            return tool["inputSchema"]
+    raise KeyError(f"Tool not found: {name}")
+
+_REMEMBER_SCHEMA = _get_schema("mnemosyne_remember")
+_RECALL_SCHEMA = _get_schema("mnemosyne_recall")
+_SLEEP_SCHEMA = _get_schema("mnemosyne_sleep")
+_SCRATCHPAD_READ_SCHEMA = _get_schema("mnemosyne_scratchpad_read")
+_SCRATCHPAD_WRITE_SCHEMA = _get_schema("mnemosyne_scratchpad_write")
+_GET_STATS_SCHEMA = _get_schema("mnemosyne_stats")
+
+# ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
 
