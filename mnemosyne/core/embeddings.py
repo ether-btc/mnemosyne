@@ -32,7 +32,14 @@ try:
 except Exception:
     TextEmbedding = None
 
-_FASTEMBED_AVAILABLE = np is not None and TextEmbedding is not None
+def _is_fastembed_available() -> bool:
+    """Check if fastembed is available. Evaluates lazily, so a correct
+    sys.path ordering at call time won't be shadowed by an early import."""
+    return np is not None and TextEmbedding is not None
+
+# Backward-compatible alias for legacy users who import this constant.
+# Use _is_fastembed_available() in new code — it re-evaluates on each call.
+_FASTEMBED_AVAILABLE = _is_fastembed_available()
 _FASTEMBED_CACHE_DIR = os.path.join(os.path.expanduser("~/.hermes"), "cache", "fastembed")
 
 # --- OpenAI-compatible API ---
@@ -120,7 +127,7 @@ def _get_model():
     global _embedding_model
     if _is_api_model(_DEFAULT_MODEL):
         return "api"  # Sentinel for API mode
-    if not _FASTEMBED_AVAILABLE:
+    if not _is_fastembed_available():
         return None
     if _embedding_model is None:
         os.makedirs(_FASTEMBED_CACHE_DIR, exist_ok=True)
