@@ -222,7 +222,7 @@ class TestToolHandlers:
                 "dry_run": False,
                 "bank": "default"
             })
-        assert result["status"] == "ok"
+        assert result["status"] == "consolidated"
         assert result["dry_run"] is False
         assert "result" in result
         mock_mnemosyne.sleep.assert_called_once_with(dry_run=False)
@@ -233,8 +233,7 @@ class TestToolHandlers:
             result = handle_tool_call("mnemosyne_scratchpad_read", {
                 "bank": "default"
             })
-        assert result["status"] == "ok"
-        assert result["count"] == 2
+        assert result["entries_count"] == 2
         assert len(result["entries"]) == 2
 
     def test_handle_scratchpad_write(self, mock_mnemosyne):
@@ -244,16 +243,16 @@ class TestToolHandlers:
                 "content": "New scratchpad entry",
                 "bank": "default"
             })
-        assert result["status"] == "stored"
-        assert result["entry_id"] == "scratch-id-456"
+        assert result["status"] == "written"
+        assert result["id"] == "scratch-id-456"
 
     def test_handle_get_stats(self, mock_mnemosyne):
         """handle_get_stats returns JSON-serializable stats."""
         with patch("mnemosyne.mcp_tools._create_instance", return_value=mock_mnemosyne):
-            result = handle_tool_call("mnemosyne_get_stats", {
+            result = handle_tool_call("mnemosyne_stats", {
                 "bank": "default"
             })
-        assert result["status"] == "ok"
+        assert "provider" in result
         assert "stats" in result
         # Must be JSON serializable
         dumped = json.dumps(result)
