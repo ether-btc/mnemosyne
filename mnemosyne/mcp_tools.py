@@ -14,6 +14,7 @@ All imports are guarded — this module loads safely even if mcp is not installe
 from typing import Dict, Any, List, Optional
 import json
 import os
+from pathlib import Path
 
 # Guarded import — MCP is optional
 try:
@@ -27,221 +28,43 @@ except ImportError:
     ErrorData = None
 
 from mnemosyne.core.memory import Mnemosyne
+from mnemosyne.core.beam import BeamMemory
 
 # ---------------------------------------------------------------------------
-# Tool Schemas
+# Tool Schemas (imported from the canonical Hermes provider definition)
 # ---------------------------------------------------------------------------
 
-_REMEMBER_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "content": {
-            "type": "string",
-            "description": "The memory content to store."
-        },
-        "source": {
-            "type": "string",
-            "description": "Source label (e.g., 'conversation', 'file', 'web').",
-            "default": "conversation"
-        },
-        "importance": {
-            "type": "number",
-            "description": "Importance score from 0.0 to 1.0.",
-            "default": 0.5
-        },
-        "metadata": {
-            "type": "object",
-            "description": "Optional key-value metadata.",
-            "default": {}
-        },
-        "extract_entities": {
-            "type": "boolean",
-            "description": "Extract and store entities from content (Phase 1 feature).",
-            "default": False
-        },
-        "extract": {
-            "type": "boolean",
-            "description": "Extract structured facts from content (Phase 2 feature).",
-            "default": False
-        },
-        "author_id": {
-            "type": "string",
-            "description": "Who stored this memory (e.g., 'abdias', 'codex-agent'). Auto-set from env MNEMOSYNE_AUTHOR_ID if not provided."
-        },
-        "author_type": {
-            "type": "string",
-            "description": "Type of author: 'human', 'agent', or 'system'. Auto-set from env MNEMOSYNE_AUTHOR_TYPE."
-        },
-        "channel_id": {
-            "type": "string",
-            "description": "Channel or group this memory belongs to (e.g., 'fluxspeak-team')."
-        },
-        "bank": {
-            "type": "string",
-            "description": "Memory bank to store in (Phase 5 feature).",
-            "default": "default"
-        }
-    },
-    "required": ["content"]
-}
-
-_RECALL_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "query": {
-            "type": "string",
-            "description": "Search query."
-        },
-        "top_k": {
-            "type": "integer",
-            "description": "Maximum results to return.",
-            "default": 5
-        },
-        "bank": {
-            "type": "string",
-            "description": "Memory bank to search (Phase 5 feature).",
-            "default": "default"
-        },
-        "temporal_weight": {
-            "type": "number",
-            "description": "Temporal boost weight (Phase 3 feature). 0.0 = disabled.",
-            "default": 0.0
-        },
-        "query_time": {
-            "type": "string",
-            "description": "ISO timestamp for temporal reference. Null = now.",
-            "default": None
-        },
-        "vec_weight": {
-            "type": "number",
-            "description": "Vector similarity weight (Phase 4 feature).",
-            "default": 0.5
-        },
-        "fts_weight": {
-            "type": "number",
-            "description": "Full-text search weight (Phase 4 feature).",
-            "default": 0.3
-        },
-        "importance_weight": {
-            "type": "number",
-            "description": "Importance score weight (Phase 4 feature).",
-            "default": 0.2
-        },
-        "author_id": {
-            "type": "string",
-            "description": "Filter by author (e.g., 'abdias', 'codex-agent'). Only recalls memories by this author."
-        },
-        "author_type": {
-            "type": "string",
-            "description": "Filter by author type: 'human', 'agent', or 'system'."
-        },
-        "channel_id": {
-            "type": "string",
-            "description": "Filter by channel/group (e.g., 'fluxspeak-team')."
-        }
-    },
-    "required": ["query"]
-}
-
-_SLEEP_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "dry_run": {
-            "type": "boolean",
-            "description": "If true, preview consolidation without executing.",
-            "default": False
-        },
-        "bank": {
-            "type": "string",
-            "description": "Memory bank to consolidate.",
-            "default": "default"
-        }
-    }
-}
-
-_SCRATCHPAD_READ_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "bank": {
-            "type": "string",
-            "description": "Memory bank.",
-            "default": "default"
-        }
-    }
-}
-
-_SCRATCHPAD_WRITE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "content": {
-            "type": "string",
-            "description": "Content to write to scratchpad."
-        },
-        "bank": {
-            "type": "string",
-            "description": "Memory bank.",
-            "default": "default"
-        }
-    },
-    "required": ["content"]
-}
-
-_GET_STATS_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "bank": {
-            "type": "string",
-            "description": "Memory bank.",
-            "default": "default"
-        }
-    }
-}
+try:
+    from mnemosyne_hermes.tools import ALL_TOOL_SCHEMAS
+except ImportError:
+    ALL_TOOL_SCHEMAS = []
 
 # ---------------------------------------------------------------------------
 # Tool Definitions
 # ---------------------------------------------------------------------------
 
-TOOLS: List[Dict[str, Any]] = [
-    {
-        "name": "mnemosyne_remember",
-        "description": "Store a memory in Mnemosyne. Supports entity extraction, fact extraction, and bank selection.",
-        "inputSchema": _REMEMBER_SCHEMA
-    },
-    {
-        "name": "mnemosyne_recall",
-        "description": "Search memories with hybrid scoring (vector + full-text + importance + temporal). Supports bank selection and configurable weights.",
-        "inputSchema": _RECALL_SCHEMA
-    },
-    {
-        "name": "mnemosyne_sleep",
-        "description": "Run consolidation sleep cycle to merge old working memories into episodic memory.",
-        "inputSchema": _SLEEP_SCHEMA
-    },
-    {
-        "name": "mnemosyne_scratchpad_read",
-        "description": "Read the agent scratchpad (temporary reasoning workspace).",
-        "inputSchema": _SCRATCHPAD_READ_SCHEMA
-    },
-    {
-        "name": "mnemosyne_scratchpad_write",
-        "description": "Write to the agent scratchpad.",
-        "inputSchema": _SCRATCHPAD_WRITE_SCHEMA
-    },
-    {
-        "name": "mnemosyne_get_stats",
-        "description": "Get memory system statistics (counts, banks, last memory).",
-        "inputSchema": _GET_STATS_SCHEMA
-    }
-]
+TOOLS: List[Dict[str, Any]] = list(ALL_TOOL_SCHEMAS)
 
 # ---------------------------------------------------------------------------
-# Mnemosyne Instance Per Connection (no module-level cache)
+# Helper functions
 # ---------------------------------------------------------------------------
+
+_MNEMOSYNE_HOME = os.environ.get("MNEMOSYNE_HOME", str(Path.home() / ".hermes" / "mnemosyne"))
+
+
+def _shared_db_path() -> Path:
+    """Return the shared surface DB path."""
+    return Path(os.environ.get("MNEMOSYNE_SHARED_DB_PATH", str(Path(_MNEMOSYNE_HOME) / "data" / "shared" / "mnemosyne.db")))
+
+
+_HERMES_HOME = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+
+
 def _create_instance(session_id: str = None, author_id: str = None,
                      author_type: str = None, channel_id: str = None,
                      bank: str = "default") -> Mnemosyne:
     """Create a fresh Mnemosyne instance for each MCP connection.
-    
+
     Identity is resolved from:
     1. Explicit args (from tool call or constructor)
     2. Environment variables (MNEMOSYNE_AUTHOR_ID, etc.)
@@ -251,7 +74,7 @@ def _create_instance(session_id: str = None, author_id: str = None,
     auth_type = author_type or os.environ.get("MNEMOSYNE_AUTHOR_TYPE")
     chan = channel_id or os.environ.get("MNEMOSYNE_CHANNEL_ID") or session_id or "default"
     sess = session_id or f"mcp_{bank}"
-    
+
     return Mnemosyne(
         session_id=sess,
         author_id=auth,
@@ -261,9 +84,27 @@ def _create_instance(session_id: str = None, author_id: str = None,
     )
 
 
+def _create_surface_instance() -> BeamMemory:
+    """Create a BeamMemory instance for the shared surface DB."""
+    shared_path = _shared_db_path()
+    shared_path.parent.mkdir(parents=True, exist_ok=True)
+    return BeamMemory(session_id="mcp_shared_surface", db_path=shared_path)
+
+
 def _resolve_bank(arguments: Dict[str, Any]) -> str:
     """Resolve per-call bank, falling back to MCP server default bank."""
     return arguments.get("bank") or os.environ.get("MNEMOSYNE_MCP_BANK") or "default"
+
+
+def _serialize(obj):
+    """Recursively convert non-serializable objects (datetime, etc.) to strings."""
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: _serialize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_serialize(i) for i in obj]
+    return obj
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +119,8 @@ def _handle_remember(arguments: Dict[str, Any]) -> Dict[str, Any]:
     metadata = arguments.get("metadata", {})
     extract_entities = arguments.get("extract_entities", False)
     extract = arguments.get("extract", False)
+    scope = arguments.get("scope", "session")
+    valid_until = arguments.get("valid_until") or None
     bank = _resolve_bank(arguments)
 
     mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
@@ -288,11 +131,14 @@ def _handle_remember(arguments: Dict[str, Any]) -> Dict[str, Any]:
         metadata=metadata,
         extract_entities=extract_entities,
         extract=extract,
+        scope=scope,
+        valid_until=valid_until,
     )
 
     return {
         "status": "stored",
         "memory_id": memory_id,
+        "content_preview": content[:100],
         "bank": bank
     }
 
@@ -300,10 +146,11 @@ def _handle_remember(arguments: Dict[str, Any]) -> Dict[str, Any]:
 def _handle_recall(arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Handle mnemosyne_recall tool call."""
     query = arguments["query"]
-    top_k = arguments.get("top_k", 5)
+    top_k = int(arguments.get("limit", arguments.get("top_k", 5)))
     bank = _resolve_bank(arguments)
     temporal_weight = arguments.get("temporal_weight", 0.0)
     query_time = arguments.get("query_time")
+    temporal_halflife = arguments.get("temporal_halflife", 24)
     vec_weight = arguments.get("vec_weight")
     fts_weight = arguments.get("fts_weight")
     importance_weight = arguments.get("importance_weight")
@@ -314,16 +161,15 @@ def _handle_recall(arguments: Dict[str, Any]) -> Dict[str, Any]:
         top_k=top_k,
         temporal_weight=temporal_weight,
         query_time=query_time,
+        temporal_halflife=temporal_halflife,
         vec_weight=vec_weight,
         fts_weight=fts_weight,
         importance_weight=importance_weight,
     )
 
-    # Serialize for JSON — datetime objects aren't JSON serializable
     serializable = []
     for r in results:
         item = dict(r) if hasattr(r, "keys") else r
-        # Convert any datetime to ISO string
         for key in ["timestamp", "created_at", "valid_until", "last_recalled"]:
             if key in item and item[key] is not None:
                 if hasattr(item[key], "isoformat"):
@@ -335,6 +181,89 @@ def _handle_recall(arguments: Dict[str, Any]) -> Dict[str, Any]:
         "count": len(serializable),
         "results": serializable,
         "bank": bank
+    }
+
+
+def _handle_shared_remember(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_shared_remember tool call."""
+    content = (arguments.get("content") or "").strip()
+    if not content:
+        return {"error": "content is required"}
+    if content.startswith("[USER]") or content.startswith("[ASSISTANT]"):
+        return {"error": "raw conversation content is not allowed in shared memory"}
+    kind = (arguments.get("kind") or "meta").strip().lower()
+    if kind not in {"meta", "preference", "correction", "identity"}:
+        return {"error": "kind must be one of: meta, preference, correction, identity"}
+    importance = max(0.0, min(float(arguments.get("importance", 0.8)), 1.0))
+    metadata = arguments.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return {"error": "metadata must be an object"}
+
+    surface_beam = _create_surface_instance()
+    import hashlib
+    normalized = " ".join(str(content).lower().split())
+    content_hash = hashlib.sha256(f"surface:v1:{normalized}".encode("utf-8")).hexdigest()[:24]
+    prefixes = ("surface meta:", "surface preference:", "surface correction:", "surface identity:", "surface fact:")
+    if content.lower().startswith(prefixes):
+        surface_content = content
+    else:
+        label_map = {"meta": "Surface meta", "preference": "Surface preference",
+                     "correction": "Surface correction", "identity": "Surface identity"}
+        surface_content = f"{label_map.get(kind, 'Surface meta')}: {content}"
+    stable_id = "sf_" + content_hash
+    meta = dict(metadata)
+    meta.update({"shared_memory": True, "surface_kind": kind, "write_path": "mcp_tool"})
+    memory_id = surface_beam.remember(
+        content=surface_content,
+        source="surface_manual",
+        importance=importance,
+        metadata=meta,
+        scope="global",
+        memory_id=stable_id,
+    )
+
+    return {
+        "status": "stored_shared",
+        "memory_id": memory_id,
+        "content_preview": surface_content[:120],
+        "shared_db": str(_shared_db_path()),
+        "kind": kind,
+    }
+
+
+def _handle_shared_recall(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_shared_recall tool call."""
+    query = arguments.get("query", "")
+    if not query:
+        return {"error": "query is required"}
+    top_k = int(arguments.get("limit", 5))
+    surface_beam = _create_surface_instance()
+    results = []
+    for r in surface_beam.recall(query, top_k=top_k):
+        r = dict(r)
+        r["shared_surface"] = True
+        results.append(r)
+    return {"query": query, "count": len(results), "shared_db": str(_shared_db_path()), "results": results}
+
+
+def _handle_shared_forget(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_shared_forget tool call."""
+    memory_id = (arguments.get("memory_id") or "").strip()
+    if not memory_id:
+        return {"error": "memory_id is required"}
+    surface_beam = _create_surface_instance()
+    ok = surface_beam.forget_working(memory_id)
+    return {"status": "deleted" if ok else "not_found", "memory_id": memory_id, "shared_db": str(_shared_db_path())}
+
+
+def _handle_shared_stats(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_shared_stats tool call."""
+    surface_beam = _create_surface_instance()
+    return {
+        "provider": "mnemosyne_shared",
+        "shared_db": str(_shared_db_path()),
+        "working": _serialize(surface_beam.get_working_stats()),
+        "episodic": _serialize(surface_beam.get_episodic_stats()),
     }
 
 
@@ -350,67 +279,133 @@ def _handle_sleep(arguments: Dict[str, Any]) -> Dict[str, Any]:
     else:
         result = mem.sleep(dry_run=dry_run)
 
+    working = _serialize(mem.beam.get_working_stats()) if hasattr(mem, "beam") else {}
+    episodic = _serialize(mem.beam.get_episodic_stats()) if hasattr(mem, "beam") else {}
+
     return {
-        "status": "ok",
-        "dry_run": dry_run,
-        "all_sessions": all_sessions,
+        "status": result.get("status", "consolidated"),
         "result": result,
+        "working": working,
+        "episodic": episodic,
         "bank": bank
     }
 
 
-def _handle_scratchpad_read(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle mnemosyne_scratchpad_read tool call."""
+def _handle_stats(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_stats tool call."""
     bank = _resolve_bank(arguments)
-
-    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
-    entries = mem.scratchpad_read()
-
-    return {
-        "status": "ok",
-        "count": len(entries),
-        "entries": entries,
-        "bank": bank
-    }
-
-
-def _handle_scratchpad_write(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle mnemosyne_scratchpad_write tool call."""
-    content = arguments["content"]
-    bank = _resolve_bank(arguments)
-
-    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
-    entry_id = mem.scratchpad_write(content)
-
-    return {
-        "status": "stored",
-        "entry_id": entry_id,
-        "bank": bank
-    }
-
-
-def _handle_get_stats(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle mnemosyne_get_stats tool call."""
-    bank = _resolve_bank(arguments)
-
     mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
     stats = mem.get_stats()
+    return {"provider": "mnemosyne", "session_id": mem._session_id if hasattr(mem, "_session_id") else None, "stats": _serialize(stats)}
 
-    # Serialize for JSON
-    def _serialize(obj):
-        if hasattr(obj, "isoformat"):
-            return obj.isoformat()
-        if isinstance(obj, dict):
-            return {k: _serialize(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_serialize(i) for i in obj]
-        return obj
+
+def _handle_invalidate(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_invalidate tool call."""
+    memory_id = arguments.get("memory_id", "")
+    replacement_id = arguments.get("replacement_id") or None
+    if not memory_id:
+        return {"error": "memory_id is required"}
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
+    mem.invalidate(memory_id, replacement_id=replacement_id)
+    return {"status": "invalidated", "memory_id": memory_id}
+
+
+def _handle_validate(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_validate tool call."""
+    memory_id = arguments.get("memory_id", "")
+    action = arguments.get("action", "")
+    bank = arguments.get("bank", "private")
+    validator = arguments.get("validator") or os.environ.get("MNEMOSYNE_AUTHOR_ID") or "mcp"
+    new_content = arguments.get("new_content", "")
+    note = arguments.get("note", "")
+
+    if not memory_id:
+        return {"error": "memory_id is required"}
+    if action not in ("attest", "update", "invalidate", "delete"):
+        return {"error": f"unknown action: {action}"}
+    if bank not in ("private", "surface"):
+        return {"error": f"unknown bank: {bank}"}
+    if action == "update" and not new_content:
+        return {"error": "new_content is required for action='update'"}
+
+    if bank == "surface":
+        target_beam = _create_surface_instance()
+    else:
+        mem = _create_instance()
+        target_beam = mem.beam
+
+    conn = target_beam.conn
+    existing = conn.execute(
+        "SELECT id, author_id, content FROM working_memory WHERE id = ?",
+        (memory_id,),
+    ).fetchone()
+    if not existing:
+        return {"error": "memory_not_found", "memory_id": memory_id, "bank": bank}
+
+    author_id = existing[1]
+    prev_content = existing[2]
+
+    try:
+        if action == "delete":
+            conn.execute("DELETE FROM working_memory WHERE id = ?", (memory_id,))
+        elif action == "update":
+            conn.execute(
+                "UPDATE working_memory SET content = ?, validator = ?, "
+                "validated_at = CURRENT_TIMESTAMP, "
+                "validation_count = COALESCE(validation_count, 0) + 1 "
+                "WHERE id = ?",
+                (new_content, validator, memory_id),
+            )
+        elif action == "invalidate":
+            conn.execute(
+                "UPDATE working_memory SET valid_until = CURRENT_TIMESTAMP, "
+                "validator = ?, validated_at = CURRENT_TIMESTAMP, "
+                "validation_count = COALESCE(validation_count, 0) + 1 "
+                "WHERE id = ?",
+                (validator, memory_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE working_memory SET validator = ?, "
+                "validated_at = CURRENT_TIMESTAMP, "
+                "validation_count = COALESCE(validation_count, 0) + 1 "
+                "WHERE id = ?",
+                (validator, memory_id),
+            )
+        conn.execute(
+            "INSERT INTO memory_validations "
+            "(memory_id, validator, action, new_content, note) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (memory_id, validator, action,
+             new_content if action == "update" else None,
+             note or None),
+        )
+        conn.commit()
+    except Exception as exc:
+        return {"error": "validation_failed", "reason": str(exc), "memory_id": memory_id}
 
     return {
-        "status": "ok",
-        "stats": _serialize(stats),
-        "bank": bank
+        "status": f"validation_{action}",
+        "memory_id": memory_id,
+        "bank": bank,
+        "validator": validator,
+        "author_id": author_id,
+        "previous_content": prev_content[:200] if prev_content else None,
     }
+
+
+def _handle_get(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_get tool call."""
+    memory_id = arguments.get("memory_id", "")
+    if not memory_id:
+        return {"error": "memory_id is required"}
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
+    result = mem.get(memory_id)
+    if result is None:
+        return {"status": "not_found", "memory_id": memory_id}
+    return {"status": "ok", "memory": _serialize(result)}
 
 
 def _handle_triple_add(arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -429,17 +424,13 @@ def _handle_triple_add(arguments: Dict[str, Any]) -> Dict[str, Any]:
     predicate = arguments["predicate"]
 
     if isinstance(predicate, str) and predicate in ANNOTATION_KINDS:
-        # Annotation-flavored predicate — route to AnnotationStore.
         bank = _resolve_bank(arguments)
         mem = _create_instance(bank=bank)
         db_path = mem.beam.db_path if hasattr(mem.beam, "db_path") else mem.db_path
-
         store = getattr(mem.beam, "annotations", None)
         if store is None:
             store = AnnotationStore(db_path=db_path, conn=mem.beam.conn)
-
         valid_from = arguments.get("valid_from")
-
         if predicate == "occurred_on" and valid_from:
             row_id = store.add(
                 memory_id=arguments["subject"],
@@ -463,14 +454,8 @@ def _handle_triple_add(arguments: Dict[str, Any]) -> Dict[str, Any]:
                 source=arguments.get("source", "conversation"),
                 confidence=arguments.get("confidence", 1.0),
             )
+        return {"status": "added", "annotation_id": row_id, "store": "annotations"}
 
-        return {
-            "status": "added",
-            "annotation_id": row_id,
-            "store": "annotations",
-        }
-
-    # Current-truth temporal fact — route to TripleStore.
     bank = _resolve_bank(arguments)
     mem = _create_instance(bank=bank)
     db_path = mem.beam.db_path if hasattr(mem.beam, "db_path") else mem.db_path
@@ -483,11 +468,7 @@ def _handle_triple_add(arguments: Dict[str, Any]) -> Dict[str, Any]:
         source=arguments.get("source", "conversation"),
         confidence=arguments.get("confidence", 1.0),
     )
-    return {
-        "status": "added",
-        "triple_id": triple_id,
-        "store": "triples",
-    }
+    return {"status": "added", "triple_id": triple_id, "store": "triples"}
 
 
 def _handle_triple_query(arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -513,11 +494,7 @@ def _handle_triple_query(arguments: Dict[str, Any]) -> Dict[str, Any]:
             value=arguments.get("object"),
             memory_id=arguments.get("subject"),
         )
-        return {
-            "results_count": len(results),
-            "results": results,
-            "store": "annotations",
-        }
+        return {"results_count": len(results), "results": results, "store": "annotations"}
 
     kg = TripleStore(db_path=db_path)
     results = kg.query(
@@ -526,11 +503,179 @@ def _handle_triple_query(arguments: Dict[str, Any]) -> Dict[str, Any]:
         object=arguments.get("object"),
         as_of=arguments.get("as_of"),
     )
+    return {"results_count": len(results), "results": results, "store": "triples"}
+
+
+def _handle_scratchpad_write(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_scratchpad_write tool call."""
+    content = arguments.get("content", "").strip()
+    if not content:
+        return {"error": "Content is required"}
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
+    entry_id = mem.scratchpad_write(content)
+    return {"status": "written", "id": entry_id}
+
+
+def _handle_scratchpad_read(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_scratchpad_read tool call."""
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
+    entries = mem.scratchpad_read()
+    return {"entries_count": len(entries), "entries": entries}
+
+
+def _handle_scratchpad_clear(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_scratchpad_clear tool call."""
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
+    mem.scratchpad_clear()
+    return {"status": "cleared"}
+
+
+def _handle_export(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_export tool call."""
+    output_path = arguments.get("output_path", "").strip()
+    if not output_path:
+        return {"error": "output_path is required"}
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
+    result = mem.export_to_file(output_path)
+    return _serialize(result)
+
+
+def _handle_update(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_update tool call."""
+    memory_id = arguments.get("memory_id", "").strip()
+    if not memory_id:
+        return {"error": "memory_id is required"}
+    content = arguments.get("content")
+    importance = arguments.get("importance")
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
+    ok = mem.update(memory_id, content=content, importance=importance)
+    return {"status": "updated" if ok else "not_found", "memory_id": memory_id}
+
+
+def _handle_forget(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_forget tool call."""
+    memory_id = arguments.get("memory_id", "").strip()
+    if not memory_id:
+        return {"error": "memory_id is required"}
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
+    ok = mem.forget(memory_id)
+    return {"status": "deleted" if ok else "not_found", "memory_id": memory_id}
+
+
+def _handle_import(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_import tool call."""
+    provider = (arguments.get("provider") or "").strip().lower()
+    input_path = arguments.get("input_path", "").strip()
+    dry_run = bool(arguments.get("dry_run", False))
+    force = bool(arguments.get("force", False))
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
+
+    if provider:
+        api_key = arguments.get("api_key", "").strip()
+        user_id = arguments.get("user_id", "").strip() or None
+        agent_id = arguments.get("agent_id", "").strip() or None
+        base_url = arguments.get("base_url", "").strip() or None
+        channel_id = arguments.get("channel_id")
+        if not api_key:
+            env_key = f"{provider.upper()}_API_KEY"
+            api_key = os.environ.get(env_key, "")
+        if not api_key:
+            return {"error": f"api_key required for {provider} import. Set {provider.upper()}_API_KEY env var or pass api_key parameter."}
+        from mnemosyne.core.importers import import_from_provider
+        result = import_from_provider(
+            provider, mem,
+            api_key=api_key,
+            user_id=user_id,
+            agent_id=agent_id,
+            base_url=base_url,
+            dry_run=dry_run,
+            channel_id=channel_id,
+        )
+        return _serialize(result.to_dict() if hasattr(result, "to_dict") else result)
+
+    if not input_path:
+        return {"error": "Either input_path (for file import) or provider (for cross-provider import) is required"}
+    stats = mem.import_from_file(input_path, force=force)
+    return {"status": "imported", "stats": stats}
+
+
+def _handle_diagnose(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_diagnose tool call."""
+    from mnemosyne.diagnose import run_diagnostics
+    result = run_diagnostics()
+    db_path = None
+    try:
+        mem = _create_instance()
+        if hasattr(mem, "beam") and hasattr(mem.beam, "db_path"):
+            db_path = str(mem.beam.db_path)
+    except Exception:
+        pass
+    if db_path:
+        result["active_provider_db_path"] = db_path
+    return _serialize(result)
+
+
+def _handle_graph_query(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_graph_query tool call."""
+    seed_id = arguments.get("seed_memory_id", "").strip()
+    if not seed_id:
+        return {"error": "seed_memory_id is required"}
+    depth = int(arguments.get("max_hops", 2))
+    if depth < 1:
+        return {"error": "max_hops must be greater than 0"}
+    edge_type = arguments.get("edge_type", "") or ""
+    min_weight = float(arguments.get("min_weight", 0.0))
+    if not (0.0 <= min_weight <= 1.0):
+        return {"error": "min_weight must be between 0.0 and 1.0"}
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
+    if mem.beam.episodic_graph is None:
+        return {"error": "Episodic graph not available"}
+    related = mem.beam.episodic_graph.find_related_memories(
+        seed_id, depth=depth, edge_type=edge_type, min_weight=min_weight
+    )
     return {
-        "results_count": len(results),
-        "results": results,
-        "store": "triples",
+        "seed_memory_id": seed_id,
+        "max_hops": depth,
+        "edge_type": edge_type or "all",
+        "min_weight": min_weight,
+        "count": len(related),
+        "results": related,
     }
+
+
+def _handle_graph_link(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_graph_link tool call."""
+    source_id = arguments.get("source_id", "").strip()
+    target_id = arguments.get("target_id", "").strip()
+    relationship = arguments.get("relationship", "").strip()
+    weight = float(arguments.get("weight", 0.5))
+    if not (0.0 <= weight <= 1.0):
+        return {"error": "weight must be between 0.0 and 1.0"}
+    if not all([source_id, target_id, relationship]):
+        return {"error": "source_id, target_id, and relationship are required"}
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
+    if mem.beam.episodic_graph is None:
+        return {"error": "Episodic graph not available"}
+    from mnemosyne.core.episodic_graph import GraphEdge
+    from datetime import datetime
+    edge = GraphEdge(
+        source=source_id,
+        target=target_id,
+        edge_type=relationship,
+        weight=weight,
+        timestamp=datetime.now().isoformat(),
+    )
+    mem.beam.episodic_graph.add_edge(edge)
+    return {"status": "linked", "source": source_id, "target": target_id, "relationship": relationship}
 
 
 # ---------------------------------------------------------------------------
@@ -540,12 +685,27 @@ def _handle_triple_query(arguments: Dict[str, Any]) -> Dict[str, Any]:
 _TOOL_HANDLERS = {
     "mnemosyne_remember": _handle_remember,
     "mnemosyne_recall": _handle_recall,
+    "mnemosyne_shared_remember": _handle_shared_remember,
+    "mnemosyne_shared_recall": _handle_shared_recall,
+    "mnemosyne_shared_forget": _handle_shared_forget,
+    "mnemosyne_shared_stats": _handle_shared_stats,
     "mnemosyne_sleep": _handle_sleep,
-    "mnemosyne_scratchpad_read": _handle_scratchpad_read,
-    "mnemosyne_scratchpad_write": _handle_scratchpad_write,
-    "mnemosyne_get_stats": _handle_get_stats,
+    "mnemosyne_stats": _handle_stats,
+    "mnemosyne_invalidate": _handle_invalidate,
+    "mnemosyne_validate": _handle_validate,
+    "mnemosyne_get": _handle_get,
     "mnemosyne_triple_add": _handle_triple_add,
     "mnemosyne_triple_query": _handle_triple_query,
+    "mnemosyne_scratchpad_write": _handle_scratchpad_write,
+    "mnemosyne_scratchpad_read": _handle_scratchpad_read,
+    "mnemosyne_scratchpad_clear": _handle_scratchpad_clear,
+    "mnemosyne_export": _handle_export,
+    "mnemosyne_update": _handle_update,
+    "mnemosyne_forget": _handle_forget,
+    "mnemosyne_import": _handle_import,
+    "mnemosyne_diagnose": _handle_diagnose,
+    "mnemosyne_graph_query": _handle_graph_query,
+    "mnemosyne_graph_link": _handle_graph_link,
 }
 
 
