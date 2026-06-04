@@ -1674,7 +1674,7 @@ def _effective_vec_type(conn: sqlite3.Connection) -> str:
         if row and "bit" in row[0]:
             return "bit"
     except Exception:
-        pass
+        logger.info("Regex extraction failed, skipping", exc_info=True)
     return "float32"
 
 
@@ -1967,7 +1967,7 @@ class BeamMemory:
             from mnemosyne.core.triples import init_triples
             init_triples(db_path=self.db_path)
         except Exception:
-            pass
+            logger.info("Regex extraction failed, skipping", exc_info=True)
         self._ensure_e6_schema_with_migration()
 
         # E6: shared AnnotationStore handle reusing this BeamMemory's
@@ -1984,7 +1984,7 @@ class BeamMemory:
             try:
                 self.episodic_graph = EpisodicGraph(conn=self.conn, db_path=self.db_path)
             except Exception:
-                pass
+                logger.info("Regex extraction failed, skipping", exc_info=True)
 
         # Phase 4: Veracity consolidator (shared connection)
         self.veracity_consolidator = None
@@ -1992,7 +1992,7 @@ class BeamMemory:
             try:
                 self.veracity_consolidator = VeracityConsolidator(conn=self.conn, db_path=self.db_path)
             except Exception:
-                pass
+                logger.info("Regex extraction failed, skipping", exc_info=True)
 
     # ------------------------------------------------------------------
     # E6 schema split + auto-migration
@@ -2080,7 +2080,7 @@ class BeamMemory:
             try:
                 self.conn.commit()
             except Exception:
-                pass
+                logger.info("Regex extraction failed, skipping", exc_info=True)
 
             written = _e6_migrate(
                 db_path=self.db_path,
@@ -2476,7 +2476,7 @@ class BeamMemory:
                     result = classify_memory(item["content"])
                     item_type = result.memory_type.value
                 except Exception:
-                    pass
+                    logger.info("Regex extraction failed, skipping", exc_info=True)
             # Per-item override semantics gated by force_veracity. In
             # strict mode (force_veracity=True) per-item keys are
             # ignored -- the caller is the trust authority. Otherwise
@@ -3210,7 +3210,7 @@ class BeamMemory:
                 result = classify_memory(summary)
                 ep_type = result.memory_type.value
             except Exception:
-                pass
+                logger.info("Regex extraction failed, skipping", exc_info=True)
         # Clamp to canonical allowlist at the trust boundary. Defaults to
         # 'unknown' if not provided (back-compat with pre-E4.a.1 callers).
         if veracity is None:
@@ -4352,7 +4352,7 @@ class BeamMemory:
                         wm_vec_sims[vr["id"]] = vr["sim"]
                         wm_ids.add(vr["id"])  # Merge vector results with FTS5 results
             except Exception:
-                pass
+                logger.info("Regex extraction failed, skipping", exc_info=True)
         # Track whether the FTS+vec layer produced any candidates
         # at all (signal source for the truly_empty gate later).
         if wm_ids:
@@ -4918,7 +4918,7 @@ class BeamMemory:
                     edge_count = cursor2.fetchone()[0]
                     graph_bonus = min(edge_count * 0.02, 0.08)
                 except Exception:
-                    pass
+                    logger.info("Regex extraction failed, skipping", exc_info=True)
             if self.episodic_graph is not None and not _env_disabled("MNEMOSYNE_FACT_BONUS"):
                 try:
                     # Check if facts from graph match query terms via set-overlap
@@ -4934,7 +4934,7 @@ class BeamMemory:
                             match_count += 1
                     fact_bonus = min(match_count * 0.04, 0.1)
                 except Exception:
-                    pass
+                    logger.info("Regex extraction failed, skipping", exc_info=True)
             # Binary vector voice (Phase 5): re-enabled -- binary vectors are now
             # backfilled for all episodic entries. ITS discriminability improves at
             # scale (1033 entries); clustering concern was for small synthetic sets.
@@ -5037,7 +5037,7 @@ class BeamMemory:
                                 (f"%{row['id']}%", f"%{row['id']}%"))
                             graph_b = min(cursor2.fetchone()[0] * 0.02, 0.08)
                         except Exception:
-                            pass
+                            logger.info("Regex extraction failed, skipping", exc_info=True)
                     if not _env_disabled("MNEMOSYNE_FACT_BONUS"):
                         try:
                             cursor2 = self.conn.cursor()
@@ -5052,7 +5052,7 @@ class BeamMemory:
                                     mc += 1
                             fact_b = min(mc * 0.04, 0.1)
                         except Exception:
-                            pass
+                            logger.info("Regex extraction failed, skipping", exc_info=True)
                     # Binary vector bonus disabled (same reason as main path -- ITS clustering)
                     binary_b = 0.0
                     score += graph_b + fact_b + binary_b
@@ -5485,7 +5485,7 @@ class BeamMemory:
                             })
                 results.extend(assoc_results[:5])
             except Exception:
-                pass
+                logger.info("Regex extraction failed, skipping", exc_info=True)
 
         # 9. Cache results
         if use_cache and hasattr(self, '_query_cache') and self._query_cache is not None:
@@ -5898,7 +5898,7 @@ class BeamMemory:
                         "session_id": self.session_id,
                     })
         except Exception:
-            pass
+            logger.info("Regex extraction failed, skipping", exc_info=True)
 
         return final
 
@@ -6168,7 +6168,7 @@ class BeamMemory:
                 vec_count = cursor.execute("SELECT COUNT(*) FROM vec_episodes").fetchone()[0]
                 vec_type = _effective_vec_type(self.conn)
             except Exception:
-                pass
+                logger.info("Regex extraction failed, skipping", exc_info=True)
         return {"total": total, "last": last[0] if last else None, "vectors": vec_count, "vec_type": vec_type}
 
     def get_memoria_stats(self) -> Dict:
@@ -6323,7 +6323,7 @@ class BeamMemory:
                             (bv, memory_id),
                         )
                     except Exception:
-                        pass
+                        logger.info("Regex extraction failed, skipping", exc_info=True)
                 return
 
         # Provider unavailable (or embed() returned None). Invalidate the
@@ -6439,7 +6439,7 @@ class BeamMemory:
                     cursor.execute("ROLLBACK TO degrade_row")
                     cursor.execute("RELEASE degrade_row")
                 except Exception:
-                    pass
+                    logger.info("Regex extraction failed, skipping", exc_info=True)
 
         # --- Degrade tier 2 → tier 3: smart extraction (keep key entities) ---
         for row in tier2_rows:
@@ -6465,7 +6465,7 @@ class BeamMemory:
                     cursor.execute("ROLLBACK TO degrade_row")
                     cursor.execute("RELEASE degrade_row")
                 except Exception:
-                    pass
+                    logger.info("Regex extraction failed, skipping", exc_info=True)
 
         self.conn.commit()
         return results
@@ -7090,13 +7090,13 @@ class BeamMemory:
                         try:
                             emb = json.loads(emb)
                         except Exception:
-                            pass
+                            logger.info("Regex extraction failed, skipping", exc_info=True)
                     export["episodic_embeddings"].append({
                         "rowid": row["rowid"],
                         "embedding": emb
                     })
             except Exception:
-                pass
+                logger.info("Regex extraction failed, skipping", exc_info=True)
 
         # Scratchpad (all sessions)
         cursor.execute("""
@@ -7262,7 +7262,7 @@ class BeamMemory:
                     _vec_insert(self.conn, new_rowid, embedding)
                     stats["episodic_memory"]["embeddings_inserted"] += 1
                 except Exception:
-                    pass
+                    logger.info("Regex extraction failed, skipping", exc_info=True)
         if vec_ok:
             self.conn.commit()
 
