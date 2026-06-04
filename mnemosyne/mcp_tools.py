@@ -43,7 +43,12 @@ except ImportError:
 # Tool Definitions
 # ---------------------------------------------------------------------------
 
-TOOLS: List[Dict[str, Any]] = list(ALL_TOOL_SCHEMAS)
+TOOLS: List[Dict[str, Any]] = []
+for _s in ALL_TOOL_SCHEMAS:
+    _t = dict(_s)
+    if "parameters" in _t:
+        _t["inputSchema"] = _t.pop("parameters")
+    TOOLS.append(_t)
 
 # ---------------------------------------------------------------------------
 # Helper functions
