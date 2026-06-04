@@ -128,3 +128,4 @@ pip uninstall mnemosyne-hermes
 hermes config set memory.provider memory   # Switch back to built-in
 hermes memory setup
 ```
+
