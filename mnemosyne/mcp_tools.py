@@ -51,7 +51,7 @@ for _s in ALL_TOOL_SCHEMAS:
     TOOLS.append(_t)
 
 # ---------------------------------------------------------------------------
-# Individual tool schemas (for testing)
+# Individual tool schemas (lazy - computed on first access)
 # ---------------------------------------------------------------------------
 
 def _get_schema(name: str) -> Dict[str, Any]:
@@ -61,12 +61,53 @@ def _get_schema(name: str) -> Dict[str, Any]:
             return tool["inputSchema"]
     raise KeyError(f"Tool not found: {name}")
 
-_REMEMBER_SCHEMA = _get_schema("mnemosyne_remember")
-_RECALL_SCHEMA = _get_schema("mnemosyne_recall")
-_SLEEP_SCHEMA = _get_schema("mnemosyne_sleep")
-_SCRATCHPAD_READ_SCHEMA = _get_schema("mnemosyne_scratchpad_read")
-_SCRATCHPAD_WRITE_SCHEMA = _get_schema("mnemosyne_scratchpad_write")
-_GET_STATS_SCHEMA = _get_schema("mnemosyne_stats")
+class _SchemaProxy:
+    """Lazy proxy to access tool schemas after TOOLS is populated."""
+    def __init__(self, name: str):
+        self._name = name
+        self._schema = None
+    
+    def __getattr__(self, attr):
+        if self._schema is None:
+            self._schema = _get_schema(self._name)
+        return getattr(self._schema, attr)
+    
+    def __getitem__(self, key):
+        if self._schema is None:
+            self._schema = _get_schema(self._name)
+        return self._schema[key]
+    
+    def __contains__(self, key):
+        if self._schema is None:
+            self._schema = _get_schema(self._name)
+        return key in self._schema
+    
+    def get(self, key, default=None):
+        if self._schema is None:
+            self._schema = _get_schema(self._name)
+        return self._schema.get(key, default)
+    
+    def __iter__(self):
+        if self._schema is None:
+            self._schema = _get_schema(self._name)
+        return iter(self._schema)
+    
+    def __len__(self):
+        if self._schema is None:
+            self._schema = _get_schema(self._name)
+        return len(self._schema)
+    
+    def __repr__(self):
+        if self._schema is None:
+            self._schema = _get_schema(self._name)
+        return repr(self._schema)
+
+_REMEMBER_SCHEMA = _SchemaProxy("mnemosyne_remember")
+_RECALL_SCHEMA = _SchemaProxy("mnemosyne_recall")
+_SLEEP_SCHEMA = _SchemaProxy("mnemosyne_sleep")
+_SCRATCHPAD_READ_SCHEMA = _SchemaProxy("mnemosyne_scratchpad_read")
+_SCRATCHPAD_WRITE_SCHEMA = _SchemaProxy("mnemosyne_scratchpad_write")
+_GET_STATS_SCHEMA = _SchemaProxy("mnemosyne_stats")
 
 # ---------------------------------------------------------------------------
 # Helper functions
