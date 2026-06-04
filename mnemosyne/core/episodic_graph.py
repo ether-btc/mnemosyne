@@ -25,6 +25,31 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 
 
+# Subjects that the crude "X is/has/uses Y" regexes below capture from
+# conversational prose but that are never durable facts. A bare
+# pronoun/demonstrative subject ("This is interesting") or a possessive-led
+# one ("My report is ready") describes transient state, not a fact about a
+# named entity. Worse: every such triple shares the same (subject, predicate)
+# so the veracity consolidator flags each new object as a "contradiction",
+# producing a conflict explosion from pure noise.
+# Reject them at the source. Keyed on the subject's first token (lowercased).
+_LOW_QUALITY_SUBJECT_LEADERS = frozenset({
+    "this", "that", "these", "those", "it", "there", "here",
+    "i", "you", "he", "she", "they", "we",
+    "him", "her", "them", "us",
+    "my", "your", "his", "their", "our", "its",
+})
+
+
+def _is_low_quality_subject(subject: str) -> bool:
+    """True if `subject` is a pronoun/demonstrative/possessive-led phrase that
+    should not become a fact triple. See _LOW_QUALITY_SUBJECT_LEADERS."""
+    if not subject:
+        return True
+    first = subject.strip().split(None, 1)[0].strip(".,!?;:'\"").lower()
+    return first in _LOW_QUALITY_SUBJECT_LEADERS
+
+
 @dataclass
 class Gist:
     """Time-aware episode summary."""
@@ -289,7 +314,7 @@ class EpisodicGraph:
         for match in re.finditer(is_pattern, content):
             subject = match.group(1).strip()
             obj = match.group(2).strip()
-            if len(subject) > 2 and len(obj) > 2:
+            if len(subject) > 2 and len(obj) > 2 and not _is_low_quality_subject(subject):
                 facts.append(Fact(
                     id=f"fact_{memory_id}_{len(facts)}",
                     subject=subject,
@@ -304,7 +329,7 @@ class EpisodicGraph:
         for match in re.finditer(has_pattern, content):
             subject = match.group(1).strip()
             obj = match.group(2).strip()
-            if len(subject) > 2 and len(obj) > 2:
+            if len(subject) > 2 and len(obj) > 2 and not _is_low_quality_subject(subject):
                 facts.append(Fact(
                     id=f"fact_{memory_id}_{len(facts)}",
                     subject=subject,
@@ -319,7 +344,7 @@ class EpisodicGraph:
         for match in re.finditer(uses_pattern, content):
             subject = match.group(1).strip()
             obj = match.group(3).strip()
-            if len(subject) > 2 and len(obj) > 2:
+            if len(subject) > 2 and len(obj) > 2 and not _is_low_quality_subject(subject):
                 facts.append(Fact(
                     id=f"fact_{memory_id}_{len(facts)}",
                     subject=subject,
@@ -334,7 +359,7 @@ class EpisodicGraph:
         for match in re.finditer(works_pattern, content):
             subject = match.group(1).strip()
             obj = match.group(2).strip()
-            if len(subject) > 2 and len(obj) > 2:
+            if len(subject) > 2 and len(obj) > 2 and not _is_low_quality_subject(subject):
                 facts.append(Fact(
                     id=f"fact_{memory_id}_{len(facts)}",
                     subject=subject,
