@@ -9,9 +9,7 @@ import shutil
 import sys
 from pathlib import Path
 
-PLUGIN_NAME = "hermes-mnemosyne"
-EXCLUDED_DIRS = {"__pycache__", ".pytest_cache", ".ruff_cache"}
-EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
+PLUGIN_NAME = "mnemosyne"
 
 
 def hermes_home() -> Path:
@@ -19,24 +17,23 @@ def hermes_home() -> Path:
     return Path(os.environ.get("HERMES_HOME") or "~/.hermes").expanduser()
 
 
-def plugin_source_dir() -> Path:
+def _resolve_package_dir() -> Path:
     """Return the installed mnemosyne_hermes package directory."""
-    return Path(__file__).resolve().parent
+    import mnemosyne_hermes
+    return Path(mnemosyne_hermes.__file__).resolve().parent
 
 
 def plugin_target_dir(hermes_home_path: str | Path | None = None) -> Path:
-    """Return the Hermes memory plugin destination for Mnemosyne."""
+    """Return the Hermes memory plugin destination for Mnemosyne.
+
+    Directory name matches the provider name used in
+    ``memory.provider: mnemosyne`` config. Hermes discovers memory
+    providers by scanning ``$HERMES_HOME/plugins/<name>/`` for
+    directories whose ``__init__.py`` contains ``register_memory_provider``
+    or ``MemoryProvider``.
+    """
     base = Path(hermes_home_path).expanduser() if hermes_home_path else hermes_home()
     return base / "plugins" / PLUGIN_NAME
-
-
-def _ignore_copy_names(_directory: str, names: list[str]) -> set[str]:
-    ignored: set[str] = set()
-    for name in names:
-        path = Path(name)
-        if name in EXCLUDED_DIRS or path.suffix in EXCLUDED_SUFFIXES:
-            ignored.add(name)
-    return ignored
 
 
 def check_mnemosyne_core() -> bool:
@@ -55,52 +52,71 @@ def install_plugin(
     hermes_home_path: str | Path | None = None,
     force: bool = False,
 ) -> Path:
-    """Install the Mnemosyne provider into Hermes' user plugin directory."""
-    source = plugin_source_dir()
+    """Install the Mnemosyne provider into Hermes' user plugin directory.
+
+    Creates a symlink from ``$HERMES_HOME/plugins/mnemosyne/`` to the
+    installed ``mnemosyne_hermes`` package directory. Hermes discovers
+    memory providers by scanning ``$HERMES_HOME/plugins/<name>/`` for
+    directories whose ``__init__.py`` contains ``register_memory_provider``
+    or ``MemoryProvider``.
+
+    The symlink approach means all relative imports (cli, tools, audit)
+    resolve correctly through the real package, and ``hermes update`` /
+    ``pipx upgrade mnemosyne-hermes`` automatically refreshes the target.
+    """
+    source = _resolve_package_dir()
+    if not source.is_dir():
+        raise FileNotFoundError(
+            f"mnemosyne_hermes package not found at {source}"
+        )
+
     target = plugin_target_dir(hermes_home_path)
 
-    if target.exists():
+    if target.is_symlink() or target.exists():
         if not force:
             raise FileExistsError(
                 f"{target} already exists. Re-run with --force to replace it."
             )
-        if target.is_symlink() or os.path.islink(str(target)):
+        # Remove existing link or directory cleanly
+        if target.is_symlink():
             target.unlink()
-        else:
+        elif target.is_dir():
             shutil.rmtree(target)
+        else:
+            target.unlink()
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, target, ignore=_ignore_copy_names)
-
-    # Also create a convenience plugin.yaml in the target if not present
-    plugin_yaml = target / "plugin.yaml"
-    if not plugin_yaml.exists():
-        plugin_yaml.write_text(
-            f"name: {PLUGIN_NAME}\n"
-            "version: auto\n"
-            'description: "Mnemosyne — local-first AI memory for Hermes"\n'
-            "pip_dependencies:\n"
-            "  - mnemosyne-memory>=3.1\n"
-        )
-
+    os.symlink(str(source), str(target))
     return target
 
 
 def uninstall_plugin(*, hermes_home_path: str | Path | None = None) -> Path:
-    """Remove the Mnemosyne provider from Hermes' user plugin directory."""
+    """Remove the Mnemosyne provider symlink from Hermes' user plugin directory."""
     target = plugin_target_dir(hermes_home_path)
-    if target.exists():
-        if target.is_symlink() or os.path.islink(str(target)):
-            target.unlink()
-        else:
-            shutil.rmtree(target)
+    if target.is_symlink():
+        target.unlink()
+    elif target.exists():
+        shutil.rmtree(target)
     return target
 
 
 def is_installed(*, hermes_home_path: str | Path | None = None) -> bool:
-    """Return whether the Mnemosyne provider is installed for Hermes discovery."""
+    """Return whether the Mnemosyne provider symlink exists for Hermes discovery.
+
+    Checks that the target is a symlink (or directory) with a valid
+    ``__init__.py`` containing the expected symbols.
+    """
     target = plugin_target_dir(hermes_home_path)
-    return (target / "__init__.py").is_file() and (target / "plugin.yaml").is_file()
+    if not target.exists():
+        return False
+    init_file = target / "__init__.py"
+    if not init_file.is_file():
+        return False
+    try:
+        source = init_file.read_text(errors="replace")[:4096]
+        return "register_memory_provider" in source or "MnemosyneMemoryProvider" in source
+    except Exception:
+        return False
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -157,25 +173,26 @@ def main(argv: list[str] | None = None) -> int:
                 hermes_home_path=args.hermes_home,
                 force=getattr(args, "force", False),
             )
-            print(f"Installed Mnemosyne Hermes provider to {target}")
-            print("Next steps:")
+            print(f"Installed. Symlink at {target}")
+            print(f"  -> {os.readlink(str(target))}")
+            print("Done. Next steps:")
             print("  hermes config set memory.provider mnemosyne")
-            print("  hermes memory setup")
             print("  hermes memory status")
             return 0
 
         if command == "uninstall":
             target = uninstall_plugin(hermes_home_path=args.hermes_home)
-            print(f"Removed Mnemosyne Hermes provider from {target}")
+            print(f"Removed. Symlink at {target} deleted.")
             return 0
 
         if command == "status":
             target = plugin_target_dir(args.hermes_home)
             if is_installed(hermes_home_path=args.hermes_home):
-                print(f"Mnemosyne Hermes provider is installed at {target}")
+                print(f"Installed. Symlink at {target}")
+                print(f"  -> {os.readlink(str(target))}")
                 print(f"  Core library: {'OK' if check_mnemosyne_core() else 'MISSING'}")
                 return 0
-            print(f"Mnemosyne Hermes provider is not installed at {target}")
+            print(f"Not installed (expected symlink at {target})")
             return 1
 
     except Exception as exc:

@@ -106,9 +106,9 @@ hermes memory status
 
 When you install via pipx, the package registers two entry points:
 
-- `hermes_agent.memory_providers` — discovered by Hermes' `discover_memory_providers()`
+- `hermes_agent.memory_providers` - discovered by Hermes' `discover_memory_providers()`
   so `hermes memory status` sees it as an installed plugin
-- `hermes_agent.plugins` — discovered by Hermes' `PluginManager` for tool and
+- `hermes_agent.plugins` - discovered by Hermes' `PluginManager` for tool and
   CLI registration
 
 Hermes checks pipx-installed packages alongside directory-based plugins. No
