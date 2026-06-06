@@ -19,8 +19,9 @@ import logging
 import os
 import sys
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from datetime import datetime
 
 # Ensure mnemosyne core is importable from this directory
@@ -145,6 +146,118 @@ def _is_low_quality_prefetch(content: str) -> bool:
                                 or c.lower() in _PREFETCH_FRAGMENT_STOPWORDS):
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Prefetch profiles
+#
+# A profile is a named bundle of the prefetch knobs (recall breadth, weights,
+# temporal decay, relevance thresholds, the low-quality filter + dedup toggles,
+# and which registered sources to merge). The built-in `general` profile
+# reproduces the prior hardcoded behavior exactly, so existing deployments see no
+# change. Operators select a profile via MNEMOSYNE_PREFETCH_PROFILE; libraries can
+# register their own with register_profile().
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PrefetchProfile:
+    name: str
+    top_k: int = 8
+    importance_weight: Optional[float] = None   # None -> recall() default
+    vec_weight: Optional[float] = None
+    fts_weight: Optional[float] = None
+    temporal_weight: float = 0.2
+    temporal_halflife: float = 48
+    min_score: float = 0.15
+    min_importance: float = 0.5
+    content_char_limit: int = 0                  # 0 -> use env / untruncated
+    drop_low_quality: bool = True
+    dedup: bool = True
+    sources: Tuple[str, ...] = ("bank",)         # which registered sources to merge
+
+
+_BUILTIN_PROFILES: Dict[str, PrefetchProfile] = {
+    # Exact prior behavior — the default.
+    "general": PrefetchProfile(name="general"),
+    # Favor recent, high-importance memories; same filter/dedup defaults.
+    "social-chat": PrefetchProfile(
+        name="social-chat", top_k=6,
+        importance_weight=0.6, temporal_weight=0.35, temporal_halflife=24,
+    ),
+}
+
+
+def register_profile(profile: "PrefetchProfile") -> None:
+    """Register (or override) a named prefetch profile."""
+    _BUILTIN_PROFILES[profile.name] = profile
+
+
+def _resolve_profile(name: Optional[str]) -> PrefetchProfile:
+    """Return the named profile, falling back to `general` for unknown/empty."""
+    return _BUILTIN_PROFILES.get((name or "general"), _BUILTIN_PROFILES["general"])
+
+
+def _norm_prefetch_line(line: str) -> str:
+    """Normalize a content line for cross-source dedup: lowercase, collapse
+    whitespace, drop a leading bracketed metadata prefix (e.g. timestamps)."""
+    s = line.strip()
+    while s.startswith("[") or s.startswith("("):
+        close = s.find("]") if s.startswith("[") else s.find(")")
+        if close == -1:
+            break
+        s = s[close + 1:].strip()
+    return " ".join(s.lower().split())
+
+
+def _dedup_blocks(blocks: List[str]) -> List[str]:
+    """Collapse near-duplicate content lines across blocks, preserving each
+    block's headers and order. A single block is returned unchanged."""
+    seen: Set[str] = set()
+    out: List[str] = []
+    for block in blocks:
+        kept: List[str] = []
+        for line in block.split("\n"):
+            is_header = line.lstrip().startswith("#") or not line.strip()
+            if is_header:
+                kept.append(line)
+                continue
+            norm = _norm_prefetch_line(line)
+            if norm and norm in seen:
+                continue
+            if norm:
+                seen.add(norm)
+            kept.append(line)
+        out.append("\n".join(kept))
+    return out
+
+
+def _coerce_source_output(out: Any, profile: "PrefetchProfile", header: str) -> str:
+    """Turn a registered source's return value into an injectable block.
+
+    A source may return a pre-formatted string (used verbatim) or a list of hit
+    dicts ({"content", optional "timestamp"/"importance"}). Lists are formatted
+    under `header`, low-quality-filtered + capped per the profile."""
+    if not out:
+        return ""
+    if isinstance(out, str):
+        return out
+    try:
+        hits = list(out)
+    except TypeError:
+        return ""
+    lines = [header]
+    limit = _prefetch_content_char_limit() or profile.content_char_limit
+    for r in hits[: profile.top_k]:
+        content = r.get("content", "") if isinstance(r, dict) else str(r)
+        if profile.drop_low_quality and _is_low_quality_prefetch(content):
+            continue
+        content = _format_prefetch_content(content, limit)
+        if isinstance(r, dict) and r.get("timestamp"):
+            lines.append(f"  [{str(r['timestamp'])[:16]}] {content}")
+        else:
+            lines.append(f"  {content}")
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +793,13 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if _skip_env is not None:
             _parsed = {c.strip() for c in _skip_env.split(",") if c.strip()}
             self._skip_contexts = _parsed if _parsed else set()
+        # Prefetch profile selection (env; default "general" = prior behavior).
+        self._prefetch_profile = (
+            os.environ.get("MNEMOSYNE_PREFETCH_PROFILE", "general").strip() or "general"
+        )
+        # Generic extra-source registry: name -> fn(query, *, session_id) -> hits|str.
+        # A profile opts a source in via its `sources`. "bank" is built in.
+        self._prefetch_sources: Dict[str, Callable[..., Any]] = {}
         # Profile memory isolation: when enabled, each Hermes profile gets its own
         # Mnemosyne bank (separate SQLite DB). Default OFF for backward compatibility.
         self._profile_isolation_enabled = False
@@ -1132,20 +1252,64 @@ class MnemosyneMemoryProvider(MemoryProvider):
             )
         return ""
 
+    def register_prefetch_source(self, name: str, fn: Callable[..., Any]) -> None:
+        """Register an extra prefetch source. ``fn(query, *, session_id)`` returns
+        either a pre-formatted block (str) or a list of hit dicts. A profile opts
+        the source in by listing ``name`` in its ``sources``. ``"bank"`` is the
+        built-in memory-bank source and cannot be overridden here."""
+        if name and name != "bank":
+            self._prefetch_sources[name] = fn
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Recall relevant context via Mnemosyne hybrid search with temporal weighting.
-        
-        Only includes memories above a relevance threshold to prevent context pollution
-        from low-quality matches. Scoped to the user's author_id when available."""
+        """Recall relevant context for injection, driven by the active profile.
+
+        The profile selects which sources to merge (default: just the memory
+        ``bank``), the recall knobs, and the filter/dedup toggles. The default
+        ``general`` profile reproduces the prior single-source behavior exactly."""
         if not self._beam or self._agent_context in self._skip_contexts:
             return ""
+        profile = _resolve_profile(self._prefetch_profile)
+        blocks: List[str] = []
+        for src in profile.sources:
+            try:
+                if src == "bank":
+                    block = self._prefetch_bank(query, session_id, profile)
+                else:
+                    fn = self._prefetch_sources.get(src)
+                    block = _coerce_source_output(
+                        fn(query, session_id=session_id), profile,
+                        header=f"## Context ({src})",
+                    ) if fn else ""
+            except Exception as e:
+                logger.debug("Mnemosyne prefetch source %r failed: %s", src, e)
+                block = ""
+            if block:
+                blocks.append(block)
+        if profile.dedup:
+            blocks = _dedup_blocks(blocks)
+        return "\n\n".join(b for b in blocks if b)
+
+    def _prefetch_bank(self, query: str, session_id: str, profile: "PrefetchProfile") -> str:
+        """The built-in memory-bank source: hybrid recall with temporal weighting,
+        relevance + low-quality filtering, scoped to author_id when available.
+        Parameterized by *profile*; with ``general`` this is the legacy behavior."""
         try:
             import os
             author_id = self._beam.author_id or os.environ.get("MNEMOSYNE_AUTHOR_ID")
+            overfetch = max(profile.top_k * 2, _PREFETCH_OVERFETCH)  # over-fetch; junk filtered below
             recall_kwargs: Dict[str, Any] = dict(
-                query=query, top_k=_PREFETCH_OVERFETCH,  # over-fetch; junk filtered below
-                temporal_weight=0.2, temporal_halflife=48,
+                query=query, top_k=overfetch,
+                temporal_weight=profile.temporal_weight,
+                temporal_halflife=profile.temporal_halflife,
             )
+            # Pass tuning weights only when the profile sets them, so the default
+            # profile preserves recall()'s own defaults exactly.
+            if profile.importance_weight is not None:
+                recall_kwargs["importance_weight"] = profile.importance_weight
+            if profile.vec_weight is not None:
+                recall_kwargs["vec_weight"] = profile.vec_weight
+            if profile.fts_weight is not None:
+                recall_kwargs["fts_weight"] = profile.fts_weight
             # Only pass author_id when explicitly non-empty.  Passing an empty
             # falsy author_id is harmless (no (1=1) bypass), but passing a real
             # non-empty one triggers the (1=1) clause in beam.recall() that
@@ -1161,20 +1325,19 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 return ""
             # Filter out low-relevance results to prevent context pollution
             # Only include memories with score above threshold or high importance
-            MIN_SCORE_THRESHOLD = 0.15
-            MIN_IMPORTANCE_THRESHOLD = 0.5
             filtered = [
                 r for r in results
-                if (r.get("score", 0) >= MIN_SCORE_THRESHOLD
-                    or r.get("importance", 0) >= MIN_IMPORTANCE_THRESHOLD)
-                and not _is_low_quality_prefetch(r.get("content", ""))
+                if (r.get("score", 0) >= profile.min_score
+                    or r.get("importance", 0) >= profile.min_importance)
+                and not (profile.drop_low_quality
+                         and _is_low_quality_prefetch(r.get("content", "")))
             ]
             # Cap back to the intended injection size after over-fetch+filter.
-            filtered = filtered[:_PREFETCH_TOP_K]
+            filtered = filtered[:profile.top_k]
             if not filtered:
                 return ""
             lines = ["## Mnemosyne Context"]
-            content_limit = _prefetch_content_char_limit()
+            content_limit = _prefetch_content_char_limit() or profile.content_char_limit
             for r in filtered:
                 content = _format_prefetch_content(
                     r.get("content", ""),

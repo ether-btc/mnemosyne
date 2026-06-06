@@ -720,6 +720,11 @@ class TestProviderContextSafety:
         spec = importlib.util.spec_from_file_location("mnemo_provider_test", provider_path)
         mod = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
+        # Register before exec so dataclasses defined under
+        # ``from __future__ import annotations`` can resolve their module
+        # namespace (dataclass field processing does sys.modules[cls.__module__]).
+        # monkeypatch auto-reverts the entry after the test.
+        monkeypatch.setitem(sys.modules, spec.name, mod)
         spec.loader.exec_module(mod)
 
         provider = mod.MnemosyneMemoryProvider()
