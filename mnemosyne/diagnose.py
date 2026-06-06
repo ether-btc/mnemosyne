@@ -120,7 +120,23 @@ def run_diagnostics() -> Dict:
 
     try:
         from mnemosyne.core.beam import _SQLITE_VEC_AVAILABLE
-        log("core", "sqlite_vec_available", "YES" if _SQLITE_VEC_AVAILABLE else "NO")
+        # _SQLITE_VEC_AVAILABLE only checks whether the pip package imports.
+        # It doesn't verify that the running sqlite3 module can actually load
+        # the extension (required for Python builds without
+        # --enable-loadable-sqlite-extensions). Do a runtime check here.
+        _vec_can_load = False
+        if _SQLITE_VEC_AVAILABLE:
+            try:
+                import sqlite3 as _sqlite3
+                _test_conn = _sqlite3.connect(":memory:")
+                _test_conn.enable_load_extension(True)
+                _vec_can_load = True
+                _test_conn.close()
+            except Exception:
+                _vec_can_load = False
+        log("core", "sqlite_vec_available", "YES" if _vec_can_load else "NO")
+        if _SQLITE_VEC_AVAILABLE and not _vec_can_load:
+            log("core", "sqlite_vec_warning", "Package imports but extension cannot load. Rebuild Python with --enable-loadable-sqlite-extensions.")
     except Exception as e:
         log("core", "sqlite_vec", "ERROR", str(e))
 

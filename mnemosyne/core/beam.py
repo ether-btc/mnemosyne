@@ -3237,7 +3237,13 @@ class BeamMemory:
             vec = _embeddings.embed([summary])
             if vec is not None:
                 if _vec_available(self.conn):
-                    _vec_insert(self.conn, rowid, np.asarray(vec[0]).tolist())
+                    try:
+                        _vec_insert(self.conn, rowid, np.asarray(vec[0]).tolist())
+                    except Exception as _vec_exc:
+                        logger.warning(
+                            "vec_episodes insert failed (rowid=%s): %s",
+                            rowid, _vec_exc,
+                        )
                 else:
                     # Fallback: store in memory_embeddings table for in-memory search
                     cursor.execute("""
