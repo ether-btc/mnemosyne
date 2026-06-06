@@ -26,6 +26,9 @@ classifiers = [
 [project.entry-points."hermes_agent.plugins"]
 mnemosyne = "mnemosyne_hermes:register"
 
+[project.entry-points."hermes_agent.memory_providers"]
+mnemosyne = "mnemosyne_hermes"
+
 [project.scripts]
 mnemosyne-hermes = "mnemosyne_hermes.install:main"
 

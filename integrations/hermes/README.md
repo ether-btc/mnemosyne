@@ -78,22 +78,49 @@ Returned context can include prior decisions, constraints, failure modes, projec
 
 ## Quickstart
 
-**Prerequisites:** Hermes Agent, Python 3.10+, no API keys needed.
+**Prerequisites:** Hermes Agent (pipx install), Python 3.10+, no API keys needed.
+
+### Install
 
 ```bash
-pip install mnemosyne-hermes
-hermes memory setup          # select "mnemosyne"
-
-# Or manually:
+pipx install mnemosyne-hermes
 hermes config set memory.provider mnemosyne
+hermes memory status
 ```
 
-Done. Hermes discovers the plugin and all 23 tools surface automatically.
+That's it. The entry point in `mnemosyne-hermes` registers with Hermes' memory
+provider discovery system (`hermes_agent.memory_providers`). No symlinks. No
+directory copying. No plugin.yaml gymnastics. The provider surfaces
+automatically on the next Hermes start.
 
 Verify:
 
 ```bash
 hermes memory status
+# Should show:
+#   Provider:  mnemosyne
+#   Plugin:    installed ✓
+```
+
+### How it works
+
+When you install via pipx, the package registers two entry points:
+
+- `hermes_agent.memory_providers` — discovered by Hermes' `discover_memory_providers()`
+  so `hermes memory status` sees it as an installed plugin
+- `hermes_agent.plugins` — discovered by Hermes' `PluginManager` for tool and
+  CLI registration
+
+Hermes checks pipx-installed packages alongside directory-based plugins. No
+extra setup steps needed.
+
+### Development install
+
+```bash
+git clone https://github.com/AxDSan/mnemosyne.git
+cd mnemosyne
+pip install -e .
+pipx install -e integrations/hermes   # replaces hook with editable path
 ```
 
 ## Configuration
