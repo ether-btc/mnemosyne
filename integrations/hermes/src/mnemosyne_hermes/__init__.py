@@ -553,8 +553,16 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 )
             else:
                 BeamMemory = _get_beam_class()
-                self._beam = BeamMemory(session_id=self._session_id)
-                logger.info("Mnemosyne initialized: session=%s", self._session_id)
+                db_path = (
+                    Path(self._hermes_home) / "mnemosyne" / "data" / "mnemosyne.db"
+                    if self._hermes_home
+                    else None
+                )
+                self._beam = BeamMemory(session_id=self._session_id, db_path=db_path)
+                logger.info(
+                    "Mnemosyne initialized: session=%s, db=%s",
+                    self._session_id, db_path or "default",
+                )
 
         except Exception as e:
             # C27: capture the exception so system_prompt_block() can render a
@@ -1547,6 +1555,9 @@ def register_memory_provider(ctx):
 
 def register(ctx):
     """Called by Hermes plugin loader to register CLI commands and tools."""
+    # Register the memory provider first so Hermes discovers it
+    register_memory_provider(ctx)
+
     from .cli import register_cli, mnemosyne_command
     ctx.register_cli_command(
         name="mnemosyne",

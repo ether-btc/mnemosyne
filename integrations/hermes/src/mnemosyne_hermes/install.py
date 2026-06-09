@@ -70,7 +70,30 @@ def install_plugin(
             f"mnemosyne_hermes package not found at {source}"
         )
 
+    base = Path(hermes_home_path).expanduser() if hermes_home_path else hermes_home()
     target = plugin_target_dir(hermes_home_path)
+
+    # Migrate from old hermes-mnemosyne directory (deploy script era)
+    old_plugin_dir = base / "plugins" / "hermes-mnemosyne"
+    if old_plugin_dir.is_symlink() or old_plugin_dir.exists():
+        if old_plugin_dir.is_symlink() or os.path.islink(str(old_plugin_dir)):
+            old_plugin_dir.unlink()
+        else:
+            shutil.rmtree(old_plugin_dir)
+        logger = print
+        logger(f"  Removed old plugin directory: {old_plugin_dir}")
+
+    # Also migrate config from old provider name
+    config_path = base / "config.yaml"
+    if config_path.is_file():
+        try:
+            config_text = config_path.read_text(encoding="utf-8")
+            if "provider: hermes-mnemosyne" in config_text:
+                new_text = config_text.replace("provider: hermes-mnemosyne", "provider: mnemosyne")
+                config_path.write_text(new_text, encoding="utf-8")
+                print("  Updated config: memory.provider hermes-mnemosyne -> mnemosyne")
+        except Exception:
+            pass
 
     if target.is_symlink() or target.exists():
         if not force:
