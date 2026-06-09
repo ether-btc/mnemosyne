@@ -3,10 +3,10 @@
 Covers all upgrade paths: v2.7 → latest, source installs, PyPI installs,
 and systems with Python's `externally-managed-environment` (PEP 668).
 
-If you're on **v3.1.0** and want the latest (v3.1.2), jump to
-[Upgrading to v3.1.2](#upgrading-to-v312-strict-fact-matching--entity-prefix-guard).
+If you're on **v3.4.0** and want the latest (v3.5.0), jump to
+[Upgrading to v3.5.0](#upgrading-to-v350-canonical-facts--holographic-importer).
 
-Already on v3.0.0? See [Upgrading to v3.1.0](#upgrading-to-v310-shared-surface--multilingual-memoria).
+Already on v3.0.0? See [Upgrading to v3.0.0](#upgrading-to-v300-memoria-architecture).
 
 ---
 
@@ -76,13 +76,43 @@ for most updates.
 
 ---
 
+## Upgrading to v3.5.0 — Canonical Facts + Holographic Importer
+
+Released 2026-06-10. Minor release with two new features, several fixes, and docs overhaul.
+
+### What changed
+
+- **CanonicalStore** — new `canonical_facts` table (lazy-created, no new dependency) giving long-running personas an identity layer where each `(owner_id, category, name)` slot holds exactly one current value. Two new tools: `mnemosyne_remember_canonical` and `mnemosyne_recall_canonical`. Total tool count: 23 → 25.
+- **Holographic Memory importer** — `hermes mnemosyne import --from holographic` now operational. Reads Hermes' SQLite-based holographic memory plugin. No API key needed.
+- **Embeddings now unconditional** — `fastembed` + `sqlite-vec` are hard dependencies (previously opt-in via `[embeddings]` extra). If your environment blocks `pip install --upgrade mnemosyne-memory`, check system packages.
+
+### User action required
+
+```bash
+pip install --upgrade mnemosyne-memory
+```
+
+That's it. The `canonical_facts` table is created lazily on first init — no migration script needed. The holographic importer works out of the box after upgrade.
+
+### Rollback to v3.4.0
+
+```bash
+pip install mnemosyne-memory==3.4.0
+```
+
+Note: the canonical_facts table persists across downgrades (it's just a SQLite table; old code ignores it). Re-`pip install --upgrade` when ready.
+
+---
+
+---
+
 ## Upgrading to v3.1.2 — Strict Fact Matching + Entity Prefix Guard
 
 Released 2026-05-28. Pure bug fix release — no schema changes, no new features.
 
 ### What changed
 
-Three fixes for [#198](https://github.com/AxDSan/mnemosyne/issues/198) — irrelevant context injection in recall:
+1. **Multi-token relevance scoring fixed.** Pre-v3.1.2...
 
 1. **Strict fact matching is now the default.** The old permissive path matched any query word against any stored fact, pulling in unrelated memories with a false +20% score boost. Set `MNEMOSYNE_LENIENT_FACT_MATCH=1` to opt back in.
 

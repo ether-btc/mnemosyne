@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
-## [3.5.0] — 2026-06-09
+## [3.5.0] — 2026-06-10
 
 ### Added
 
@@ -29,6 +29,48 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
     untouched and keeps its cross-profile role.
   - Fully additive and opt-in: the `canonical_facts` table is created lazily on
     first init; existing tables, tools, and recall output are unchanged.
+
+- **Hermes Holographic Memory importer** (`mnemosyne/core/importers/holographic.py`).
+  Reads directly from Hermes' SQLite-based holographic memory plugin
+  (`~/.hermes/memory_store.db`) — preserves content, category, tags, trust scores,
+  timestamps, and entity links. Trust scores map to Mnemosyne importance (both 0-1).
+  Entity extraction flag passes through to `mnemosyne.remember()` for annotation-store
+  entity recall. Category/tag/min_trust filtering for targeted imports.
+  Fully dry-run compatible. (`--from holographic`)
+
+### Fixed
+
+- **Holographic import CLI no longer demands an API key.** Holographic is a local
+  SQLite importer (no API key needed) but the generic provider path checked for
+  `--api-key` on every non-`hindsight` provider. Added `--db-path` and `--min-trust`
+  CLI flags and a holographic special case (same pattern as hindsight) that skips
+  the key gate. Import parity with docs at `api-reference.md` is now operational.
+
+- **Provider registration + db_path on non-isolated init** (fixes #254, #255).
+  `register()` now calls `register_memory_provider()` — the provider was silently
+  failing to load. `BeamMemory()` now derives `db_path` from `hermes_home` when
+  available instead of falling back to `Path.home()`, preventing silent data loss
+  across processes. Installer auto-cleans old `hermes-mnemosyne` plugin directory
+  and migrates config.
+
+- **Embeddings deps are now unconditional.** Vector search (fastembed + sqlite-vec)
+  is not optional — it's what makes recall work. The `[embeddings]` extra is now
+  a hard dependency, so fresh installs don't silently ship with FTS5-only keyword
+  search.
+
+- **Docs generator overhaul.** Rewritten to be merge-conflict-free, single-source
+  ground truth (24 MCP tools, 9 config keys), canonical copies always written to
+  `docs/api/`. Website sibling writes guarded with `isdir` + `isfile` checks.
+  Removed ghost `mnemosyne_end` tool (23 real tools). Plugin path corrected from
+  `~/.hermes/plugins/memory/mnemosyne/` to `~/.hermes/plugins/mnemosyne/`. Switched
+  from hardcoded `python3.11` path to dynamic resolution.
+
+### Tests
+
+- **Recall relevance before importance** (contributed by [WXBR](https://github.com/WXBR)).
+  Proves high-importance unrelated memories cannot surface for an unrelated query.
+  Locks in the invariant that importance may boost ordering only after a candidate
+  has passed relevance, instead of rescuing unrelated rows.
 
 ## [3.4.0] — 2026-06-01
 
