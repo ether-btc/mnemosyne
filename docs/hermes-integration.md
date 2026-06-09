@@ -35,7 +35,7 @@ Hermes discovers plugins by scanning a folder on disk, not by reading pip's meta
 ```bash
 mkdir -p ~/.hermes/plugins/memory/mnemosyne
 # Dynamically resolve the install path regardless of Python version
-ln -sfn "$("$HOME/.hermes/hermes-agent/venv/bin/python" -c 'import pathlib, mnemosyne_hermes; print(pathlib.Path(mnemosyne_hermes.__file__).resolve().parent)')"/* ~/.hermes/plugins/memory/mnemosyne/
+ln -sfn "$("$HOME/.hermes/hermes-agent/venv/bin/python" -c 'import pathlib, mnemosyne_hermes; print(pathlib.Path(mnemosyne_hermes.__file__).resolve().parent)')" ~/.hermes/plugins/memory/mnemosyne/
 ```
 
 If you installed in a custom venv, use that python path instead. Or check your site-packages manually: `python3 -c "import pathlib, mnemosyne_hermes; print(pathlib.Path(mnemosyne_hermes.__file__).resolve().parent)"`
