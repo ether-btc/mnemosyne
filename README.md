@@ -324,9 +324,14 @@ hermes config set memory.provider mnemosyne
 hermes memory setup
 ```
 
-Then disable Hermes' built-in file memory to avoid duplication:
-```bash
-hermes tools disable memory
+Then disable Hermes' built-in MEMORY.md/USER.md system so Mnemosyne is the sole memory provider. Do NOT use `hermes tools disable memory` — that also kills all 23 Mnemosyne-registered tools.
+
+Edit `~/.hermes/config.yaml`:
+
+```yaml
+memory:
+  enabled: false
+user_profile_enabled: false
 ```
 
 See [docs/hermes-integration.md](docs/hermes-integration.md) for the full setup guide.

@@ -33,12 +33,12 @@ pip install -e "integrations/hermes[dev]"
 Hermes discovers plugins by scanning a folder on disk, not by reading pip's metadata. Link the installed package into the plugins directory so Hermes can find it:
 
 ```bash
-mkdir -p ~/.hermes/plugins/memory/mnemosyne
-# Dynamically resolve the install path regardless of Python version
-ln -sfn "$("$HOME/.hermes/hermes-agent/venv/bin/python" -c 'import pathlib, mnemosyne_hermes; print(pathlib.Path(mnemosyne_hermes.__file__).resolve().parent)')" ~/.hermes/plugins/memory/mnemosyne/
+# Auto-detect the installed package path and symlink it
+mkdir -p ~/.hermes/plugins/mnemosyne
+ln -sfn "$(~/.hermes/hermes-agent/venv/bin/python -c 'import pathlib, mnemosyne_hermes; print(pathlib.Path(mnemosyne_hermes.__file__).resolve().parent)')"/* ~/.hermes/plugins/mnemosyne/
 ```
 
-If you installed in a custom venv, use that python path instead. Or check your site-packages manually: `python3 -c "import pathlib, mnemosyne_hermes; print(pathlib.Path(mnemosyne_hermes.__file__).resolve().parent)"`
+If you installed in a custom venv (e.g. `~/.hermes-venv`), replace `~/.hermes/hermes-agent/venv/bin/python` with the Python binary inside that venv.
 
 ### Step 3: Activate
 
@@ -49,11 +49,17 @@ hermes memory setup
 
 ### Step 4: Disable built-in memory
 
-Disable Hermes' built-in file memory to avoid duplication between two providers:
+Disable Hermes' built-in MEMORY.md/USER.md system so Mnemosyne is the sole memory provider. Do NOT use `hermes tools disable memory` — that also kills all 23 Mnemosyne-registered tools.
 
-```bash
-hermes tools disable memory
+Edit `~/.hermes/config.yaml`:
+
+```yaml
+memory:
+  enabled: false
+user_profile_enabled: false
 ```
+
+The first turns off the file-based MEMORY.md system. The second stops USER.md injection. Both are redundant once Mnemosyne is active.
 
 ### Step 5: Verify
 

@@ -42,10 +42,14 @@ It gives Hermes:
 - **Shared surface**: compact cross-agent metadata for multi-agent workflows.
 - **Zero cloud**: SQLite on your machine. No network calls. No API keys. No quota limits.
 
-When using Mnemosyne, disable Hermes' built-in file-based memory to avoid duplication:
+When using Mnemosyne, disable Hermes' built-in MEMORY.md/USER.md system to avoid duplication. Do NOT use `hermes tools disable memory` — that also kills all 23 Mnemosyne-registered tools (the memory toolset gates both built-in AND provider injection at `agent_init.py:1163-1172`).
 
-```bash
-hermes tools disable memory
+Edit `~/.hermes/config.yaml`:
+
+```yaml
+memory:
+  enabled: false
+user_profile_enabled: false
 ```
 
 Mnemosyne handles everything: capture, recall, consolidation, knowledge graph, multi-agent validation. The built-in MEMORY.md/USER.md system is redundant and just burns tokens. One provider. One memory layer.
