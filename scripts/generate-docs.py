@@ -159,17 +159,20 @@ def _inject_config_table(page_path, table_html):
         return
     with open(page_path, 'r') as f:
         content = f.read()
-    start_marker = "<!-- GENERATED_CONFIG_TABLE -->"
-    end_marker = "<!-- /GENERATED_CONFIG_TABLE -->"
+    start_marker = "{/* GENERATED_CONFIG_TABLE */}"
+    end_marker = "{/* /GENERATED_CONFIG_TABLE */}"
     new_block = start_marker + "\n" + table_html + "\n" + end_marker
-    
-    # Strip ALL existing GENERATED_CONFIG_TABLE blocks (handle duplicates)
-    while start_marker in content and end_marker in content:
-        start_idx = content.index(start_marker)
-        end_idx = content.index(end_marker, start_idx) + len(end_marker)
-        # Delete this block plus any trailing newline after it
-        content = content[:start_idx] + content[end_idx:].lstrip('\n')
-    
+
+    # Strip ALL existing GENERATED_CONFIG_TABLE blocks (handle duplicates, handle HTML and MDX comment markers)
+    for start_v, end_v in [
+        ("<!-- GENERATED_CONFIG_TABLE -->", "<!-- /GENERATED_CONFIG_TABLE -->"),
+        ("{/* GENERATED_CONFIG_TABLE */}", "{/* /GENERATED_CONFIG_TABLE */}"),
+    ]:
+        while start_v in content and end_v in content:
+            start_idx = content.index(start_v)
+            end_idx = content.index(end_v, start_idx) + len(end_v)
+            content = content[:start_idx] + content[end_idx:].lstrip('\n')
+
     # Insert a single clean block
     content = content.rstrip() + "\n\n" + new_block + "\n"
     with open(page_path, 'w') as f:
