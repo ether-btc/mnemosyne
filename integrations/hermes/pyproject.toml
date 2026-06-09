@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mnemosyne-hermes"
-version = "0.1.3"
+version = "0.1.4"
 description = "Mnemosyne memory provider for Hermes Agent — local-first, zero-cloud memory"
 readme = "README.md"
 license = "MIT"
@@ -22,6 +22,14 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+
+[project.optional-dependencies]
+embeddings = ["mnemosyne-memory[embeddings]>=3.1"]
+llm = ["mnemosyne-memory[llm]>=3.1"]
+mcp = ["mnemosyne-memory[mcp]>=3.1"]
+all = ["mnemosyne-memory[all]>=3.1"]
+test = ["pytest>=7.0"]
+dev = ["mnemosyne-hermes[test]", "build", "twine"]
 
 [project.entry-points."hermes_agent.plugins"]
 mnemosyne = "mnemosyne_hermes:register"
