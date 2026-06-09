@@ -651,6 +651,7 @@ Mnemosyne can import memories from supported external providers. All importers p
 | **Honcho** | `HonchoImporter` | API key | Peer identity as author_id |
 | **SuperMemory** | `SuperMemoryImporter` | API key | Container tags → channel_id |
 | **Hindsight** | `HindsightImporter` | JSON file or HTTP API | **Timestamps, fact_type, session IDs, metadata, veracity** |
+| **Holographic** | `HolographicImporter` | Local SQLite DB | **Trust scores → importance, entity linking, categories, tags, timestamps** |
 
 ### HindsightImporter
 
@@ -704,6 +705,44 @@ print(PROVIDERS.keys())
 
 # Generic import dispatcher
 result = import_from_provider("hindsight", mnemosyne, file_path="export.json")
+```
+
+### HolographicImporter
+
+Reads facts directly from Hermes Holographic Memory's SQLite store (`~/.hermes/memory_store.db`). Preserves content, categories, tags, trust scores (mapped to importance), timestamps, and entity links. HRR vectors are not imported — Mnemosyne uses its own embedding engine.
+
+```python
+from mnemosyne.core.importers import HolographicImporter
+
+# From default location
+importer = HolographicImporter()
+result = importer.run(mnemosyne)
+
+# Custom path with filters
+importer = HolographicImporter(
+    db_path="/path/to/memory_store.db",
+    min_trust=0.3,
+    category_filter="preferences",
+)
+result = importer.run(mnemosyne, dry_run=True)
+
+# Convenience wrapper
+from mnemosyne.core.importers import import_from_holographic
+result = import_from_holographic(mnemosyne, db_path="~/.hermes/memory_store.db")
+```
+
+**Parameters:**
+- `db_path` — Path to Holographic memory_store.db (default: `~/.hermes/memory_store.db`)
+- `min_trust` — Minimum trust score threshold (0.0–1.0)
+- `category_filter` — Only import facts from a specific category
+- `extract_entities` — Extract entity annotations for entity-aware recall (default: True)
+
+**CLI:**
+```bash
+hermes mnemosyne import --from holographic
+hermes mnemosyne import --from holographic --db-path /path/to/memory_store.db
+hermes mnemosyne import --from holographic --min-trust 0.5
+hermes mnemosyne import --from holographic --dry-run
 ```
 
 ---
