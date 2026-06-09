@@ -16,11 +16,13 @@ import os
 import sys
 
 # ---------------------------------------------------------------
-# Tool schema definitions (manual — reviewed against v3.4.0 code)
+# Tool schema definitions (23 real tools — verified against
+# hermes_memory_provider/__init__.py::ALL_TOOL_SCHEMAS and
+# mnemosyne/mcp_tools.py::_TOOL_HANDLERS, v3.4.0)
 # ---------------------------------------------------------------
 ALL_TOOL_SCHEMAS = [
-    {"name": "mnemosyne_remember", "description": "Store a durable memory", "params": {"content": "string", "importance": "float=0.5", "source": "string", "scope": "string=session", "valid_until": "string", "extract_entities": "bool", "extract": "bool", "metadata": "dict", "veracity": "string"}},
-    {"name": "mnemosyne_recall", "description": "Search memories by vector+FTS hybrid ranking", "params": {"query": "string", "limit": "int=5", "temporal_weight": "float=0.0", "query_time": "string", "temporal_halflife": "float=24", "vec_weight": "float", "fts_weight": "float", "importance_weight": "float"}},
+    {"name": "mnemosyne_remember", "description": "Store a durable memory", "params": {"content": "string", "importance": "float=0.5", "source": "string=user", "scope": "string=session", "valid_until": "string=", "extract_entities": "bool=false", "extract": "bool=false", "metadata": "dict={}", "veracity": "string=unknown"}},
+    {"name": "mnemosyne_recall", "description": "Search memories by vector+FTS hybrid ranking", "params": {"query": "string", "limit": "int=5", "temporal_weight": "float=0.0", "query_time": "string=", "temporal_halflife": "float=24", "vec_weight": "float=null", "fts_weight": "float=null", "importance_weight": "float=null"}},
     {"name": "mnemosyne_forget", "description": "Permanently delete a memory by ID", "params": {"memory_id": "string"}},
     {"name": "mnemosyne_get", "description": "Retrieve a single memory by ID (no search)", "params": {"memory_id": "string"}},
     {"name": "mnemosyne_update", "description": "Update content or importance of an existing memory", "params": {"memory_id": "string", "content": "string=", "importance": "float="}},
@@ -42,24 +44,37 @@ ALL_TOOL_SCHEMAS = [
     {"name": "mnemosyne_scratchpad_write", "description": "Write a temporary note to the scratchpad", "params": {"content": "string"}},
     {"name": "mnemosyne_scratchpad_read", "description": "Read the scratchpad entries", "params": {}},
     {"name": "mnemosyne_scratchpad_clear", "description": "Clear all scratchpad entries", "params": {}},
-    {"name": "mnemosyne_end", "description": "Graceful shutdown: persist, flush caches, close connections", "params": {}},
 ]
 
-# NOTE: 24 MCP tools exactly, covering every memory surface (BEAM, surface, scratchpad, graph)
+# NOTE: 23 MCP tools with real handler implementations in mcp_tools.py.
+# mnemosyne_end was removed — it had no handler, no schema in the provider,
+# and would raise ValueError("Unknown tool") if called.
 
 # ---------------------------------------------------------------
-# Config schema (env vars for mnemosyne)
+# Config schema (env vars — derived from actual os.environ.get /
+# _env_truthy / _env_disabled / _env_float calls in beam.py,
+# embeddings.py, mcp_tools.py, and hermes_memory_provider/__init__.py)
 # ---------------------------------------------------------------
 CONFIG_ENTRIES = [
-    {"key": "MNEMOSYNE_DB_PATH", "env": "MNEMOSYNE_DB_PATH", "default": "~/.mnemosyne/mnemosyne.db", "desc": "Path to the SQLite database"},
-    {"key": "MNEMOSYNE_EMBEDDING_MODEL", "env": "MNEMOSYNE_EMBEDDING_MODEL", "default": "all-MiniLM-L6-v2", "desc": "SentenceTransformer model for vector embeddings"},
-    {"key": "MNEMOSYNE_EMBEDDING_DEVICE", "env": "MNEMOSYNE_EMBEDDING_DEVICE", "default": "cpu", "desc": "Device for embeddings: cpu, cuda, mps"},
-    {"key": "MNEMOSYNE_BEAM_ENABLED", "env": "MNEMOSYNE_BEAM_ENABLED", "default": "true", "desc": "Enable BEAM (Budget Elastic Adaptive Memory) tiering"},
-    {"key": "MNEMOSYNE_BEAM_CPU_THRESHOLD", "env": "MNEMOSYNE_BEAM_CPU_THRESHOLD", "default": "5000", "desc": "Max working memories before cold tier promotion"},
-    {"key": "MNEMOSYNE_BEAM_COLD_THRESHOLD", "env": "MNEMOSYNE_BEAM_COLD_THRESHOLD", "default": "10000", "desc": "Max cold memories before frozen tier promotion"},
+    {"key": "MNEMOSYNE_DATA_DIR", "env": "MNEMOSYNE_DATA_DIR", "default": "~/.hermes/mnemosyne/data", "desc": "Directory for database, logs, models, and stats"},
+    {"key": "MNEMOSYNE_EMBEDDING_MODEL", "env": "MNEMOSYNE_EMBEDDING_MODEL", "default": "BAAI/bge-small-en-v1.5", "desc": "fastembed model for vector embeddings"},
+    {"key": "MNEMOSYNE_EMBEDDING_DIM", "env": "MNEMOSYNE_EMBEDDING_DIM", "default": "384", "desc": "Override embedding vector dimension"},
+    {"key": "MNEMOSYNE_EMBEDDING_API_KEY", "env": "MNEMOSYNE_EMBEDDING_API_KEY", "default": "", "desc": "API key for cloud embedding provider"},
+    {"key": "MNEMOSYNE_EMBEDDING_API_URL", "env": "MNEMOSYNE_EMBEDDING_API_URL", "default": "", "desc": "API endpoint for cloud embeddings"},
+    {"key": "MNEMOSYNE_NO_EMBEDDINGS", "env": "MNEMOSYNE_NO_EMBEDDINGS", "default": "false", "desc": "Disable dense vector retrieval entirely"},
+    {"key": "MNEMOSYNE_EMBEDDINGS_VIA_API", "env": "MNEMOSYNE_EMBEDDINGS_VIA_API", "default": "false", "desc": "Force cloud API mode for embeddings"},
+    {"key": "MNEMOSYNE_WM_MAX_ITEMS", "env": "MNEMOSYNE_WM_MAX_ITEMS", "default": "10000", "desc": "Maximum items in working memory before eviction"},
+    {"key": "MNEMOSYNE_WM_TTL_HOURS", "env": "MNEMOSYNE_WM_TTL_HOURS", "default": "24", "desc": "Hours before working memory entries expire"},
+    {"key": "MNEMOSYNE_EP_LIMIT", "env": "MNEMOSYNE_EP_LIMIT", "default": "10", "desc": "Max episodic memories returned per recall"},
+    {"key": "MNEMOSYNE_SLEEP_BATCH", "env": "MNEMOSYNE_SLEEP_BATCH", "default": "50", "desc": "Batch size for sleep consolidation"},
+    {"key": "MNEMOSYNE_VEC_TYPE", "env": "MNEMOSYNE_VEC_TYPE", "default": "float32", "desc": "Vector storage format (float32, float16, binary)"},
+    {"key": "MNEMOSYNE_VEC_WEIGHT", "env": "MNEMOSYNE_VEC_WEIGHT", "default": "0.5", "desc": "Vector similarity weight in hybrid ranking"},
+    {"key": "MNEMOSYNE_FTS_WEIGHT", "env": "MNEMOSYNE_FTS_WEIGHT", "default": "0.3", "desc": "Full-text search weight in hybrid ranking"},
+    {"key": "MNEMOSYNE_IMPORTANCE_WEIGHT", "env": "MNEMOSYNE_IMPORTANCE_WEIGHT", "default": "0.2", "desc": "Importance score weight in hybrid ranking"},
     {"key": "MNEMOSYNE_MCP_TOKEN", "env": "MNEMOSYNE_MCP_TOKEN", "default": "", "desc": "Bearer token for MCP server auth (required for remote deployment)"},
-    {"key": "MNEMOSYNE_MCP_HOST", "env": "MNEMOSYNE_MCP_HOST", "default": "0.0.0.0", "desc": "MCP server bind address"},
-    {"key": "MNEMOSYNE_MCP_PORT", "env": "MNEMOSYNE_MCP_PORT", "default": "4321", "desc": "MCP server port"},
+    {"key": "MNEMOSYNE_AUTO_SLEEP_ENABLED", "env": "MNEMOSYNE_AUTO_SLEEP_ENABLED", "default": "true", "desc": "Enable automatic sleep consolidation (Hermes provider)"},
+    {"key": "MNEMOSYNE_SYNC_ROLES", "env": "MNEMOSYNE_SYNC_ROLES", "default": "user,assistant", "desc": "Conversation roles to sync into memory"},
+    {"key": "MNEMOSYNE_SKIP_CONTEXTS", "env": "MNEMOSYNE_SKIP_CONTEXTS", "default": "", "desc": "Comma-separated context names to skip"},
 ]
 
 # ---------------------------------------------------------------
@@ -148,15 +163,15 @@ def _inject_config_table(page_path, table_html):
     end_marker = "<!-- /GENERATED_CONFIG_TABLE -->"
     new_block = start_marker + "\n" + table_html + "\n" + end_marker
     
-    if start_marker in content and end_marker in content:
-        # Replace the entire block between markers
+    # Strip ALL existing GENERATED_CONFIG_TABLE blocks (handle duplicates)
+    while start_marker in content and end_marker in content:
         start_idx = content.index(start_marker)
-        end_idx = content.index(end_marker) + len(end_marker)
-        content = content[:start_idx] + new_block + content[end_idx:]
-    elif start_marker in content:
-        content = content.replace(start_marker, new_block)
-    else:
-        content = content + "\n" + new_block
+        end_idx = content.index(end_marker, start_idx) + len(end_marker)
+        # Delete this block plus any trailing newline after it
+        content = content[:start_idx] + content[end_idx:].lstrip('\n')
+    
+    # Insert a single clean block
+    content = content.rstrip() + "\n\n" + new_block + "\n"
     with open(page_path, 'w') as f:
         f.write(content)
 
