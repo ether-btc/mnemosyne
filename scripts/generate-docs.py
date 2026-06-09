@@ -144,12 +144,19 @@ def _inject_config_table(page_path, table_html):
         return
     with open(page_path, 'r') as f:
         content = f.read()
-    marker = "<!-- GENERATED_CONFIG_TABLE -->"
-    new_table = marker + "\n" + table_html + "\n<!-- /GENERATED_CONFIG_TABLE -->"
-    if marker in content:
-        content = content.replace(marker, new_table)
+    start_marker = "<!-- GENERATED_CONFIG_TABLE -->"
+    end_marker = "<!-- /GENERATED_CONFIG_TABLE -->"
+    new_block = start_marker + "\n" + table_html + "\n" + end_marker
+    
+    if start_marker in content and end_marker in content:
+        # Replace the entire block between markers
+        start_idx = content.index(start_marker)
+        end_idx = content.index(end_marker) + len(end_marker)
+        content = content[:start_idx] + new_block + content[end_idx:]
+    elif start_marker in content:
+        content = content.replace(start_marker, new_block)
     else:
-        content = content + "\n" + new_table
+        content = content + "\n" + new_block
     with open(page_path, 'w') as f:
         f.write(content)
 

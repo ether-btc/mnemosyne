@@ -59,6 +59,7 @@ def main():
         r = subprocess.run(
             ["git", "diff", "HEAD", "--exit-code", "--", abs_path],
             capture_output=True, text=True,
+            cwd=docs,
         )
         if r.returncode != 0:
             print("  DRIFT:", rel_path)
@@ -72,6 +73,7 @@ def main():
         r = subprocess.run(
             ["git", "diff", "HEAD", "--stat", "--", "src/"],
             capture_output=True, text=True,
+            cwd=docs,
         )
         if r.stdout.strip():
             print(r.stdout)
