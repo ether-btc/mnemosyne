@@ -115,6 +115,28 @@ class TestRecallPrecisionRegressions(unittest.TestCase):
         results = self.beam.recall("customer invoices quantum", top_k=5)
         self.assertEqual([], results)
 
+    def test_high_importance_unrelated_memory_cannot_rescue_itself(self):
+        """Importance may boost relevant candidates, but must not create relevance."""
+        self.beam.remember(
+            "Orchid care dashboard access lives in the greenhouse portal and should be checked before watering schedules.",
+            source="imported_fixture",
+            importance=0.99,
+            scope="global",
+            veracity="imported",
+        )
+        self.beam.remember(
+            "Database adapter timeout is configured to 30 seconds for read replicas.",
+            source="imported_fixture",
+            importance=0.1,
+            scope="global",
+            veracity="imported",
+        )
+
+        results = self.beam.recall("database adapter timeout", top_k=5)
+        joined = "\n".join(r["content"] for r in results).lower()
+        self.assertIn("database adapter timeout", joined)
+        self.assertNotIn("orchid care dashboard", joined)
+
     def test_memoria_date_or_sequence_fact_does_not_force_top_slot(self):
         results = self.beam.recall("Where is the Orion runner jar and how should it bind?", top_k=5)
         self.assertTrue(results)
