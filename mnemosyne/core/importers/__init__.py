@@ -11,6 +11,7 @@ Supported providers:
     honcho      — Honcho entity memory
     supermemory — SuperMemory cloud API
     hindsight   — Hindsight/Hermes memory provider
+    holographic — Hermes Holographic Memory (SQLite + FTS5 + HRR)
 
 CLI usage:
     hermes mnemosyne import --from mem0 --api-key sk-xxx
@@ -30,6 +31,7 @@ from .cognee import CogneeImporter
 from .honcho import HonchoImporter
 from .supermemory import SuperMemoryImporter
 from .hindsight import HindsightImporter, import_from_hindsight
+from .holographic import HolographicImporter, import_from_holographic
 from .agentic import (
     AgenticImporter,
     generate_migration_script,
@@ -102,6 +104,15 @@ PROVIDERS = {
         "env_key": None,
         "pypi_package": None,
         "description": "Hermes memory provider. Imports consolidated memories into episodic storage while preserving timestamps and metadata.",
+    },
+    "holographic": {
+        "name": "Hermes Holographic Memory",
+        "class": HolographicImporter,
+        "module": "holographic",
+        "docs": "https://github.com/NousResearch/hermes-agent/tree/main/plugins/memory/holographic",
+        "env_key": None,
+        "pypi_package": None,
+        "description": "Hermes SQLite memory plugin with FTS5 + HRR vectors, entity linking, trust scoring, and category banks. Imports from ~/.hermes/memory_store.db.",
     },
 }
 
