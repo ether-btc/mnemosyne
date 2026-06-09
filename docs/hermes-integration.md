@@ -47,12 +47,22 @@ hermes config set memory.provider mnemosyne
 hermes memory setup
 ```
 
-### Step 4: Verify
+### Step 4: Disable built-in memory
+
+Disable Hermes' built-in file memory to avoid duplication between two providers:
+
+```bash
+hermes tools disable memory
+```
+
+### Step 5: Verify
 
 ```bash
 hermes memory status       # Should show "Provider: mnemosyne"
 hermes mnemosyne stats     # Working + episodic memory counts
 ```
+
+> If `hermes mnemosyne stats` gives "invalid choice: 'mnemosyne'", the plugin CLI registration didn't load. Use the fallback `hermes hermes-mnemosyne stats` instead, or re-run step 2 to relink the plugin.
 
 ## How It Works
 
