@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-and-release:
-    if: startsWith(github.ref_name, 'v') && !startsWith(github.ref_name, 'hermes-v')
+    if: startsWith(github.ref_name, 'v') && !startsWith(github.ref_name, 'v0.')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -38,9 +38,11 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
 
   build-and-release-hermes:
-    if: startsWith(github.ref_name, 'hermes-v')
+    if: startsWith(github.ref_name, 'v0.')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -70,3 +72,5 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
