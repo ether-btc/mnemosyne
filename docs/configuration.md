@@ -27,8 +27,12 @@ This path defaults to `~/.hermes/` because Hermes persists that directory across
 
 | Variable | Default | Description |
 |---|---|---|
-| `MNEMOSYNE_WM_MAX_ITEMS` | `10000` | Maximum items in working memory |
-| `MNEMOSYNE_WM_TTL_HOURS` | `24` | Time-to-live for working memory entries (hours) |
+| `MNEMOSYNE_WM_MAX_ITEMS` | `10000` | Maximum **unconsolidated** items in working memory before eviction |
+| `MNEMOSYNE_WM_TTL_HOURS` | `24` | TTL in hours for **unconsolidated** working memory entries |
+
+Consolidated rows (those stamped `consolidated_at` by `sleep()`) are exempt from both limits. They remain queryable until explicitly removed via `forget()`. This is by design — the E3 additive memory contract guarantees that consolidated content persists.
+
+If you see `working.total: 673` and wonder why it's above `WM_MAX_ITEMS`, run `mnemosyne_stats` to check the consolidated vs unconsolidated breakdown (available in v3.5.0+).
 
 ### Episodic Memory
 

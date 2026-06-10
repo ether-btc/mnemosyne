@@ -77,3 +77,6 @@ DEVOPS_PLAN_*
 results/
 [bank]/
 .codegraph/
+
+# Agent logs
+growth_agent_log_*.json
