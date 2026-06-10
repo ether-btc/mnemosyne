@@ -3032,12 +3032,25 @@ class BeamMemory:
             where_clauses.append("channel_id = ?")
             params.append(channel_id)
         where_str = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        
+
         cursor.execute(f"SELECT COUNT(*) FROM working_memory{where_str}", params)
         total = cursor.fetchone()[0]
+
+        consolidated_where = (f"{where_str} AND consolidated_at IS NOT NULL" if where_str
+                              else " WHERE consolidated_at IS NOT NULL")
+        cursor.execute(f"SELECT COUNT(*) FROM working_memory{consolidated_where}", params)
+        consolidated = cursor.fetchone()[0]
+
+        unconsolidated = total - consolidated
+
         cursor.execute(f"SELECT timestamp FROM working_memory{where_str} ORDER BY timestamp DESC LIMIT 1", params)
         last = cursor.fetchone()
-        return {"total": total, "last": last[0] if last else None}
+        return {
+            "total": total,
+            "consolidated": consolidated,
+            "unconsolidated": unconsolidated,
+            "last": last[0] if last else None,
+        }
 
     # DEPRECATED -- kept for backward compatibility with hermes_memory_provider/cli.py
     def get_global_working_stats(self) -> Dict:
