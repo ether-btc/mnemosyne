@@ -65,6 +65,13 @@ def mnemosyne_command(args):
         print("Usage: hermes mnemosyne {stats|sleep|version|inspect|clear|export|import}")
         return 1
 
+    # Register Hermes host LLM backend so sleep uses Hermes' provider
+    try:
+        from .hermes_llm_adapter import register_hermes_host_llm
+        register_hermes_host_llm()
+    except Exception:
+        pass
+
     try:
         from mnemosyne.core.beam import BeamMemory
         beam = BeamMemory(session_id="hermes_default")
