@@ -38,6 +38,13 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
   entity recall. Category/tag/min_trust filtering for targeted imports.
   Fully dry-run compatible. (`--from holographic`)
 
+- **API embedding fallback chain.** `embed()` and `embed_query()` now fall through
+  to local fastembed when the API embedding call fails (network outage, rate limit,
+  timeout). The fallback model is configurable via `MNEMOSYNE_EMBEDDING_FALLBACK_MODEL`
+  (default: `BAAI/bge-small-en-v1.5`). `available()` now accounts for fallback
+  capability, so recall doesn't skip vector search just because the API is down.
+  (#269)
+
 ### Fixed
 
 - **Fact recall no longer treats one plain shared word as relevance for broad
@@ -62,6 +69,21 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
   is not optional — it's what makes recall work. The `[embeddings]` extra is now
   a hard dependency, so fresh installs don't silently ship with FTS5-only keyword
   search.
+
+- **Hermes host LLM registration in CLI path.** Both copies of `cli.py` now call
+  `register_hermes_host_llm()` before creating `BeamMemory`. Previously the
+  registration only happened inside `MnemosyneMemoryProvider.initialize()` which the
+  CLI handler never hits, so `MNEMOSYNE_HOST_LLM_ENABLED=true` was silently ignored
+  when running `hermes mnemosyne sleep` from the terminal.
+
+- **Per-entity identity injection in prefetch.** The provider now includes per-contact
+  identity memories in every prefetch regardless of recall query, ensuring the agent
+  always has the user's stable self-descriptors without requiring an explicit identity
+  search.
+
+- **Entity performance: skip Levenshtein when length ratio rules out a match.**
+  The prefix-guard branch now bails out early when the token length ratio exceeds a
+  threshold, avoiding expensive string edits on obviously non-matching candidates.
 
 - **Docs generator overhaul.** Rewritten to be merge-conflict-free, single-source
   ground truth (24 MCP tools, 9 config keys), canonical copies always written to

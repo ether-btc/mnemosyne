@@ -76,15 +76,19 @@ for most updates.
 
 ---
 
-## Upgrading to v3.5.0 — Canonical Facts + Holographic Importer
+## Upgrading to v3.5.0 — Canonical Facts + API Embedding Fallback
 
-Released 2026-06-10. Minor release with two new features, several fixes, and docs overhaul.
+Released 2026-06-10. Minor release with canonical facts, holographic importer,
+API embedding fallback chain, host LLM registration in CLI, and several fixes.
 
 ### What changed
 
 - **CanonicalStore** — new `canonical_facts` table (lazy-created, no new dependency) giving long-running personas an identity layer where each `(owner_id, category, name)` slot holds exactly one current value. Two new tools: `mnemosyne_remember_canonical` and `mnemosyne_recall_canonical`. Total tool count: 23 → 25.
 - **Holographic Memory importer** — `hermes mnemosyne import --from holographic` now operational. Reads Hermes' SQLite-based holographic memory plugin. No API key needed.
+- **API embedding fallback** — `embed()` now falls through to local fastembed when the API call fails. Set `MNEMOSYNE_EMBEDDING_FALLBACK_MODEL` to choose your fallback (default: bge-small-en-v1.5). No configuration needed for the default.
 - **Embeddings now unconditional** — `fastembed` + `sqlite-vec` are hard dependencies (previously opt-in via `[embeddings]` extra). If your environment blocks `pip install --upgrade mnemosyne-memory`, check system packages.
+- **Hermes host LLM in CLI** — `hermes mnemosyne sleep` now properly respects `MNEMOSYNE_HOST_LLM_ENABLED=true`.
+- **Per-entity identity in prefetch** — the agent always gets your stable self-descriptors without explicit identity search.
 
 ### User action required
 
