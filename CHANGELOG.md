@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
-## [3.5.0] — 2026-06-10
+## [3.6.0] — 2026-06-10
 
 ### Added
 
@@ -872,7 +872,6 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 - **Hermes plugin registration** — basic tool integration
 - **AAAK compression** — early context compression for token limits
 
-[2.4]: https://github.com/AxDSan/mnemosyne/releases/tag/v2.4
-[2.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v2.0
-[1.13]: https://github.com/AxDSan/mnemosyne/releases/tag/v1.13
-[1.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v1
+[3.6.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.6.0
+[3.5.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.5.0
+[3.4.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.4.0

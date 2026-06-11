@@ -76,7 +76,7 @@ for most updates.
 
 ---
 
-## Upgrading to v3.5.0 — Canonical Facts + API Embedding Fallback
+## Upgrading to v3.6.0 — Canonical Facts + API Embedding Fallback
 
 Released 2026-06-10. Minor release with canonical facts, holographic importer,
 API embedding fallback chain, host LLM registration in CLI, and several fixes.
