@@ -141,29 +141,61 @@ class TripleStore:
     
     def add(self, subject: str, predicate: str, object: str,
             valid_from: str = None, source: str = "inferred",
-            confidence: float = 1.0) -> int:
+            confidence: float = 1.0, valid_until: str = None,
+            supersede: bool = True) -> int:
         """
-        Add a temporal triple. Automatically closes previous matching triples.
+        Add a temporal triple.
+
+        supersede=True (default): close any open triple sharing
+        (subject, predicate) before inserting — single-valued semantics
+        (the historical behavior).
+        supersede=False: insert without closing priors, so a subject can hold
+        multiple simultaneous values for one predicate (multi-valued facts,
+        e.g. ('user','speaks','English') + ('user','speaks','Spanish')).
+        valid_until: optional explicit expiry date (ISO YYYY-MM-DD) for the row.
         """
         valid_from = valid_from or datetime.now().isoformat()[:10]
-        
-        # Invalidate previous triples for same (subject, predicate)
+
         cursor = self.conn.cursor()
+        # supersede flag gates the auto-close;
+        # multi-valued predicates pass supersede=False to keep prior values open.
+        if supersede:
+            cursor.execute("""
+                UPDATE triples
+                SET valid_until = ?
+                WHERE subject = ? AND predicate = ? AND valid_until IS NULL
+            """, (valid_from, subject, predicate))
+
+        # Insert new triple (now carries optional explicit valid_until)
         cursor.execute("""
-            UPDATE triples
-            SET valid_until = ?
-            WHERE subject = ? AND predicate = ? AND valid_until IS NULL
-        """, (valid_from, subject, predicate))
-        
-        # Insert new triple
-        cursor.execute("""
-            INSERT INTO triples (subject, predicate, object, valid_from, source, confidence)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (subject, predicate, object, valid_from, source, confidence))
-        
+            INSERT INTO triples (subject, predicate, object, valid_from, valid_until, source, confidence)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (subject, predicate, object, valid_from, valid_until, source, confidence))
+
         self.conn.commit()
         return cursor.lastrowid
-    
+
+    def end(self, subject: str, predicate: str, object: str = None,
+            valid_until: str = None) -> int:
+        """
+        Expire open triples WITHOUT replacing
+        them. Closes all open triples for (subject, predicate), or only the one
+        matching `object` when supplied. Returns the number of rows closed.
+        """
+        valid_until = valid_until or datetime.now().isoformat()[:10]
+        conditions = ["subject = ?", "predicate = ?", "valid_until IS NULL"]
+        params = [subject, predicate]
+        if object is not None:
+            conditions.append("object = ?")
+            params.append(object)
+        cursor = self.conn.cursor()
+        cursor.execute(
+            f"UPDATE triples SET valid_until = ? WHERE {' AND '.join(conditions)}",
+            [valid_until, *params],
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
     def query(self, subject: str = None, predicate: str = None,
               object: str = None, as_of: str = None) -> List[Dict]:
         """
@@ -176,7 +208,7 @@ class TripleStore:
         params = []
         
         if subject:
-            conditions.append("subject = ?")
+            conditions.append("subject = ? COLLATE NOCASE")  # case-insensitive subject
             params.append(subject)
         if predicate:
             conditions.append("predicate = ?")
@@ -475,14 +507,27 @@ class TripleStore:
 
 def add_triple(subject: str, predicate: str, object: str,
                valid_from: str = None, source: str = "inferred",
-               confidence: float = 1.0, db_path: Path = None) -> int:
+               confidence: float = 1.0, db_path: Path = None,
+               valid_until: str = None, supersede: bool = True) -> int:
     """
     Add a temporal triple without instantiating TripleStore manually.
     Optional db_path aligns with BEAM memory database when used from Hermes.
+    valid_until/supersede passthrough (see TripleStore.add).
     """
     store = TripleStore(db_path=db_path)
     return store.add(subject, predicate, object,
-                     valid_from=valid_from, source=source, confidence=confidence)
+                     valid_from=valid_from, source=source, confidence=confidence,
+                     valid_until=valid_until, supersede=supersede)
+
+
+def end_triple(subject: str, predicate: str, object: str = None,
+               valid_until: str = None, db_path: Path = None) -> int:
+    """
+    Expire open triples without replacing them (see
+    TripleStore.end). Returns the number of rows closed.
+    """
+    store = TripleStore(db_path=db_path)
+    return store.end(subject, predicate, object=object, valid_until=valid_until)
 
 
 def query_triples(subject: str = None, predicate: str = None,
