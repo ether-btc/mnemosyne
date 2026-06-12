@@ -16,9 +16,9 @@ import os
 import sys
 
 # ---------------------------------------------------------------
-# Tool schema definitions (23 real tools — verified against
+# Tool schema definitions (25 real tools — verified against
 # hermes_memory_provider/__init__.py::ALL_TOOL_SCHEMAS and
-# mnemosyne/mcp_tools.py::_TOOL_HANDLERS, v3.4.0)
+# mnemosyne/mcp_tools.py::_TOOL_HANDLERS, v3.6.0)
 # ---------------------------------------------------------------
 ALL_TOOL_SCHEMAS = [
     {"name": "mnemosyne_remember", "description": "Store a durable memory", "params": {"content": "string", "importance": "float=0.5", "source": "string=user", "scope": "string=session", "valid_until": "string=", "extract_entities": "bool=false", "extract": "bool=false", "metadata": "dict={}", "veracity": "string=unknown"}},
@@ -44,37 +44,41 @@ ALL_TOOL_SCHEMAS = [
     {"name": "mnemosyne_scratchpad_write", "description": "Write a temporary note to the scratchpad", "params": {"content": "string"}},
     {"name": "mnemosyne_scratchpad_read", "description": "Read the scratchpad entries", "params": {}},
     {"name": "mnemosyne_scratchpad_clear", "description": "Clear all scratchpad entries", "params": {}},
+    {"name": "mnemosyne_remember_canonical", "description": "Store an owner-scoped canonical fact (single source of truth)", "params": {"content": "string", "importance": "float=0.5", "veracity": "string=unknown", "source": "string=user", "valid_until": "string="}},
+    {"name": "mnemosyne_recall_canonical", "description": "Recall canonical facts by slot, category, or substring", "params": {"slot": "string=", "category": "string=", "substring": "string=", "limit": "int=5", "include_history": "bool=false"}},
 ]
 
-# NOTE: 23 MCP tools with real handler implementations in mcp_tools.py.
+# NOTE: 25 MCP tools with real handler implementations in mcp_tools.py.
 # mnemosyne_end was removed — it had no handler, no schema in the provider,
 # and would raise ValueError("Unknown tool") if called.
+# mnemosyne_triple_end exists in Hermes provider schemas but has no MCP handler;
+# it is NOT included here since it would fail at MCP runtime.
 
 # ---------------------------------------------------------------
-# Config schema (env vars — derived from actual os.environ.get /
-# _env_truthy / _env_disabled / _env_float calls in beam.py,
-# embeddings.py, mcp_tools.py, and hermes_memory_provider/__init__.py)
+# Config schema (env vars — verified against actual os.environ.get
+# calls in beam.py, the hermes_memory_provider, and integrations, v3.6.0)
 # ---------------------------------------------------------------
 CONFIG_ENTRIES = [
     {"key": "MNEMOSYNE_DATA_DIR", "env": "MNEMOSYNE_DATA_DIR", "default": "~/.hermes/mnemosyne/data", "desc": "Directory for database, logs, models, and stats"},
     {"key": "MNEMOSYNE_EMBEDDING_MODEL", "env": "MNEMOSYNE_EMBEDDING_MODEL", "default": "BAAI/bge-small-en-v1.5", "desc": "fastembed model for vector embeddings"},
     {"key": "MNEMOSYNE_EMBEDDING_DIM", "env": "MNEMOSYNE_EMBEDDING_DIM", "default": "384", "desc": "Override embedding vector dimension"},
     {"key": "MNEMOSYNE_EMBEDDING_API_KEY", "env": "MNEMOSYNE_EMBEDDING_API_KEY", "default": "", "desc": "API key for cloud embedding provider"},
-    {"key": "MNEMOSYNE_EMBEDDING_API_URL", "env": "MNEMOSYNE_EMBEDDING_API_URL", "default": "", "desc": "API endpoint for cloud embeddings"},
+    {"key": "MNEMOSYNE_EMBEDDING_API_URL", "env": "MNEMOSYNE_EMBEDDING_API_URL", "default": "https://openrouter.ai/api/v1", "desc": "API endpoint for cloud embeddings"},
     {"key": "MNEMOSYNE_NO_EMBEDDINGS", "env": "MNEMOSYNE_NO_EMBEDDINGS", "default": "false", "desc": "Disable dense vector retrieval entirely"},
     {"key": "MNEMOSYNE_EMBEDDINGS_VIA_API", "env": "MNEMOSYNE_EMBEDDINGS_VIA_API", "default": "false", "desc": "Force cloud API mode for embeddings"},
     {"key": "MNEMOSYNE_WM_MAX_ITEMS", "env": "MNEMOSYNE_WM_MAX_ITEMS", "default": "10000", "desc": "Maximum items in working memory before eviction"},
     {"key": "MNEMOSYNE_WM_TTL_HOURS", "env": "MNEMOSYNE_WM_TTL_HOURS", "default": "24", "desc": "Hours before working memory entries expire"},
-    {"key": "MNEMOSYNE_EP_LIMIT", "env": "MNEMOSYNE_EP_LIMIT", "default": "10", "desc": "Max episodic memories returned per recall"},
-    {"key": "MNEMOSYNE_SLEEP_BATCH", "env": "MNEMOSYNE_SLEEP_BATCH", "default": "50", "desc": "Batch size for sleep consolidation"},
-    {"key": "MNEMOSYNE_VEC_TYPE", "env": "MNEMOSYNE_VEC_TYPE", "default": "float32", "desc": "Vector storage format (float32, float16, binary)"},
+    {"key": "MNEMOSYNE_EP_LIMIT", "env": "MNEMOSYNE_EP_LIMIT", "default": "50000", "desc": "Max episodic memories returned per recall"},
+    {"key": "MNEMOSYNE_SLEEP_BATCH", "env": "MNEMOSYNE_SLEEP_BATCH", "default": "5000", "desc": "Batch size for sleep consolidation"},
+    {"key": "MNEMOSYNE_VEC_TYPE", "env": "MNEMOSYNE_VEC_TYPE", "default": "int8", "desc": "Vector storage format (int8, float32, float16, binary)"},
     {"key": "MNEMOSYNE_VEC_WEIGHT", "env": "MNEMOSYNE_VEC_WEIGHT", "default": "0.5", "desc": "Vector similarity weight in hybrid ranking"},
     {"key": "MNEMOSYNE_FTS_WEIGHT", "env": "MNEMOSYNE_FTS_WEIGHT", "default": "0.3", "desc": "Full-text search weight in hybrid ranking"},
     {"key": "MNEMOSYNE_IMPORTANCE_WEIGHT", "env": "MNEMOSYNE_IMPORTANCE_WEIGHT", "default": "0.2", "desc": "Importance score weight in hybrid ranking"},
     {"key": "MNEMOSYNE_MCP_TOKEN", "env": "MNEMOSYNE_MCP_TOKEN", "default": "", "desc": "Bearer token for MCP server auth (required for remote deployment)"},
-    {"key": "MNEMOSYNE_AUTO_SLEEP_ENABLED", "env": "MNEMOSYNE_AUTO_SLEEP_ENABLED", "default": "true", "desc": "Enable automatic sleep consolidation (Hermes provider)"},
+    {"key": "MNEMOSYNE_AUTO_SLEEP_ENABLED", "env": "MNEMOSYNE_AUTO_SLEEP_ENABLED", "default": "false", "desc": "Enable automatic sleep consolidation (Hermes provider, default off)"},
     {"key": "MNEMOSYNE_SYNC_ROLES", "env": "MNEMOSYNE_SYNC_ROLES", "default": "user,assistant", "desc": "Conversation roles to sync into memory"},
     {"key": "MNEMOSYNE_SKIP_CONTEXTS", "env": "MNEMOSYNE_SKIP_CONTEXTS", "default": "", "desc": "Comma-separated context names to skip"},
+    {"key": "MNEMOSYNE_EMBEDDING_FALLBACK_MODEL", "env": "MNEMOSYNE_EMBEDDING_FALLBACK_MODEL", "default": "", "desc": "Local fastembed model for API fallback (v3.6.0)"},
 ]
 
 # ---------------------------------------------------------------
