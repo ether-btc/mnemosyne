@@ -1659,7 +1659,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 self._beam.remember(
                     content=f"[USER] {user_content[:500]}",
                     source="conversation",
-                    importance=0.3,
+                    importance=0.5,
                     extract_entities=True,
                 )
                 self._capture_identity_signals(user_content)
@@ -1667,7 +1667,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 self._beam.remember(
                     content=f"[ASSISTANT] {assistant_content[:800]}",
                     source="conversation",
-                    importance=0.2,
+                    importance=0.15,
                     extract_entities=True,
                 )
             self._turn_count += 1

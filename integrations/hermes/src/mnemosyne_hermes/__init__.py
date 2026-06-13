@@ -864,7 +864,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 self._beam.remember(
                     content=f"[USER] {uc}",
                     source="conversation",
-                    importance=0.3,
+                    importance=0.5,
                     extract_entities=True,
                 )
                 # Check for identity-significant signals in user content
@@ -875,7 +875,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 self._beam.remember(
                     content=f"[ASSISTANT] {ac}",
                     source="conversation",
-                    importance=0.2,
+                    importance=0.15,
                     extract_entities=True,
                 )
             self._turn_count += 1
