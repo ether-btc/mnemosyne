@@ -41,6 +41,16 @@ cd mnemosyne
 pip install -e "integrations/hermes[dev]"
 ```
 
+> **Docker users:** Inside the official Hermes Docker container, the Hermes home directory is `/opt/data/` (the mounted volume), not `~/.hermes/`. After pip-installing `mnemosyne-hermes`, run the installer with the correct home path:
+>
+> ```bash
+> # Inside the container
+> mnemosyne-hermes install --hermes-home /opt/data
+> hermes gateway restart
+> ```
+>
+> The `install` CLI creates the plugin symlink that Hermes needs to discover the memory provider. Skip Steps 2-4 below; the installer handles everything. Run `hermes memory setup` after restarting to activate.
+
 ### Step 2: Link the plugin
 
 Hermes discovers plugins by scanning a folder on disk, not by reading pip's metadata. Link the installed package into the plugins directory so Hermes can find it:
