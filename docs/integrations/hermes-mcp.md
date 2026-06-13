@@ -20,6 +20,7 @@ Tools register as native Hermes commands.
 
 ```bash
 pip install mnemosyne-hermes
+mnemosyne-hermes install                  # creates plugin symlink for Hermes discovery
 hermes config set memory.provider mnemosyne
 hermes memory setup
 ```
