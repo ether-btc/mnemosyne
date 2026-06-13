@@ -45,41 +45,52 @@ def _find_hermes_python() -> Optional[Path]:
     """
     hermes_home_path = hermes_home()
 
-    # 1. Check for a local hermes-agent checkout with venv
+    # 1. Resolve the `hermes` launcher on PATH back to its venv Python.
+    #    This is the most reliable probe: a pip/pipx-installed Hermes puts its
+    #    console script next to the interpreter that runs it, so the Python is
+    #    always a sibling of the resolved binary. Covers the common
+    #    /usr/local/lib/hermes-agent/venv layout that the hardcoded roots below
+    #    miss entirely (the silent-no-op that left provider deps out of Hermes'
+    #    actual venv and produced "loaded but no provider instance found").
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        # NOTE: resolve the *launcher* symlink (hermes -> venv/bin/hermes) to
+        # find the venv bin dir, but do NOT resolve the python symlink itself.
+        # A venv's bin/python is a symlink to the base interpreter; running the
+        # venv path activates the venv site-packages, running the resolved base
+        # path does NOT. Returning the resolved base interpreter would silently
+        # drop the provider deps again.
+        bin_dir = Path(hermes_bin).resolve().parent
+        for py_name in ("python", "python3"):
+            candidate = bin_dir / py_name
+            if candidate.is_file():
+                return candidate
+
+    # 2. Check known hermes-agent checkout / install roots with a venv.
     for root in [
         hermes_home_path / "hermes-agent",
         Path.home() / "hermes-agent",
         Path("/opt/hermes/hermes-agent"),
+        Path("/usr/local/lib/hermes-agent"),
+        Path("/usr/lib/hermes-agent"),
     ]:
         for venv_name in ("venv", ".venv"):
             candidate = root / venv_name / "bin" / "python"
             if candidate.is_file():
                 return candidate.resolve()
 
-    # 2. Check if we're running inside Hermes' venv ourselves
+    # 3. Check if we're running inside Hermes' venv ourselves
     if sys.prefix != sys.base_prefix:
         venv_python = Path(sys.prefix) / "bin" / "python"
         if venv_python.is_file():
             return venv_python.resolve()
 
-    # 3. Check VIRTUAL_ENV env var (uv-managed or explicit)
+    # 4. Check VIRTUAL_ENV env var (uv-managed or explicit)
     ve = os.environ.get("VIRTUAL_ENV")
     if ve:
         candidate = Path(ve) / "bin" / "python"
         if candidate.is_file():
             return candidate.resolve()
-
-    # 4. Check for Hermes pipx entry point
-    try:
-        result = subprocess.run(
-            ["hermes", "--version"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0 and "hermes" in (result.stdout + result.stderr).lower():
-            # hermes is on PATH — we can suggest the user run bootstrap manually
-            return None
-    except Exception:
-        pass
 
     return None
 

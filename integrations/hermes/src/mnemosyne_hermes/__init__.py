@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _provider_active: bool = False
 _active_provider_count: int = 0
+_provider_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Lazy imports — fail gracefully if mnemosyne core is missing
@@ -344,22 +345,24 @@ class MnemosyneMemoryProvider(MemoryProvider):
         """Bump the module-level active-provider count exactly once per
         instance lifecycle. Called when this instance transitions into
         the active state (non-skip-context initialize completed)."""
-        global _active_provider_count, _provider_active
-        if not self._is_active_in_module:
-            self._is_active_in_module = True
-            _active_provider_count += 1
-            _provider_active = True
+        global _active_provider_count, _provider_active, _provider_lock
+        with _provider_lock:
+            if not self._is_active_in_module:
+                self._is_active_in_module = True
+                _active_provider_count += 1
+                _provider_active = True
 
     def _deactivate_in_module(self) -> None:
         """Drop this instance from the module-level active-provider
         count. Idempotent -- a never-activated instance is a no-op.
         ``_provider_active`` stays True as long as ANY other instance is
         still active (multi-instance refcount semantics)."""
-        global _active_provider_count, _provider_active
-        if self._is_active_in_module:
-            self._is_active_in_module = False
-            _active_provider_count = max(0, _active_provider_count - 1)
-            _provider_active = (_active_provider_count > 0)
+        global _active_provider_count, _provider_active, _provider_lock
+        with _provider_lock:
+            if self._is_active_in_module:
+                self._is_active_in_module = False
+                _active_provider_count = max(0, _active_provider_count - 1)
+                _provider_active = (_active_provider_count > 0)
 
     def _init_audit_log(self) -> None:
         """Initialize audit log co-located with the active provider DB."""
