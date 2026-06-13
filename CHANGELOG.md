@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
+## [Unreleased]
+
+### Changed
+
+- **Lower prefetch noise from raw conversation turns.** sync_turn() now writes
+  user messages at 0.5 importance (was 0.3) and assistant messages at 0.15
+  (was 0.2). This increases the bar for raw conversation turns to surface in
+  prefetch recall, reducing irrelevant context pollution. Both provider copies
+  (hermes_memory_provider and mnemosyne_hermes) updated identically.
+
 ## [3.6.0] — 2026-06-10
 
 ### Added
