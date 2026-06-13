@@ -59,26 +59,131 @@ ALL_TOOL_SCHEMAS = [
 # calls in beam.py, the hermes_memory_provider, and integrations, v3.6.0)
 # ---------------------------------------------------------------
 CONFIG_ENTRIES = [
+    # ── Storage & Paths ──
     {"key": "MNEMOSYNE_DATA_DIR", "env": "MNEMOSYNE_DATA_DIR", "default": "~/.hermes/mnemosyne/data", "desc": "Directory for database, logs, models, and stats"},
+    {"key": "MNEMOSYNE_HOME", "env": "MNEMOSYNE_HOME", "default": "~/.hermes/mnemosyne", "desc": "Override home directory for all Mnemosyne data"},
+    {"key": "MNEMOSYNE_SHARED_DB_PATH", "env": "MNEMOSYNE_SHARED_DB_PATH", "default": "data/shared/mnemosyne.db", "desc": "SQLite path for shared surface memory DB"},
+    {"key": "MNEMOSYNE_BLOB_DIR", "env": "MNEMOSYNE_BLOB_DIR", "default": "", "desc": "Directory for blob storage (content sanitizer output)"},
+    {"key": "MNEMOSYNE_AUTO_MIGRATE", "env": "MNEMOSYNE_AUTO_MIGRATE", "default": "1", "desc": "Auto-migrate DB schema on startup (set to 0 to disable)"},
+
+    # ── Working Memory ──
+    {"key": "MNEMOSYNE_WM_MAX_ITEMS", "env": "MNEMOSYNE_WM_MAX_ITEMS", "default": "10000", "desc": "Maximum items in working memory before eviction"},
+    {"key": "MNEMOSYNE_WM_TTL_HOURS", "env": "MNEMOSYNE_WM_TTL_HOURS", "default": "24", "desc": "Hours before working memory entries expire"},
+
+    # ── Episodic & Recall ──
+    {"key": "MNEMOSYNE_EP_LIMIT", "env": "MNEMOSYNE_EP_LIMIT", "default": "50000", "desc": "Max episodic memories returned per recall"},
+    {"key": "MNEMOSYNE_SP_MAX", "env": "MNEMOSYNE_SP_MAX", "default": "1000", "desc": "Maximum scratchpad entries"},
+    {"key": "MNEMOSYNE_RECENCY_HALFLIFE", "env": "MNEMOSYNE_RECENCY_HALFLIFE", "default": "168", "desc": "Recency decay halflife in hours (default: 1 week)"},
+    {"key": "MNEMOSYNE_TEMPORAL_HALFLIFE_HOURS", "env": "MNEMOSYNE_TEMPORAL_HALFLIFE_HOURS", "default": "24", "desc": "Temporal voice halflife for time-weighted recall scoring"},
+
+    # ── Sleep & Consolidation ──
+    {"key": "MNEMOSYNE_SLEEP_BATCH", "env": "MNEMOSYNE_SLEEP_BATCH", "default": "5000", "desc": "Batch size for sleep consolidation"},
+    {"key": "MNEMOSYNE_AUTO_SLEEP_ENABLED", "env": "MNEMOSYNE_AUTO_SLEEP_ENABLED", "default": "false", "desc": "Enable automatic sleep consolidation (Hermes provider, default off)"},
+    {"key": "MNEMOSYNE_SESSION_END_TIMEOUT", "env": "MNEMOSYNE_SESSION_END_TIMEOUT", "default": "15", "desc": "Max seconds for session-end sleep (Hermes provider)"},
+    {"key": "MNEMOSYNE_AUTO_SLEEP_TIMEOUT", "env": "MNEMOSYNE_AUTO_SLEEP_TIMEOUT", "default": "5", "desc": "Max seconds for auto-sleep cycle"},
+    {"key": "MNEMOSYNE_SHUTDOWN_DRAIN_TIMEOUT", "env": "MNEMOSYNE_SHUTDOWN_DRAIN_TIMEOUT", "default": "2", "desc": "Max seconds to drain LLM queue on shutdown"},
+    {"key": "MNEMOSYNE_SLEEP_PROMPT", "env": "MNEMOSYNE_SLEEP_PROMPT", "default": "", "desc": "Custom prompt for sleep LLM consolidation"},
+
+    # ── Tiered Degradation (BEAM) ──
+    {"key": "MNEMOSYNE_TIER2_DAYS", "env": "MNEMOSYNE_TIER2_DAYS", "default": "30", "desc": "Days before memories enter Tier 2 (compressed)"},
+    {"key": "MNEMOSYNE_TIER3_DAYS", "env": "MNEMOSYNE_TIER3_DAYS", "default": "180", "desc": "Days before memories enter Tier 3 (summary only)"},
+    {"key": "MNEMOSYNE_TIER1_WEIGHT", "env": "MNEMOSYNE_TIER1_WEIGHT", "default": "1.0", "desc": "Scoring weight for Tier 1 (fresh) memories"},
+    {"key": "MNEMOSYNE_TIER2_WEIGHT", "env": "MNEMOSYNE_TIER2_WEIGHT", "default": "0.5", "desc": "Scoring weight for Tier 2 (compressed) memories"},
+    {"key": "MNEMOSYNE_TIER3_WEIGHT", "env": "MNEMOSYNE_TIER3_WEIGHT", "default": "0.25", "desc": "Scoring weight for Tier 3 (summary) memories"},
+    {"key": "MNEMOSYNE_DEGRADE_BATCH", "env": "MNEMOSYNE_DEGRADE_BATCH", "default": "100", "desc": "Batch size for tiered degradation pass"},
+    {"key": "MNEMOSYNE_SMART_COMPRESS", "env": "MNEMOSYNE_SMART_COMPRESS", "default": "true", "desc": "Use LLM for smart tiered compression instead of truncation"},
+    {"key": "MNEMOSYNE_TIER3_MAX_CHARS", "env": "MNEMOSYNE_TIER3_MAX_CHARS", "default": "300", "desc": "Max character length for Tier 3 summaries"},
+
+    # ── Veracity Weights ──
+    {"key": "MNEMOSYNE_STATED_WEIGHT", "env": "MNEMOSYNE_STATED_WEIGHT", "default": "1.0", "desc": "Veracity weight for stated (user-asserted) memories"},
+    {"key": "MNEMOSYNE_INFERRED_WEIGHT", "env": "MNEMOSYNE_INFERRED_WEIGHT", "default": "0.7", "desc": "Veracity weight for inferred (LLM-extracted) memories"},
+    {"key": "MNEMOSYNE_TOOL_WEIGHT", "env": "MNEMOSYNE_TOOL_WEIGHT", "default": "0.5", "desc": "Veracity weight for tool-returned memories"},
+    {"key": "MNEMOSYNE_IMPORTED_WEIGHT", "env": "MNEMOSYNE_IMPORTED_WEIGHT", "default": "0.6", "desc": "Veracity weight for externally imported memories"},
+    {"key": "MNEMOSYNE_UNKNOWN_WEIGHT", "env": "MNEMOSYNE_UNKNOWN_WEIGHT", "default": "0.8", "desc": "Veracity weight for memories with unknown source"},
+
+    # ── Vector & Embeddings ──
+    {"key": "MNEMOSYNE_VEC_TYPE", "env": "MNEMOSYNE_VEC_TYPE", "default": "int8", "desc": "Vector storage format (int8, float32, float16, binary)"},
     {"key": "MNEMOSYNE_EMBEDDING_MODEL", "env": "MNEMOSYNE_EMBEDDING_MODEL", "default": "BAAI/bge-small-en-v1.5", "desc": "fastembed model for vector embeddings"},
     {"key": "MNEMOSYNE_EMBEDDING_DIM", "env": "MNEMOSYNE_EMBEDDING_DIM", "default": "384", "desc": "Override embedding vector dimension"},
     {"key": "MNEMOSYNE_EMBEDDING_API_KEY", "env": "MNEMOSYNE_EMBEDDING_API_KEY", "default": "", "desc": "API key for cloud embedding provider"},
     {"key": "MNEMOSYNE_EMBEDDING_API_URL", "env": "MNEMOSYNE_EMBEDDING_API_URL", "default": "https://openrouter.ai/api/v1", "desc": "API endpoint for cloud embeddings"},
     {"key": "MNEMOSYNE_NO_EMBEDDINGS", "env": "MNEMOSYNE_NO_EMBEDDINGS", "default": "false", "desc": "Disable dense vector retrieval entirely"},
     {"key": "MNEMOSYNE_EMBEDDINGS_VIA_API", "env": "MNEMOSYNE_EMBEDDINGS_VIA_API", "default": "false", "desc": "Force cloud API mode for embeddings"},
-    {"key": "MNEMOSYNE_WM_MAX_ITEMS", "env": "MNEMOSYNE_WM_MAX_ITEMS", "default": "10000", "desc": "Maximum items in working memory before eviction"},
-    {"key": "MNEMOSYNE_WM_TTL_HOURS", "env": "MNEMOSYNE_WM_TTL_HOURS", "default": "24", "desc": "Hours before working memory entries expire"},
-    {"key": "MNEMOSYNE_EP_LIMIT", "env": "MNEMOSYNE_EP_LIMIT", "default": "50000", "desc": "Max episodic memories returned per recall"},
-    {"key": "MNEMOSYNE_SLEEP_BATCH", "env": "MNEMOSYNE_SLEEP_BATCH", "default": "5000", "desc": "Batch size for sleep consolidation"},
-    {"key": "MNEMOSYNE_VEC_TYPE", "env": "MNEMOSYNE_VEC_TYPE", "default": "int8", "desc": "Vector storage format (int8, float32, float16, binary)"},
+    {"key": "MNEMOSYNE_EMBEDDING_FALLBACK_MODEL", "env": "MNEMOSYNE_EMBEDDING_FALLBACK_MODEL", "default": "", "desc": "Local fastembed model for API fallback (v3.6.0)"},
+
+    # ── Hybrid Scoring ──
     {"key": "MNEMOSYNE_VEC_WEIGHT", "env": "MNEMOSYNE_VEC_WEIGHT", "default": "0.5", "desc": "Vector similarity weight in hybrid ranking"},
     {"key": "MNEMOSYNE_FTS_WEIGHT", "env": "MNEMOSYNE_FTS_WEIGHT", "default": "0.3", "desc": "Full-text search weight in hybrid ranking"},
     {"key": "MNEMOSYNE_IMPORTANCE_WEIGHT", "env": "MNEMOSYNE_IMPORTANCE_WEIGHT", "default": "0.2", "desc": "Importance score weight in hybrid ranking"},
-    {"key": "MNEMOSYNE_MCP_TOKEN", "env": "MNEMOSYNE_MCP_TOKEN", "default": "", "desc": "Bearer token for MCP server auth (required for remote deployment)"},
-    {"key": "MNEMOSYNE_AUTO_SLEEP_ENABLED", "env": "MNEMOSYNE_AUTO_SLEEP_ENABLED", "default": "false", "desc": "Enable automatic sleep consolidation (Hermes provider, default off)"},
+
+    # ── LLM Backends ──
+    {"key": "MNEMOSYNE_LLM_ENABLED", "env": "MNEMOSYNE_LLM_ENABLED", "default": "true", "desc": "Enable LLM summarization during sleep consolidation"},
+    {"key": "MNEMOSYNE_LLM_BASE_URL", "env": "MNEMOSYNE_LLM_BASE_URL", "default": "", "desc": "OpenAI-compatible API base URL for remote LLM"},
+    {"key": "MNEMOSYNE_LLM_API_KEY", "env": "MNEMOSYNE_LLM_API_KEY", "default": "", "desc": "API key for remote LLM endpoint"},
+    {"key": "MNEMOSYNE_LLM_MODEL", "env": "MNEMOSYNE_LLM_MODEL", "default": "", "desc": "Model identifier for remote LLM calls"},
+    {"key": "MNEMOSYNE_LLM_MAX_TOKENS", "env": "MNEMOSYNE_LLM_MAX_TOKENS", "default": "2048", "desc": "Max output tokens per LLM summary"},
+    {"key": "MNEMOSYNE_LLM_N_CTX", "env": "MNEMOSYNE_LLM_N_CTX", "default": "2048", "desc": "Context window size for local LLM"},
+    {"key": "MNEMOSYNE_LLM_N_THREADS", "env": "MNEMOSYNE_LLM_N_THREADS", "default": "4", "desc": "CPU threads for local LLM inference"},
+    {"key": "MNEMOSYNE_LLM_REPO", "env": "MNEMOSYNE_LLM_REPO", "default": "openbmb/MiniCPM5-1B-GGUF", "desc": "HuggingFace repo for GGUF model"},
+    {"key": "MNEMOSYNE_LLM_FILE", "env": "MNEMOSYNE_LLM_FILE", "default": "MiniCPM5-1B-Q4_K_M.gguf", "desc": "GGUF filename for local LLM"},
+    {"key": "MNEMOSYNE_LLM_FALLBACK_BASE_URL", "env": "MNEMOSYNE_LLM_FALLBACK_BASE_URL", "default": "", "desc": "Fallback API URL when primary remote LLM fails"},
+    {"key": "MNEMOSYNE_LLM_FALLBACK_API_KEY", "env": "MNEMOSYNE_LLM_FALLBACK_API_KEY", "default": "", "desc": "API key for fallback LLM endpoint"},
+    {"key": "MNEMOSYNE_LLM_FALLBACK_MODELS", "env": "MNEMOSYNE_LLM_FALLBACK_MODELS", "default": "", "desc": "Comma-separated fallback model names to try"},
+    {"key": "MNEMOSYNE_FORCE_LOCAL", "env": "MNEMOSYNE_FORCE_LOCAL", "default": "false", "desc": "Skip remote LLM and use local model directly"},
+    {"key": "MNEMOSYNE_LLM_CONFLICT_DETECTION", "env": "MNEMOSYNE_LLM_CONFLICT_DETECTION", "default": "false", "desc": "Enable LLM-based conflict detection during sleep"},
+    {"key": "MNEMOSYNE_CONFLICT_LLM_BASE_URL", "env": "MNEMOSYNE_CONFLICT_LLM_BASE_URL", "default": "", "desc": "API base URL for conflict detection LLM"},
+    {"key": "MNEMOSYNE_CONFLICT_LLM_API_KEY", "env": "MNEMOSYNE_CONFLICT_LLM_API_KEY", "default": "", "desc": "API key for conflict detection LLM"},
+    {"key": "MNEMOSYNE_CONFLICT_LLM_MODEL", "env": "MNEMOSYNE_CONFLICT_LLM_MODEL", "default": "", "desc": "Model for conflict detection LLM calls"},
+    {"key": "MNEMOSYNE_HOST_LLM_ENABLED", "env": "MNEMOSYNE_HOST_LLM_ENABLED", "default": "false", "desc": "Route consolidation through host-provided LLM adapter"},
+    {"key": "MNEMOSYNE_HOST_LLM_MODEL", "env": "MNEMOSYNE_HOST_LLM_MODEL", "default": "", "desc": "Model override for host LLM adapter"},
+    {"key": "MNEMOSYNE_HOST_LLM_PROVIDER", "env": "MNEMOSYNE_HOST_LLM_PROVIDER", "default": "", "desc": "Provider override for host LLM adapter (e.g. openai-codex)"},
+    {"key": "MNEMOSYNE_HOST_LLM_N_CTX", "env": "MNEMOSYNE_HOST_LLM_N_CTX", "default": "32000", "desc": "Context window budget when using host LLM adapter"},
+    {"key": "MNEMOSYNE_EXTRACTION_MODEL", "env": "MNEMOSYNE_EXTRACTION_MODEL", "default": "google/gemini-2.5-flash", "desc": "Model for entity/fact extraction via OpenRouter"},
+    {"key": "MNEMOSYNE_EXTRACTION_PROMPT", "env": "MNEMOSYNE_EXTRACTION_PROMPT", "default": "", "desc": "Custom prompt for entity/fact extraction"},
+
+    # ── Feature Flags & A/B Toggles ──
+    {"key": "MNEMOSYNE_BEAM_OPTIMIZATIONS", "env": "MNEMOSYNE_BEAM_OPTIMIZATIONS", "default": "false", "desc": "Enable BEAM benchmark optimizations (feature flag)"},
+    {"key": "MNEMOSYNE_ENHANCED_RECALL", "env": "MNEMOSYNE_ENHANCED_RECALL", "default": "0", "desc": "Enable enhanced recall pipeline (fact+graph+episodic fusion)"},
+    {"key": "MNEMOSYNE_FACT_RECALL_ENABLED", "env": "MNEMOSYNE_FACT_RECALL_ENABLED", "default": "0", "desc": "Enable fact-based recall (backward compat alias)"},
+    {"key": "MNEMOSYNE_POLYPHONIC_RECALL", "env": "MNEMOSYNE_POLYPHONIC_RECALL", "default": "0", "desc": "Enable polyphonic recall engine (multi-voice fusion)"},
+    {"key": "MNEMOSYNE_PROACTIVE_LINKING", "env": "MNEMOSYNE_PROACTIVE_LINKING", "default": "0", "desc": "Enable proactive cross-memory linking on insertion"},
+    {"key": "MNEMOSYNE_GRAPH_BONUS", "env": "MNEMOSYNE_GRAPH_BONUS", "default": "1", "desc": "A/B toggle: graph traversal bonus in recall scoring"},
+    {"key": "MNEMOSYNE_FACT_BONUS", "env": "MNEMOSYNE_FACT_BONUS", "default": "1", "desc": "A/B toggle: fact match bonus in recall scoring"},
+    {"key": "MNEMOSYNE_BINARY_BONUS", "env": "MNEMOSYNE_BINARY_BONUS", "default": "1", "desc": "A/B toggle: binary vector bonus in recall scoring"},
+    {"key": "MNEMOSYNE_LENIENT_FACT_MATCH", "env": "MNEMOSYNE_LENIENT_FACT_MATCH", "default": "false", "desc": "Use substring instead of exact match for fact recall"},
+    {"key": "MNEMOSYNE_VERACITY_MULTIPLIER", "env": "MNEMOSYNE_VERACITY_MULTIPLIER", "default": "1", "desc": "A/B toggle: apply veracity multiplier to recall scores"},
+    {"key": "MNEMOSYNE_CROSS_TIER_DEDUP", "env": "MNEMOSYNE_CROSS_TIER_DEDUP", "default": "1", "desc": "A/B toggle: cross-tier deduplication in BEAM recall"},
+    {"key": "MNEMOSYNE_VOICE_VECTOR", "env": "MNEMOSYNE_VOICE_VECTOR", "default": "1", "desc": "A/B toggle: polyphonic vector voice (Phase 3d)"},
+    {"key": "MNEMOSYNE_VOICE_GRAPH", "env": "MNEMOSYNE_VOICE_GRAPH", "default": "1", "desc": "A/B toggle: polyphonic graph voice (Phase 3b)"},
+    {"key": "MNEMOSYNE_VOICE_FACT", "env": "MNEMOSYNE_VOICE_FACT", "default": "1", "desc": "A/B toggle: polyphonic fact voice (Phase 3a)"},
+    {"key": "MNEMOSYNE_VOICE_TEMPORAL", "env": "MNEMOSYNE_VOICE_TEMPORAL", "default": "1", "desc": "A/B toggle: polyphonic temporal voice (Phase 3c)"},
+    {"key": "MNEMOSYNE_BEAM_MODE", "env": "MNEMOSYNE_BEAM_MODE", "default": "false", "desc": "Enable BEAM mode (polyphonic recall engine extension)"},
+    {"key": "MNEMOSYNE_USE_CAVEMAN", "env": "MNEMOSYNE_USE_CAVEMAN", "default": "false", "desc": "Use caveman/AAAK encoding fallback for consolidation"},
+
+    # ── Hermes Provider ──
     {"key": "MNEMOSYNE_SYNC_ROLES", "env": "MNEMOSYNE_SYNC_ROLES", "default": "user,assistant", "desc": "Conversation roles to sync into memory"},
-    {"key": "MNEMOSYNE_SKIP_CONTEXTS", "env": "MNEMOSYNE_SKIP_CONTEXTS", "default": "", "desc": "Comma-separated context names to skip"},
-    {"key": "MNEMOSYNE_EMBEDDING_FALLBACK_MODEL", "env": "MNEMOSYNE_EMBEDDING_FALLBACK_MODEL", "default": "", "desc": "Local fastembed model for API fallback (v3.6.0)"},
+    {"key": "MNEMOSYNE_SKIP_CONTEXTS", "env": "MNEMOSYNE_SKIP_CONTEXTS", "default": "cron,flush,subagent,background,skill_loop", "desc": "Comma-separated context names to skip"},
+    {"key": "MNEMOSYNE_SYNC_TURN_USER_LIMIT", "env": "MNEMOSYNE_SYNC_TURN_USER_LIMIT", "default": "500", "desc": "Max chars of user content synced per turn (0=no limit)"},
+    {"key": "MNEMOSYNE_SYNC_TURN_ASSISTANT_LIMIT", "env": "MNEMOSYNE_SYNC_TURN_ASSISTANT_LIMIT", "default": "800", "desc": "Max chars of assistant content synced per turn (0=no limit)"},
+    {"key": "MNEMOSYNE_PREFETCH_CONTENT_CHARS", "env": "MNEMOSYNE_PREFETCH_CONTENT_CHARS", "default": "0", "desc": "Truncate prefetched content to N chars (0=no truncation)"},
+    {"key": "MNEMOSYNE_PREFETCH_PROFILE", "env": "MNEMOSYNE_PREFETCH_PROFILE", "default": "general", "desc": "Prefetch profile name (general, coding, etc.)"},
+
+    # ── MCP & Identity ──
+    {"key": "MNEMOSYNE_MCP_TOKEN", "env": "MNEMOSYNE_MCP_TOKEN", "default": "", "desc": "Bearer token for MCP server auth (required for remote deployment)"},
+    {"key": "MNEMOSYNE_MCP_BANK", "env": "MNEMOSYNE_MCP_BANK", "default": "default", "desc": "Default MCP bank name for tool operations"},
+    {"key": "MNEMOSYNE_AUTHOR_ID", "env": "MNEMOSYNE_AUTHOR_ID", "default": "", "desc": "Identifier for the author/agent creating memories"},
+    {"key": "MNEMOSYNE_AUTHOR_TYPE", "env": "MNEMOSYNE_AUTHOR_TYPE", "default": "", "desc": "Type of author (user, assistant, system, etc.)"},
+    {"key": "MNEMOSYNE_CHANNEL_ID", "env": "MNEMOSYNE_CHANNEL_ID", "default": "", "desc": "Channel/session identifier for memory scoping"},
+    {"key": "MNEMOSYNE_DEFAULT_OWNER", "env": "MNEMOSYNE_DEFAULT_OWNER", "default": "default", "desc": "Default owner for canonical facts and shared memory"},
+
+    # ── SHMR (Semantic Hierarchical Memory Reorganization) ──
+    {"key": "MNEMOSYNE_SHMR_BATCH_SIZE", "env": "MNEMOSYNE_SHMR_BATCH_SIZE", "default": "50", "desc": "Max memories per SHMR reorganization batch"},
+    {"key": "MNEMOSYNE_SHMR_MAX_ITERATIONS", "env": "MNEMOSYNE_SHMR_MAX_ITERATIONS", "default": "3", "desc": "Max SHMR clustering iterations per batch"},
+    {"key": "MNEMOSYNE_SHMR_SIMILARITY_THRESHOLD", "env": "MNEMOSYNE_SHMR_SIMILARITY_THRESHOLD", "default": "0.70", "desc": "Cosine similarity threshold for memory clustering"},
+    {"key": "MNEMOSYNE_SHMR_HARMONY_THRESHOLD", "env": "MNEMOSYNE_SHMR_HARMONY_THRESHOLD", "default": "0.60", "desc": "Harmony threshold for cluster merging"},
+    {"key": "MNEMOSYNE_SHMR_MODEL", "env": "MNEMOSYNE_SHMR_MODEL", "default": "", "desc": "LLM model for SHMR summarization (empty = use default)"},
+    {"key": "MNEMOSYNE_SHMR_MIN_CLUSTER_SIZE", "env": "MNEMOSYNE_SHMR_MIN_CLUSTER_SIZE", "default": "2", "desc": "Minimum memories to form a SHMR cluster"},
+    {"key": "MNEMOSYNE_SHMR_TEMPERATURE", "env": "MNEMOSYNE_SHMR_TEMPERATURE", "default": "0.2", "desc": "LLM temperature for SHMR summarization"},
 ]
 
 # ---------------------------------------------------------------
