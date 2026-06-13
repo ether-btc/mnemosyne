@@ -1820,3 +1820,22 @@ def register(ctx):
         setup_fn=register_cli,
         handler_fn=mnemosyne_command,
     )
+
+    # Register all 25 tool schemas so the agent can call them.
+    # Note: when loaded via memory provider discovery (plugins/memory/),
+    # the ctx is a _ProviderCollector whose register_tool() is a no-op --
+    # tools are surfaced through get_tool_schemas() via the memory manager
+    # instead. This registration covers the standalone PluginManager path.
+    from .tools import ALL_TOOL_SCHEMAS
+    from functools import partial
+
+    _provider = MnemosyneMemoryProvider()
+    for _schema in ALL_TOOL_SCHEMAS:
+        _name = _schema["name"]
+        ctx.register_tool(
+            name=_name,
+            toolset="memory",
+            schema=_schema,
+            handler=partial(_provider.handle_tool_call, _name),
+            description=_schema.get("description", ""),
+        )
