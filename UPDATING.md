@@ -3,8 +3,8 @@
 Covers all upgrade paths: v2.7 → latest, source installs, PyPI installs,
 and systems with Python's `externally-managed-environment` (PEP 668).
 
-If you're on **v3.4.0** and want the latest (v3.5.0), jump to
-[Upgrading to v3.5.0](#upgrading-to-v350-canonical-facts--holographic-importer).
+If you're on **v3.6.0** and want the latest (v3.7.0), jump to
+[Upgrading to v3.7.0](#upgrading-to-v370-usage-driven-working-memory-decay).
 
 Already on v3.0.0? See [Upgrading to v3.0.0](#upgrading-to-v300-memoria-architecture).
 
@@ -73,6 +73,55 @@ Editable mode means future `git pull` is all you need — no re-install
 for most updates.
 
 ---
+
+## Upgrading to v3.7.0 — Usage-Driven Working Memory Decay
+
+Released 2026-06-13. Minor release with working memory decay, temporal-triple lifecycle fix, and several packaging improvements.
+
+### What changed
+
+- **Working memory decay** — default TTL bumped from 24h to 168h (7 days).
+  `get_context()` now bumps `recall_count` and `last_recalled` on returned items,
+  and each bump extends the item's lifetime by up to `MNEMOSYNE_WM_BUMP_CAP_HOURS`
+  (default 24h). Pinned items (`MNEMOSYNE_WM_PINNED_IDS`) are excluded from
+  consolidation entirely.
+- **Sleep consolidation skips pinned items** — a new `pinned` column on
+  `working_memory` tells `sleep()` to leave those memories untouched.
+- **Temporal-triple lifecycle restored** — `supersede`, `valid_until`, and `end`
+  operations on triples are now functional (were absent in v3.5.0/v3.6.0 despite
+  appearing merged). New `end_triple()` module function and
+  `mnemosyne_triple_end` tool.
+- **`HERMES_HOME` resolution fixed** — env var now checked before `Path.home()`
+  fallback across beam, banks, memory, and integration files.
+- **Packaging cleanup** — `openclaw` removed from `[all]` extra. Python 3.9
+  support dropped (3.10+).
+
+### User action required
+
+```bash
+pip install --upgrade mnemosyne-memory
+```
+
+No migration steps needed. New columns (`pinned`, `recall_count`, `last_recalled`)
+are created lazily if absent. Your `upto_24_hours` `MNEMOSYNE_WM_TTL_HOURS`
+overrides are still honoured — the default just changed.
+
+### Rollback to v3.6.0
+
+```bash
+pip install 'mnemosyne-memory==3.6.0'
+```
+
+The working-memory schema additions are additive (`ALTER TABLE ... ADD COLUMN`).
+Downgrading Python code to 3.6.0 while the schema has `pinned`/`recall_count`/
+`last_recalled` columns is harmless — 3.6.0 ignores unknown columns. To fully
+reverse the schema change (not necessary, but available):
+
+```bash
+echo "ALTER TABLE working_memory DROP COLUMN pinned;" | sqlite3 path/to/mnemosyne.db
+echo "ALTER TABLE working_memory DROP COLUMN recall_count;" | sqlite3 path/to/mnemosyne.db
+echo "ALTER TABLE working_memory DROP COLUMN last_recalled;" | sqlite3 path/to/mnemosyne.db
+```
 
 ---
 

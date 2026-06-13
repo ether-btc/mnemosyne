@@ -15,6 +15,33 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
   prefetch recall, reducing irrelevant context pollution. Both provider copies
   (hermes_memory_provider and mnemosyne_hermes) updated identically.
 
+## [3.7.0] — 2026-06-13
+
+### Added
+
+- **Usage-driven working memory decay** (issue #289). Memory now lives longer
+  (default TTL 168h, was 24h), and frequently recalled items get their TTL
+  bumped (capped at `MNEMOSYNE_WM_BUMP_CAP_HOURS`, default 24h per bump).
+  - `MNEMOSYNE_WM_BUMP_CAP_HOURS` env var — configurable refresh ceiling
+  - `MNEMOSYNE_WM_PINNED_IDS` env var — comma-separated memory IDs to pin
+  - `pinned` column on `working_memory` — sleep consolidation skips pinned items
+
+### Fixed
+
+- **Temporal-triple lifecycle re-applied** (issue #246 regression). Triple
+  `supersede`/`valid_until`/`end` lifecycle was absent from v3.5.0 and v3.6.0
+  despite appearing merged. Re-applied cleanly. New `mnemosyne_triple_end` tool
+  and `end_triple()` module function added.
+- **Optional local LLM fallback log level.** `diagnose` no longer logs a
+  warning when the optional fallback model is absent.
+- **`sleep(force=False)` assertion corrected.** The `force` flag path now works
+  without throwing.
+- **`HERMES_HOME` resolution priority.** Check `HERMES_HOME` env var before
+  falling back to `Path.home()` across beam, banks, memory, and integration
+  files.
+- **Packaging cleanup:** `openclaw` dependency removed from `[all]` extra.
+  Python 3.9 classifier dropped (3.10+ only).
+
 ## [3.6.0] — 2026-06-10
 
 ### Added
@@ -882,6 +909,7 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 - **Hermes plugin registration** — basic tool integration
 - **AAAK compression** — early context compression for token limits
 
+[3.7.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.7.0
 [3.6.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.6.0
 [3.5.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.5.0
 [3.4.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.4.0
