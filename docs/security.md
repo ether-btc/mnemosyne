@@ -1,6 +1,6 @@
 # Security & Privacy Model
 
-**Last updated:** June 2026 &middot; Mnemosyne v3.6.0
+**Last updated:** June 2026 &middot; Mnemosyne v3.7.0
 
 > **You are solely responsible for the content stored in Mnemosyne.**
 > Mnemosyne Sync supports optional client-side encryption. When disabled, memory content travels over TLS and is stored according to your infrastructure's security settings.
@@ -62,7 +62,7 @@ When `mnemosyne sync` is enabled, memory content travels between instances over 
 | **Unencrypted metadata** (required for routing) | `event_id`, `timestamp`, `device_id`, `operation` |
 | Vector embeddings | Encrypted as part of payload |
 
-**Protection:** Authenticated encryption (XChaCha20-Poly1305 via PyNaCl). The remote server cannot decrypt any payload content. See [Encryption in Mnemosyne Sync](#encryption-in-mnemosyne-sync) below.
+**Protection:** Authenticated encryption via `cryptography.fernet.Fernet` (AES-128-CBC) or `nacl.secret.SecretBox` (XSalsa20-Poly1305). The remote server cannot decrypt any payload content. See [Encryption in Mnemosyne Sync](#encryption-in-mnemosyne-sync) below.
 
 ---
 
@@ -89,29 +89,41 @@ Client-side encryption is **optional** but **first-class**. When enabled, memory
 
 The encryption key never leaves the local instance. The remote instance stores and serves encrypted payloads without ever decrypting them.
 
-### Supported Key Sources
+### Key Sources
 
-| Source | Configuration | Security Level |
-|--------|---------------|----------------|
-| **Environment variable** | `MNEMOSYNE_SYNC_KEY=<base64-key>` | Medium (env may be logged) |
-| **OS keyring** | `MNEMOSYNE_SYNC_KEY_SOURCE=keyring` | High (stored in OS keychain) |
-| **Prompt on sync** | `--encrypt --prompt-key` | Highest (never persisted) |
-| **Derived from passphrase** | `MNEMOSYNE_SYNC_PASSPHRASE=<phrase>` | Medium (Argon2id or PBKDF2 derived) |
+| Source | Configuration | Security Level | Where Supported |
+|--------|---------------|----------------|-----------------|
+| **Environment variable** | `MNEMOSYNE_SYNC_KEY=<base64-key>` | Medium (env may be logged) | Core, Hermes adapter |
+| **File path** | `--encrypt /path/to/keyfile` | Medium (file perms) | CLI, Hermes adapter |
+| **Raw key string** | `--encrypt <base64-key>` | Low (visible in ps) | CLI, Hermes adapter |
+| **OS keyring** | `MNEMOSYNE_SYNC_KEY_SOURCE=keyring` | High (OS keychain) | Hermes adapter only |
+| **Derived from passphrase** | `MNEMOSYNE_SYNC_PASSPHRASE=<phrase>` | Medium (Argon2id derived) | Hermes adapter only |
+
+Core `SyncEncryption.from_config()` reads from `$MNEMOSYNE_SYNC_KEY`, a file path, or a raw key string. The Hermes sync adapter adds keyring and passphrase support.
 
 ### Key Derivation
 
-When using a passphrase (not a raw key), the key is derived using:
+`SyncEncryption.derive_key()` converts a passphrase to a 32-byte key:
 
 - **Default:** PBKDF2-HMAC-SHA256 with 600,000 iterations
 - **If argon2-cffi is installed:** Argon2id (memory-hard, recommended)
 
+Note: `from_config()` does not currently call `derive_key()` — passphrases require the Hermes sync adapter or manual key derivation.
+
 ```bash
 # Generate a random key
 mnemosyne sync generate-key
-# Output: MNEMOSYNE_SYNC_KEY=7A8B3C... (base64, 32 bytes)
+# Output: 7A8B3C... (base64, 32 bytes)
 
-# Or use a passphrase (key derived automatically)
-export MNEMOSYNE_SYNC_PASSPHRASE="your strong passphrase here"
+# Use with CLI
+mnemosyne sync --encrypt MNEMOSYNE_SYNC_KEY=7A8B3C...
+mnemosyne sync --encrypt /path/to/keyfile
+
+# Enable in Hermes (config.yaml)
+mnemosyne:
+  sync:
+    key: "7A8B3C..."
+    encrypt: true
 ```
 
 ### What Gets Encrypted
@@ -167,7 +179,7 @@ They **cannot** learn the content or meaning of those memories when encryption i
 
 | System | Data at Rest | Data in Transit | Client-Side Encryption | Self-Hostable |
 |--------|-------------|-----------------|----------------------|---------------|
-| **Mnemosyne** | Local SQLite (file permissions) | TLS + optional client-side encryption | **Yes (sync, XChaCha20-Poly1305)** | Yes |
+| **Mnemosyne** | Local SQLite (file permissions) | TLS + optional client-side encryption | **Yes (sync, Fernet/XSalsa20-Poly1305)** | Yes |
 | **Mem0** | Qdrant/PostgreSQL | TLS | No | Optional |
 | **Zep** | BYOK (data at rest) | TLS | BYOK only (server-managed) | Yes |
 | **Letta** | PostgreSQL | TLS | No | Yes |
@@ -196,7 +208,7 @@ Mnemosyne is the only memory system with **client-side encryption of sync payloa
 | Threat | Rationale |
 |--------|----------|
 | Side-channel attacks on encryption timing | Performance-sensitive sync makes constant-time hard. Use TLS for transit security. |
-| Quantum cryptanalysis of XChaCha20-Poly1305 | Not a practical threat for memory content. Key rotation mitigates long-term risk. |
+| Quantum cryptanalysis of Fernet/SecretBox | Not a practical threat for memory content. Key rotation mitigates long-term risk. |
 | Physical access to the database file | OS-level controls (file permissions, disk encryption) are the user's responsibility |
 | Denial of service on sync endpoint | Self-hosted deployments manage their own rate limiting and firewall rules |
 

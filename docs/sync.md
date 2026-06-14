@@ -233,7 +233,7 @@ Example output:
   Remote:      https://my-vps.example.com:8765
   Connected:   ✓
   Mode:        bidirectional
-  Encryption:  enabled (XChaCha20-Poly1305)
+  Encryption:  enabled (Fernet/XSalsa20-Poly1305)
   Last sync:   2026-06-14T15:30:00Z
   Events synced:
     Push:       1,247
@@ -529,7 +529,7 @@ The complete security model is documented in [docs/security.md](security.md). Ke
 |---------|----------|
 | Data in transit | TLS encryption (HTTPS). `--insecure` flag for dev only. |
 | Data at rest on remote | Same as local &mdash; file permissions, disk encryption. |
-| Payload confidentiality | Optional client-side encryption (XChaCha20-Poly1305) |
+| Payload confidentiality | Optional client-side encryption (Fernet/XSalsa20-Poly1305) |
 | Authentication | API key or JWT on all endpoints |
 | Event integrity | SHA-256 event hashes |
 | Replay protection | Unique event IDs + timestamp validation |

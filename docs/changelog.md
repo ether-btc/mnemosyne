@@ -13,7 +13,7 @@ See [CHANGELOG.md](../CHANGELOG.md) in the repository root for the full version 
 - **CLI commands:** `mnemosyne sync`, `mnemosyne sync-serve`, `mnemosyne sync-status`, `mnemosyne sync-generate-key`
 - **Authentication:** API key (Bearer) and JWT support on sync endpoints
 - **Conflict resolution:** v1 strategy (timestamp->importance->device_id), 5-second detection window
-- **Client-side encryption (optional):** XChaCha20-Poly1305 via Fernet/PyNaCl fallback, key derivation via Argon2id->PBKDF2
+- **Client-side encryption (optional):** Fernet (AES-128-CBC) or SecretBox (XSalsa20-Poly1305) via PyNaCl fallback, key derivation via Argon2id->PBKDF2
 - **Full memory pipeline integration:** Incoming sync events route through `remember()` for FTS5, embeddings, entity extraction
 - **Security docs:** [docs/security.md](docs/security.md) with threat model, liability disclaimers, comparison table
 - **Sync docs:** [docs/sync.md](docs/sync.md) with protocol reference, deployment examples (Docker Compose, Caddy, Nginx, Fly.io, SSH tunnel)
