@@ -30,6 +30,8 @@ from datetime import datetime
 # No path hacks needed — standard imports work.
 from mnemosyne.core.episodic_graph import GraphEdge
 
+__version__ = "0.2.0"
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -1824,7 +1826,7 @@ def register(ctx):
         handler_fn=mnemosyne_command,
     )
 
-    # Register all 25 tool schemas so the agent can call them.
+    # Register all tools (25 memory + 3 sync) so the agent can call them.
     # Note: when loaded via memory provider discovery (plugins/memory/),
     # the ctx is a _ProviderCollector whose register_tool() is a no-op --
     # tools are surfaced through get_tool_schemas() via the memory manager
@@ -1835,10 +1837,35 @@ def register(ctx):
     _provider = MnemosyneMemoryProvider()
     for _schema in ALL_TOOL_SCHEMAS:
         _name = _schema["name"]
+        # Sync tools route through SyncAdapter, memory tools through main provider
+        if _name.startswith("mnemosyne_sync_"):
+            _handler = _get_sync_handler(_name)
+        else:
+            _handler = partial(_provider.handle_tool_call, _name)
         ctx.register_tool(
             name=_name,
             toolset="memory",
             schema=_schema,
-            handler=partial(_provider.handle_tool_call, _name),
+            handler=_handler,
             description=_schema.get("description", ""),
         )
+
+
+# Lazy-init sync adapter for standalone plugin (v0.2.0)
+_sync_adapter: Optional[Any] = None
+
+def _get_sync_handler(tool_name: str):
+    """Return a handler fn that lazy-inits SyncAdapter on first use."""
+    def _handler(args: dict) -> str:
+        global _sync_adapter
+        if _sync_adapter is None:
+            try:
+                from mnemosyne_hermes.sync_adapter import SyncAdapter as SA
+                _sync_adapter = SA(None)  # config resolved from env
+            except Exception:
+                return json.dumps({
+                    "status": "error",
+                    "error": "Sync adapter unavailable. Install mnemosyne-memory[sync].",
+                })
+        return _sync_adapter.handle_tool_call(tool_name, args)
+    return _handler

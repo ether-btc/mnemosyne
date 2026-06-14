@@ -500,6 +500,49 @@ GRAPH_LINK_SCHEMA = {
     },
 }
 
+# Sync tool schemas (v0.2.0 — bidirectional sync with optional encryption)
+SYNC_PUSH_SCHEMA = {
+    "name": "mnemosyne_sync_push",
+    "description": (
+        "Push local memory changes to a remote Mnemosyne sync server. "
+        "Only events created since the last sync are sent. Requires a "
+        "configured remote sync server (configured via config.yaml or "
+        "MNEMOSYNE_SYNC_REMOTE env var)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+SYNC_PULL_SCHEMA = {
+    "name": "mnemosyne_sync_pull",
+    "description": (
+        "Pull remote memory changes from the configured Mnemosyne sync server. "
+        "Applies incoming events locally with timestamp + importance conflict "
+        "resolution."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+SYNC_STATUS_SCHEMA = {
+    "name": "mnemosyne_sync_status",
+    "description": (
+        "Show Mnemosyne sync status: device ID, last cursor, event count, "
+        "remote URL, and encryption state."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
 ALL_TOOL_SCHEMAS = [
     REMEMBER_SCHEMA, RECALL_SCHEMA, SHARED_REMEMBER_SCHEMA, SHARED_RECALL_SCHEMA,
     SHARED_FORGET_SCHEMA, SHARED_STATS_SCHEMA, SLEEP_SCHEMA, STATS_SCHEMA,
@@ -508,4 +551,5 @@ ALL_TOOL_SCHEMAS = [
     SCRATCHPAD_WRITE_SCHEMA, SCRATCHPAD_READ_SCHEMA, SCRATCHPAD_CLEAR_SCHEMA,
     EXPORT_SCHEMA, UPDATE_SCHEMA, FORGET_SCHEMA, IMPORT_SCHEMA, DIAGNOSE_SCHEMA,
     GRAPH_QUERY_SCHEMA, GRAPH_LINK_SCHEMA,
+    SYNC_PUSH_SCHEMA, SYNC_PULL_SCHEMA, SYNC_STATUS_SCHEMA,
 ]
