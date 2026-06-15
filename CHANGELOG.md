@@ -9,23 +9,83 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
 ### Added
 
+- **Synchronous memory reindex** (issue #308, PR by @Milgauss). New `mnemosyne
+  reindex` command that rebuilds all vectors (working, episodic, facts) after an
+  embedding model or dimension change. Reuses existing write helpers for
+  consistent encodings across all five representations. Auto-backup first,
+  `--dry-run`, `--model`, `--no-backup`, `--yes`. Synchronous/blocking with a
+  duration warning.
+- **vec_working migration diagnostics** (contributed by Denis H). `mnemosyne
+  diagnose --repair-vec-working` reports migration coverage and idempotently
+  backfills missing vec_working rows from the memory_embeddings fallback.
+- **Bidirectional memory sync** with optional client-side encryption
+  (issue #287). Event-log-based delta sync between Mnemosyne instances using
+  the SyncEngine protocol:
+  - `memory_events` table: append-only event log with conflict detection
+  - stdlib-only HTTP sync server (no FastAPI deps)
+  - `mnemosyne sync`, `sync-serve`, `sync-status`, `sync-generate-key` CLI
+  - Encrypted payload detection and causal version chains for conflict
+    resolution
+  - Sync tutorial, troubleshooting guide, and deploy configs (Docker, Caddy,
+    Fly.io)
+- **Hermes plugin improvements:**
+  - `mnemosyne-hermes upgrade` — smart install-method detection (pipx / uv-tool
+    / pip), version comparison, auto re-register after upgrade (PR #319)
+  - `mnemosyne-hermes cleanup` — removes plugin, old hermes-mnemosyne dir,
+    resets config; `--dry-run` safe (PR #317)
+  - `mnemosyne-hermes status` now shows Hermes' Python version + mismatch
+    warning (PR #316)
+  - `install --dry-run` for safe pre-flight checks
+  - Sync tool schemas (SYNC_PUSH, SYNC_PULL, SYNC_STATUS) added to both
+    provider copies. Total tool count: 25 -> 28
 - **Sleep orphan-claim recovery** (issue #293). Added `reclaim_orphans()`
   to clear stale consolidation claims when `sleep()` was interrupted after
   claiming working-memory rows but before writing an episodic summary.
 
 ### Changed
 
+- **vec_working dedicated table for working vector search** (contributed by
+  Denis H). Working-memory vectors now live in a dedicated sqlite-vec table,
+  with memory_embeddings as the compatibility fallback. New rows written to
+  both, recall prefers vec_working when available. Import/backfill paths
+  mirror to both stores.
+- **CLI version no longer depends on `__author__`** (removed in v3.7.0).
+  Imports `__version__` only for resilience across releases.
 - **Lower prefetch noise from raw conversation turns.** sync_turn() now writes
   user messages at 0.5 importance (was 0.3) and assistant messages at 0.15
-  (was 0.2). This increases the bar for raw conversation turns to surface in
-  prefetch recall, reducing irrelevant context pollution. Both provider copies
-  (hermes_memory_provider and mnemosyne_hermes) updated identically.
-- **Faster working-memory context retrieval** (issue #291, PR #296).
-  `get_context()` now uses split global/session queries and targeted indexes
-  instead of a broad `OR`/temporary-sort query shape.
-- **Lower recall overhead** (issue #292, PRs #298 and #299). `recall()` now
-  computes the query embedding once per call and pushes working-memory filters
-  into vector candidate selection before JSON vector decode / NumPy scoring.
+  (was 0.2).
+
+### Fixed
+
+- **fact_recall ranking by query relevance** (issue #309, PR by @Milgauss).
+  fact_recall() now preserves FTS rank order (was re-ordering by stored
+  confidence, collapsing all facts from the same path to one score), uses
+  `relevance * confidence` scoring, and returns full subject-predicate-object
+  triples as content. Opt-in via `MNEMOSYNE_FACT_RECALL_ENABLED`.
+- **Audit log table renamed to `audit_log`** to avoid collision with the sync
+  engine's `memory_events` table. Both were creating tables named
+  `memory_events` with incompatible schemas — the audit silently failed on
+  INSERT after beam.py created its version first.
+- **UTC Z timestamp parsing on Python 3.10** in sync conflict detection.
+  Normalizes trailing `Z` before `datetime.fromisoformat()`.
+- **Security docs corrected** — documentation claimed XChaCha20 and keyring
+  integration; actual code uses Fernet/XSalsa20 and key-manager-only key
+  sources. `from_config()` scope fixed.
+- **Provider diagnostic messages** — `register_memory_provider()` now catches
+  construction failures and prints the actual exception, Python version, and
+  Hermes' Python info to stderr instead of a vague warning.
+
+### Performance
+
+- **Dedicated vec_working table** — working vector search uses a focused
+  sqlite-vec table instead of the shared memory_embeddings table, reducing
+  candidate set size.
+- **Query embedding cached once per recall() call** (PR #298). Previously the
+  embedding model was invoked multiple times from different filter paths within
+  the same recall.
+- **Get_context hot path split** (contributed by Denis H). Separate global and
+  session queries with targeted indexes instead of a broad OR or
+  temporary-sort query shape.
 
 ## [3.7.0] — 2026-06-13
 

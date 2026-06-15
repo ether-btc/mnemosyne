@@ -3,8 +3,10 @@
 Covers all upgrade paths: v2.7 → latest, source installs, PyPI installs,
 and systems with Python's `externally-managed-environment` (PEP 668).
 
-If you're on **v3.6.0** and want the latest (v3.7.0), jump to
-[Upgrading to v3.7.0](#upgrading-to-v370-usage-driven-working-memory-decay).
+If you're on **v3.7.0** and want the latest (v3.8.0), jump to
+[Upgrading to v3.8.0](#upgrading-to-v380-sync-vecworking-and-reindex).
+Already on v3.6.0? See
+[Upgrading to v3.6.0](#upgrading-to-v360-canonical-facts--api-embedding-fallback).
 
 Already on v3.0.0? See [Upgrading to v3.0.0](#upgrading-to-v300-memoria-architecture).
 
@@ -122,6 +124,70 @@ echo "ALTER TABLE working_memory DROP COLUMN pinned;" | sqlite3 path/to/mnemosyn
 echo "ALTER TABLE working_memory DROP COLUMN recall_count;" | sqlite3 path/to/mnemosyne.db
 echo "ALTER TABLE working_memory DROP COLUMN last_recalled;" | sqlite3 path/to/mnemosyne.db
 ```
+
+---
+
+## Upgrading to v3.8.0 — Sync, vec_working, and Reindex
+
+Released 2026-06-15. Minor release with bidirectional memory sync, dedicated
+vec_working table, reindex command, fact_recall ranking fix, and smart plugin
+upgrade tooling.
+
+### What changed
+
+- **Bidirectional memory sync** with optional client-side encryption. Event-log-
+  based delta protocol with conflict detection via causal version chains.
+  Uses a stdlib-only HTTP server (no FastAPI). New CLI: `mnemosyne sync`,
+  `sync-serve`, `sync-status`, `sync-generate-key`.
+- **vec_working dedicated table** — working-memory vectors now live in their own
+  sqlite-vec table with memory_embeddings as the compatibility fallback.
+  `diagnose --repair-vec-working` reports coverage and backfills missing rows.
+- **Synchronous reindex** — `mnemosyne reindex` rebuilds all vectors (working,
+  episodic, facts) after embedding model or dimension change. Auto-backup.
+- **fact_recall ranking** now scores by query relevance (not stored confidence),
+  returning full triples as content. Opt-in via `MNEMOSYNE_FACT_RECALL_ENABLED`.
+- **Smart plugin upgrade** — `mnemosyne-hermes upgrade` auto-detects install
+  method (pipx / uv-tool / pip), shows version comparison, upgrades, and
+  re-registers the plugin.
+- **Plugin cleanup** — `mnemosyne-hermes cleanup` removes plugin, old dirs,
+  and resets config. `--dry-run` safe.
+- **CLI version** no longer depends on `__author__` (removed in v3.7.0).
+
+### User action required
+
+```bash
+pip install --upgrade mnemosyne-memory
+```
+
+For the new plugin features:
+
+```bash
+pipx install "mnemosyne-hermes[all]"
+mnemosyne-hermes install --force
+```
+
+### New environment variables
+
+| Variable | Default | What it does |
+|---|---|---|
+| `MNEMOSYNE_FACT_RECALL_ENABLED` | not set | Enables query-relevance-scored fact recall |
+| `MNEMOSYNE_SYNC_SERVER_PORT` | 8765 | Sync server listening port |
+| `MNEMOSYNE_SYNC_SERVER_KEY` | (none) | Encryption key for sync payloads |
+
+### Schema changes
+
+Adds `memory_events` table (sync event log) and `sync_meta` table (device
+identity, cursors). Both created lazily. No destructive migrations.
+
+### Rollback to v3.7.0
+
+```bash
+pip install 'mnemosyne-memory==3.7.0'
+```
+
+The sync tables persist but are ignored by v3.7.0 code. vec_working table
+persists but v3.7.0 memory_embeddings fallback reads it as a normal table —
+no collision.
 
 ---
 
