@@ -1758,13 +1758,21 @@ def _in_memory_vec_search(conn: sqlite3.Connection, query_embedding: np.ndarray,
     return results[:k]
 
 
-def _effective_vec_type(conn: sqlite3.Connection) -> str:
-    """Re-detect the actual vector type used by vec_episodes."""
+def _effective_vec_type(conn: sqlite3.Connection, table: str = "vec_episodes") -> str:
+    """Re-detect the actual vector type used by a vec0 table.
+
+    Each vec0 virtual table (vec_episodes, vec_working, vec_facts) can
+    have a different quantization type if the database was created under
+    different MNEMOSYNE_VEC_TYPE settings over time. Reading only
+    vec_episodes leads to type mismatches that silently break inserts
+    and searches on other tables.
+    """
     if not _vec_available(conn):
         return "float32"
     try:
         row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_episodes'"
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (table,)
         ).fetchone()
         if row and "int8" in row[0]:
             return "int8"
@@ -1791,7 +1799,7 @@ def _vec_table_insert(conn: sqlite3.Connection, table: str, rowid: int, embeddin
     """
     if table not in {"vec_episodes", "vec_working", "vec_facts"}:
         raise ValueError(f"unsupported sqlite-vec table: {table}")
-    vec_type = _effective_vec_type(conn)
+    vec_type = _effective_vec_type(conn, table)
     # Normalize to unit length before quantization
     # (sqlite-vec 0.1.9 'unit' param fails at 1024-dim)
     import numpy as _np
@@ -2166,7 +2174,7 @@ def _vec_search(conn: sqlite3.Connection, embedding: List[float], k: int = 20) -
     k = int(k)
     if vec_type == "bit":
         rows = conn.execute(
-            f"SELECT rowid, distance FROM vec_episodes WHERE embedding MATCH vec_quantize_binary(?) ORDER BY distance LIMIT {k}",
+            f"SELECT rowid, distance FROM vec_episodes WHERE embedding MATCH vec_quantize_binary(?) AND k={k} ORDER BY distance",
             (emb_json,)
         ).fetchall()
     elif vec_type == "int8":
@@ -2176,7 +2184,7 @@ def _vec_search(conn: sqlite3.Connection, embedding: List[float], k: int = 20) -
         ).fetchall()
     else:
         rows = conn.execute(
-            f"SELECT rowid, distance FROM vec_episodes WHERE embedding MATCH ? ORDER BY distance LIMIT {k}",
+            f"SELECT rowid, distance FROM vec_episodes WHERE embedding MATCH ? AND k={k} ORDER BY distance",
             (emb_json,)
         ).fetchall()
     return [{"rowid": r["rowid"], "distance": r["distance"]} for r in rows]
@@ -2509,7 +2517,7 @@ def _wm_vec_search_sqlite(conn: sqlite3.Connection, query_embedding, k: int = 20
     query_norm = np.linalg.norm(query_embedding)
     if query_norm == 0:
         return []
-    vec_type = _effective_vec_type(conn)
+    vec_type = _effective_vec_type(conn, "vec_working")
     emb_arr = np.array(query_embedding, dtype=np.float32)
     if query_norm > 0:
         emb_arr = emb_arr / query_norm
@@ -2522,9 +2530,9 @@ def _wm_vec_search_sqlite(conn: sqlite3.Connection, query_embedding, k: int = 20
                 FROM vec_working vw
                 JOIN working_memory wm ON wm.rowid = vw.rowid
                 WHERE vw.embedding MATCH vec_quantize_binary(?)
+                  AND k={k}
                   AND {where_sql}
                 ORDER BY vw.distance
-                LIMIT {k}
             """, (emb_json, *where_params)).fetchall()
         elif vec_type == "int8":
             rows = conn.execute(f"""
@@ -2542,9 +2550,9 @@ def _wm_vec_search_sqlite(conn: sqlite3.Connection, query_embedding, k: int = 20
                 FROM vec_working vw
                 JOIN working_memory wm ON wm.rowid = vw.rowid
                 WHERE vw.embedding MATCH ?
+                  AND k={k}
                   AND {where_sql}
                 ORDER BY vw.distance
-                LIMIT {k}
             """, (emb_json, *where_params)).fetchall()
     except Exception:
         return []
