@@ -161,11 +161,13 @@ CONFIG_ENTRIES = [
     {"key": "MNEMOSYNE_USE_CAVEMAN", "env": "MNEMOSYNE_USE_CAVEMAN", "default": "false", "desc": "Use caveman/AAAK encoding fallback for consolidation"},
 
     # ── Hermes Provider ──
-    {"key": "MNEMOSYNE_SYNC_ROLES", "env": "MNEMOSYNE_SYNC_ROLES", "default": "user,assistant", "desc": "Conversation roles to sync into memory"},
+    {"key": "MNEMOSYNE_SYNC_ROLES", "env": "MNEMOSYNE_SYNC_ROLES", "default": "user", "desc": "Conversation roles to sync into memory; default user-only to avoid assistant transcript noise"},
     {"key": "MNEMOSYNE_SKIP_CONTEXTS", "env": "MNEMOSYNE_SKIP_CONTEXTS", "default": "cron,flush,subagent,background,skill_loop", "desc": "Comma-separated context names to skip"},
     {"key": "MNEMOSYNE_SYNC_TURN_USER_LIMIT", "env": "MNEMOSYNE_SYNC_TURN_USER_LIMIT", "default": "500", "desc": "Max chars of user content synced per turn (0=no limit)"},
     {"key": "MNEMOSYNE_SYNC_TURN_ASSISTANT_LIMIT", "env": "MNEMOSYNE_SYNC_TURN_ASSISTANT_LIMIT", "default": "800", "desc": "Max chars of assistant content synced per turn (0=no limit)"},
     {"key": "MNEMOSYNE_PREFETCH_CONTENT_CHARS", "env": "MNEMOSYNE_PREFETCH_CONTENT_CHARS", "default": "0", "desc": "Truncate prefetched content to N chars (0=no truncation)"},
+    {"key": "MNEMOSYNE_PREFETCH_CANONICAL_GENERIC_TOKENS", "env": "MNEMOSYNE_PREFETCH_CANONICAL_GENERIC_TOKENS", "default": "user,owner,assistant,agent,system,profile,identity,default", "desc": "Comma/space-separated local owner/system words that should not by themselves make canonical facts relevant"},
+    {"key": "MNEMOSYNE_RECALL_EXTRA_STOPWORDS", "env": "MNEMOSYNE_RECALL_EXTRA_STOPWORDS", "default": "", "desc": "Comma/space-separated extra lexical stopwords for local recall corpora"},
     {"key": "MNEMOSYNE_PREFETCH_PROFILE", "env": "MNEMOSYNE_PREFETCH_PROFILE", "default": "general", "desc": "Prefetch profile name (general, coding, etc.)"},
 
     # ── MCP & Identity ──

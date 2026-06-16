@@ -359,3 +359,24 @@ class TestHindsightImportEmbeddingBackfill(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_broad_meta_query_abstains(tmp_path):
+    from mnemosyne.core.beam import BeamMemory
+
+    db = tmp_path / "mnemo.db"
+    beam = BeamMemory(db_path=db)
+    beam.remember(
+        "Operators should prefer general recall-quality fixes over phrase-specific source patches.",
+        source="preference",
+        importance=0.9,
+    )
+    beam.remember(
+        "The project has a refrigerator inventory spreadsheet in the kitchen folder.",
+        source="fact",
+        importance=0.8,
+    )
+
+    results = beam.recall("flibbertigibbet tungsten prophecy unrelated search query", top_k=5)
+
+    assert results == []

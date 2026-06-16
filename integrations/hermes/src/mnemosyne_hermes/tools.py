@@ -371,6 +371,47 @@ RECALL_CANONICAL_SCHEMA = {
     },
 }
 
+MODEL_CARD_SCHEMA = {
+    "name": "mnemosyne_model_card",
+    "description": (
+        "Render current canonical slots as a compact deterministic model card. "
+        "Use this for Hindsight-style user, workflow, project, or agent mental-model "
+        "summaries when the facts already live in canonical storage. This does not "
+        "call an LLM or create a new memory; it is a view over current canonical facts."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "category": {"type": "string", "description": "Canonical category to render, e.g. 'model:user' or 'identity'"},
+            "title": {"type": "string", "description": "Optional display title", "default": ""},
+            "names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional ordered subset of slot names to include",
+                "default": [],
+            },
+        },
+        "required": ["category"],
+    },
+}
+
+MODEL_REFRESH_SCHEMA = {
+    "name": "mnemosyne_model_refresh",
+    "description": (
+        "Inspect sleep-time LLM-inferred canonical model update outcomes. "
+        "Normal behavior is automated during sleep: validated candidates are "
+        "auto-applied or auto-rejected by policy. This tool is diagnostic only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["list"], "default": "list"},
+            "status": {"type": "string", "description": "pending, applied, rejected, or all", "default": "all"},
+            "limit": {"type": "integer", "description": "Max proposals to list", "default": 20},
+        },
+    },
+}
+
 SCRATCHPAD_WRITE_SCHEMA = {
     "name": "mnemosyne_scratchpad_write",
     "description": "Write a temporary note to the Mnemosyne scratchpad.",
@@ -610,8 +651,8 @@ ALL_TOOL_SCHEMAS = [
     SHARED_FORGET_SCHEMA, SHARED_STATS_SCHEMA, SLEEP_SCHEMA, STATS_SCHEMA,
     INVALIDATE_SCHEMA, VALIDATE_SCHEMA, GET_SCHEMA, TRIPLE_ADD_SCHEMA, TRIPLE_QUERY_SCHEMA,
     TRIPLE_END_SCHEMA,
-    REMEMBER_CANONICAL_SCHEMA, RECALL_CANONICAL_SCHEMA,
-    SCRATCHPAD_WRITE_SCHEMA, SCRATCHPAD_READ_SCHEMA, SCRATCHPAD_CLEAR_SCHEMA,
+    REMEMBER_CANONICAL_SCHEMA, RECALL_CANONICAL_SCHEMA, MODEL_CARD_SCHEMA,
+    MODEL_REFRESH_SCHEMA, SCRATCHPAD_WRITE_SCHEMA, SCRATCHPAD_READ_SCHEMA, SCRATCHPAD_CLEAR_SCHEMA,
     EXPORT_SCHEMA, UPDATE_SCHEMA, FORGET_SCHEMA, IMPORT_SCHEMA, DIAGNOSE_SCHEMA,
     GRAPH_QUERY_SCHEMA, GRAPH_LINK_SCHEMA,
     SYNC_PUSH_SCHEMA, SYNC_PULL_SCHEMA, SYNC_STATUS_SCHEMA,

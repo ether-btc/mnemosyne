@@ -1543,7 +1543,18 @@ _FACT_MATCH_STOPWORDS: Set[str] = {
     # to them" to fact-match unrelated policies via overlaps such as "not/they".
     "again", "into", "not", "please", "somewhere", "supposed", "them", "then",
     "they", "whatever",
+    # Query/meta words describe the retrieval act, not the user's target.
+    # Deployments can extend these with MNEMOSYNE_RECALL_EXTRA_STOPWORDS
+    # instead of patching source for local corpora.
+    "ask", "asking", "query", "question", "questions", "search", "retrieve", "recall",
 }
+
+_extra_recall_stopwords = {
+    token.strip().lower()
+    for token in re.split(r"[,\s]+", os.environ.get("MNEMOSYNE_RECALL_EXTRA_STOPWORDS", ""))
+    if len(token.strip()) >= 3
+}
+_FACT_MATCH_STOPWORDS.update(_extra_recall_stopwords)
 
 # Unicode-aware recall tokenization.
 #
@@ -7858,6 +7869,8 @@ class BeamMemory:
         summaries_created = 0
         llm_used_count = 0
         conflicts_resolved = 0
+        model_refresh_proposals = 0
+        model_refresh_applied = 0
         for source, items in grouped.items():
             lines = [item["content"] for item in items]
             ids = [item["id"] for item in items]
@@ -7960,6 +7973,18 @@ class BeamMemory:
                 compressed = aaak_encode(combined)
                 summary = f"[{source}] {compressed}"
 
+            # --- Phase 2: model-refresh inference for canonical model slots ---
+            # This follows sleep by default. It asks the same configured LLM path
+            # for structured candidate updates, then stores pending proposal rows
+            # instead of directly overwriting canonical facts.
+            proposals = []
+            try:
+                from mnemosyne.core import model_refresh
+                proposals = model_refresh.infer_model_update_proposals(items)
+            except Exception:
+                proposals = []
+            model_refresh_proposals += len(proposals)
+
             if not dry_run:
                 # Originals are already claimed (consolidated_at set above).
                 # Just write the summary. If consolidate_to_episodic raises
@@ -7980,6 +8005,30 @@ class BeamMemory:
                         "llm_used": llm_succeeded
                     }
                 )
+                if proposals:
+                    from mnemosyne.core import model_refresh
+                    proposal_ts = datetime.now().isoformat()
+                    for proposal in proposals:
+                        metadata = model_refresh.prepare_proposal_metadata(proposal, source_wm_ids=ids)
+                        proposal_id = self.remember(
+                            model_refresh.proposal_to_memory_content(proposal),
+                            source="sleep_model_refresh_proposal",
+                            importance=float(proposal.get("confidence") or 0.5),
+                            metadata=metadata,
+                            scope="session",
+                            veracity="inferred",
+                            trust_tier="DERIVED",
+                        )
+                        # Proposal rows are review artifacts from this sleep pass,
+                        # not fresh raw memories that should recursively trigger
+                        # another sleep loop.
+                        cursor.execute(
+                            "UPDATE working_memory SET consolidated_at = ?, consolidation_claimed_at = NULL WHERE id = ?",
+                            (proposal_ts, proposal_id),
+                        )
+                        if model_refresh.maybe_auto_apply_model_refresh_proposal(self, proposal_id, owner_id="default"):
+                            model_refresh_applied += 1
+                    self.conn.commit()
                 group_placeholders = ",".join("?" * len(ids))
                 cursor.execute(
                     f"UPDATE working_memory SET consolidation_claimed_at = NULL "
@@ -8019,7 +8068,11 @@ class BeamMemory:
             "llm_used": llm_used_count,
             "method": method,
             "consolidated_ids": consolidated_ids,
-            "degradation": degrade_result
+            "degradation": degrade_result,
+            "model_refresh": {
+                "proposals": model_refresh_proposals,
+                "applied": model_refresh_applied,
+            }
         }
 
     def sleep_all_sessions(self, dry_run: bool = False, force: bool = False) -> Dict:
@@ -8058,6 +8111,7 @@ class BeamMemory:
                 "summaries_created": 0,
                 "llm_used": 0,
                 "errors": 0,
+                "model_refresh": {"proposals": 0, "applied": 0},
                 "session_results": [],
             }
 
@@ -8067,6 +8121,8 @@ class BeamMemory:
         summaries_created = 0
         llm_used = 0
         errors = []
+        model_refresh_proposals = 0
+        model_refresh_applied = 0
 
         for row in session_rows:
             session_id = row["session_id"] if hasattr(row, "keys") else row[0]
@@ -8102,6 +8158,9 @@ class BeamMemory:
                     items_consolidated += int(result.get("items_consolidated", 0) or 0)
                     summaries_created += int(result.get("summaries_created", 0) or 0)
                     llm_used += int(result.get("llm_used", 0) or 0)
+                    refresh = result.get("model_refresh") or {}
+                    model_refresh_proposals += int(refresh.get("proposals", 0) or 0)
+                    model_refresh_applied += int(refresh.get("applied", 0) or 0)
             except Exception as exc:
                 logger.error(
                     "sleep_all_sessions: session %r consolidation failed: %s",
@@ -8125,6 +8184,10 @@ class BeamMemory:
             "llm_used": llm_used,
             "errors": len(errors),
             "error_details": errors,
+            "model_refresh": {
+                "proposals": model_refresh_proposals,
+                "applied": model_refresh_applied,
+            },
             "session_results": session_results,
             "degradation": degrade_result
         }

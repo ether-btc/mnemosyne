@@ -345,10 +345,42 @@ class TestProviderTools(unittest.TestCase):
         ))
         self.assertIn("error", out)
 
+    def test_model_card_tool_renders_current_slots(self):
+        self.provider.handle_tool_call(
+            "mnemosyne_remember_canonical",
+            {"category": "model:user", "name": "style", "body": "Prefers concise technical answers."},
+        )
+        self.provider.handle_tool_call(
+            "mnemosyne_remember_canonical",
+            {"category": "model:user", "name": "style", "body": "Prefers concise answers with evidence."},
+        )
+        self.provider.handle_tool_call(
+            "mnemosyne_remember_canonical",
+            {"category": "model:user", "name": "risk", "body": "Ask before destructive operations."},
+        )
+
+        got = json.loads(self.provider.handle_tool_call(
+            "mnemosyne_model_card",
+            {"category": "model:user", "title": "User model", "names": ["style"]},
+        ))
+
+        self.assertEqual(got["owner_id"], "jessi")
+        self.assertEqual(got["category"], "model:user")
+        self.assertEqual([slot["name"] for slot in got["slots"]], ["style"])
+        self.assertIn("## User model", got["body"])
+        self.assertIn("Prefers concise answers with evidence.", got["body"])
+        self.assertNotIn("technical answers", got["body"])
+        self.assertNotIn("destructive operations", got["body"])
+
+    def test_model_card_requires_category(self):
+        got = json.loads(self.provider.handle_tool_call("mnemosyne_model_card", {}))
+        self.assertIn("error", got)
+
     def test_schemas_exposed(self):
         names = {s["name"] for s in self.provider.get_tool_schemas()}
         self.assertIn("mnemosyne_remember_canonical", names)
         self.assertIn("mnemosyne_recall_canonical", names)
+        self.assertIn("mnemosyne_model_card", names)
 
 
 if __name__ == "__main__":

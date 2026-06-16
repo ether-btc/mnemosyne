@@ -186,6 +186,9 @@ _PREFETCH_DEDUP_STOPWORDS = _PREFETCH_FRAGMENT_STOPWORDS | frozenset({
     "like", "more", "need", "needs", "than", "them", "they", "want", "wants",
     "when", "where", "which", "while", "would", "yourself",
 })
+_PREFETCH_MODEL_SLOT_STOPWORDS = _PREFETCH_DEDUP_STOPWORDS | frozenset({
+    "and", "are", "for", "how", "should", "the", "with", "what", "why",
+})
 
 
 def _is_low_quality_prefetch(content: str) -> bool:
@@ -216,6 +219,28 @@ def _prefetch_tokens(content: str) -> Set[str]:
         if len(token) <= 2 or token in _PREFETCH_DEDUP_STOPWORDS:
             continue
         tokens.add(token)
+    return tokens
+
+
+def _prefetch_model_slot_tokens(content: str) -> Set[str]:
+    """Content-word tokens for selected canonical model-slot injection.
+
+    Model-slot injection is more dangerous than dedup tokenization because a
+    single overlap can silently inject a durable user/workflow model into the
+    prompt. Ignore common function words so unrelated slots do not match on
+    tokens like "and" or "the". Expand structured slot labels such as
+    ``communication_style`` into useful lexical pieces so normal queries like
+    "communication style" can match them.
+    """
+
+    tokens: Set[str] = set()
+    for token in _prefetch_tokens(content):
+        if token in _PREFETCH_MODEL_SLOT_STOPWORDS:
+            continue
+        tokens.add(token)
+        for part in re.split(r"[_:/.-]+", token):
+            if len(part) > 2 and part not in _PREFETCH_MODEL_SLOT_STOPWORDS:
+                tokens.add(part)
     return tokens
 
 
@@ -770,6 +795,47 @@ RECALL_CANONICAL_SCHEMA = {
     },
 }
 
+MODEL_CARD_SCHEMA = {
+    "name": "mnemosyne_model_card",
+    "description": (
+        "Render current canonical slots as a compact deterministic model card. "
+        "Use this for Hindsight-style user, workflow, project, or agent mental-model "
+        "summaries when the facts already live in canonical storage. This does not "
+        "call an LLM or create a new memory; it is a view over current canonical facts."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "category": {"type": "string", "description": "Canonical category to render, e.g. 'model:user' or 'identity'"},
+            "title": {"type": "string", "description": "Optional display title", "default": ""},
+            "names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional ordered subset of slot names to include",
+                "default": [],
+            },
+        },
+        "required": ["category"],
+    },
+}
+
+MODEL_REFRESH_SCHEMA = {
+    "name": "mnemosyne_model_refresh",
+    "description": (
+        "Inspect sleep-time LLM-inferred canonical model update outcomes. "
+        "Normal behavior is automated during sleep: validated candidates are "
+        "auto-applied or auto-rejected by policy. This tool is diagnostic only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["list"], "default": "list"},
+            "status": {"type": "string", "description": "pending, applied, rejected, or all", "default": "all"},
+            "limit": {"type": "integer", "description": "Max proposals to list", "default": 20},
+        },
+    },
+}
+
 SCRATCHPAD_WRITE_SCHEMA = {
     "name": "mnemosyne_scratchpad_write",
     "description": "Write a temporary note to the Mnemosyne scratchpad.",
@@ -987,8 +1053,8 @@ ALL_TOOL_SCHEMAS = [
     SHARED_FORGET_SCHEMA, SHARED_STATS_SCHEMA, SLEEP_SCHEMA, STATS_SCHEMA,
     INVALIDATE_SCHEMA, VALIDATE_SCHEMA, GET_SCHEMA, TRIPLE_ADD_SCHEMA, TRIPLE_QUERY_SCHEMA,
     TRIPLE_END_SCHEMA,
-    REMEMBER_CANONICAL_SCHEMA, RECALL_CANONICAL_SCHEMA,
-    SCRATCHPAD_WRITE_SCHEMA, SCRATCHPAD_READ_SCHEMA, SCRATCHPAD_CLEAR_SCHEMA,
+    REMEMBER_CANONICAL_SCHEMA, RECALL_CANONICAL_SCHEMA, MODEL_CARD_SCHEMA,
+    MODEL_REFRESH_SCHEMA, SCRATCHPAD_WRITE_SCHEMA, SCRATCHPAD_READ_SCHEMA, SCRATCHPAD_CLEAR_SCHEMA,
     EXPORT_SCHEMA, UPDATE_SCHEMA, FORGET_SCHEMA, IMPORT_SCHEMA, DIAGNOSE_SCHEMA,
     GRAPH_QUERY_SCHEMA, GRAPH_LINK_SCHEMA,
     *ALL_SYNC_TOOL_SCHEMAS,
@@ -1103,7 +1169,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         self._reflect_calls_this_session = 0
         self._reflect_budget_lock = threading.Lock()
         self._ignore_patterns: List[str] = []  # Regex patterns to filter from memory
-        self._sync_roles: Set[str] = self._VALID_SYNC_ROLES.copy()
+        self._sync_roles: Set[str] = {"user"}
         _sync_env = os.environ.get("MNEMOSYNE_SYNC_ROLES")
         if _sync_env is not None:
             _parsed_roles = {r.strip().lower() for r in _sync_env.split(",") if r.strip()}
@@ -1317,7 +1383,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 self._skip_contexts = set(str(s).strip() for s in _skip_raw if str(s).strip())
 
         # sync_roles: which conversation roles to autosave in sync_turn().
-        # Default ["user", "assistant"] preserves existing behavior.
+        # Default ["user"] avoids assistant transcript noise in automatic memory.
         # Set to ["user"] to save only user turns, [] to disable autosave.
         _sync_raw = kwargs.get("sync_roles")
         if _sync_raw is None:
@@ -1428,7 +1494,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
             {"key": "shared_surface_path", "description": "SQLite path for shared surface memories. Default is <mnemosyne>/data/shared/mnemosyne.db.", "default": "data/shared/mnemosyne.db"},
             {"key": "shared_surface_read", "description": "When true, mnemosyne_recall merges shared-surface results into private bank recall, tagging each result with its bank ('private' or 'surface'). Default false.", "default": False},
             {"key": "skip_contexts", "description": "Agent contexts where Mnemosyne should skip initialization. Comma-separated list. Defaults to 'cron,flush,subagent,background,skill_loop'. Set to empty string to enable all contexts. Also configurable via MNEMOSYNE_SKIP_CONTEXTS env var.", "default": "cron,flush,subagent,background,skill_loop"},
-            {"key": "sync_roles", "description": "Conversation roles to autosave in sync_turn(). List of role names: 'user', 'assistant'. Default ['user', 'assistant'] saves both. Set to ['user'] for user turns only, or [] to disable conversation autosave entirely. Does not affect explicit mnemosyne_remember calls. Identity signal capture is gated by user sync — excluding 'user' also disables identity extraction. Also configurable via MNEMOSYNE_SYNC_ROLES env var.", "default": ["user", "assistant"]},
+            {"key": "sync_roles", "description": "Conversation roles to autosave in sync_turn(). List of role names: 'user', 'assistant'. Default ['user'] saves user turns only to avoid assistant transcript noise. Set to ['user', 'assistant'] only if assistant transcript autosave is explicitly wanted, or [] to disable conversation autosave entirely. Does not affect explicit mnemosyne_remember calls. Identity signal capture is gated by user sync — excluding 'user' also disables identity extraction. Also configurable via MNEMOSYNE_SYNC_ROLES env var.", "default": ["user"]},
             {"key": "default_scope", "description": "Default scope for remember() calls when not explicitly specified. 'session' (default) limits memories to the current session. 'global' persists memories across sessions.", "choices": ["session", "global"], "default": "session"},
         ]
 
@@ -1690,6 +1756,9 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # it is talking to. Inject them deterministically at the FRONT, scoped
         # strictly to the active session_id, deduplicated against whatever
         # recall already surfaced. No identity rows == no-op (legacy behavior).
+        model_block = self._prefetch_model_slots(query, profile)
+        if model_block:
+            blocks.insert(0, model_block)
         identity_block = self._prefetch_identity(blocks, profile)
         if identity_block:
             blocks.insert(0, identity_block)
@@ -1729,6 +1798,65 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if len(lines) <= 1:
             return ""
         return "\n".join(lines)
+
+    def _prefetch_model_slots(self, query: str, profile: "PrefetchProfile") -> str:
+        """Render relevant accepted canonical model slots for silent prefetch.
+
+        Model cards are a display/debug view; normal prompt injection uses only
+        selected canonical model slots with clear query overlap. This mirrors the
+        useful part of Hindsight mental-model injection without globally
+        injecting whole cards.
+        """
+        beam = self._beam
+        if beam is None:
+            return ""
+        query_tokens = _prefetch_model_slot_tokens(query)
+        if not query_tokens:
+            return ""
+        try:
+            max_slots = int(os.environ.get("MNEMOSYNE_PREFETCH_MODEL_SLOT_LIMIT", "3") or "3")
+        except (TypeError, ValueError):
+            max_slots = 3
+        try:
+            min_signal = int(os.environ.get("MNEMOSYNE_PREFETCH_MODEL_SLOT_MIN_OVERLAP", "1") or "1")
+        except (TypeError, ValueError):
+            min_signal = 1
+        try:
+            store = getattr(beam, "canonical", None)
+            if store is None:
+                from mnemosyne.core.canonical import CanonicalStore
+                store = CanonicalStore(db_path=beam.db_path, conn=beam.conn)
+                beam.canonical = store
+            owner_id = self._canonical_owner()
+            rows = []
+            for category in ("model:user", "model:workflow", "model:project", "model:agent"):
+                rows.extend(store.list(owner_id, category=category))
+        except Exception as e:
+            logger.debug("Mnemosyne model-slot prefetch failed (non-fatal): %s", e)
+            return ""
+        scored: List[tuple] = []
+        for row in rows:
+            text = " ".join(str(row.get(k) or "") for k in ("category", "name", "body"))
+            tokens = _prefetch_model_slot_tokens(text)
+            overlap = len(query_tokens & tokens)
+            if overlap < min_signal:
+                continue
+            confidence = float(row.get("confidence") or 0.0)
+            scored.append((overlap, confidence, row))
+        if not scored:
+            return ""
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        content_limit = _prefetch_content_char_limit() or profile.content_char_limit
+        lines = ["## Mnemosyne Model Context"]
+        for _, _, row in scored[:max_slots]:
+            body = _format_prefetch_content(str(row.get("body") or ""), content_limit)
+            body = " ".join(body.split())
+            if not body:
+                continue
+            category = str(row.get("category") or "model")
+            name = str(row.get("name") or "slot").replace("_", " ")
+            lines.append(f"  [{category}] {name}: {body}")
+        return "\n".join(lines) if len(lines) > 1 else ""
 
     def _identity_fichas(self) -> List[Dict[str, Any]]:
         """Return ALL identity memories for the ACTIVE session, deterministically.
@@ -2015,6 +2143,10 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 return self._handle_remember_canonical(args)
             elif tool_name == "mnemosyne_recall_canonical":
                 return self._handle_recall_canonical(args)
+            elif tool_name == "mnemosyne_model_card":
+                return self._handle_model_card(args)
+            elif tool_name == "mnemosyne_model_refresh":
+                return self._handle_model_refresh(args)
             elif tool_name == "mnemosyne_scratchpad_write":
                 return self._handle_scratchpad_write(args)
             elif tool_name == "mnemosyne_scratchpad_read":
@@ -2597,6 +2729,46 @@ class MnemosyneMemoryProvider(MemoryProvider):
         return json.dumps({"mode": "list", "owner_id": owner_id,
                            "category": category or None,
                            "count": len(results), "results": results})
+
+    def _handle_model_card(self, args: Dict[str, Any]) -> str:
+        category = (args.get("category") or "").strip()
+        if not category:
+            return json.dumps({"error": "category is required"})
+        title = (args.get("title") or "").strip() or None
+        raw_names = args.get("names") or []
+        if isinstance(raw_names, str):
+            names = [n.strip() for n in raw_names.split(",") if n.strip()]
+        else:
+            names = [str(n).strip() for n in raw_names if str(n).strip()]
+        owner_id = self._canonical_owner()
+        store = getattr(self._beam, "canonical", None)
+        if store is None:
+            from mnemosyne.core.canonical import CanonicalStore
+            store = CanonicalStore(db_path=self._beam.db_path, conn=self._beam.conn)
+            self._beam.canonical = store
+        card = store.model_card(owner_id, category, title=title, names=names or None)
+        return json.dumps(card)
+
+    def _handle_model_refresh(self, args: Dict[str, Any]) -> str:
+        action = (args.get("action") or "list").strip().lower()
+        if action != "list":
+            return json.dumps({"error": "mnemosyne_model_refresh is diagnostic-only; sleep applies or rejects proposals automatically"})
+        from mnemosyne.core import model_refresh
+        try:
+            limit = int(args.get("limit", 20))
+        except (TypeError, ValueError):
+            limit = 20
+        status = (args.get("status") or "all").strip().lower()
+        proposals = model_refresh.list_model_refresh_proposals(
+            self._beam, status=status, limit=limit,
+        )
+        return json.dumps({
+            "status": "ok",
+            "mode": "diagnostic",
+            "filter": status,
+            "count": len(proposals),
+            "proposals": proposals,
+        })
 
     def _handle_scratchpad_write(self, args: Dict[str, Any]) -> str:
         content = args.get("content", "").strip()

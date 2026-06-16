@@ -103,52 +103,32 @@ def test_beam_integration_with_llm_conflict(mock_call, temp_db):
 
     # Set up BeamMemory
     mem = BeamMemory(db_path=temp_db, session_id="test_session")
-    
-    # Enable embeddings availability mock so Phase 1 collects embeddings
-    with patch("mnemosyne.core.beam._embeddings") as mock_emb:
-        mock_emb.available.return_value = True
-        mock_emb._DEFAULT_MODEL = "test_model"
-        # Return mock embeddings vectors (must be length 1 for single content embed)
-        import numpy as np
-        mock_emb.embed.return_value = np.array([[1.0] * 384])
-        mock_emb.serialize.return_value = "[1.0]"
 
-        # Create two working memory rows that represent semantic overlap but timestamps differ
-        # Use different times (>1 hour) to trigger heuristics, and make both older than sleep threshold (>12 hours)
-        id1 = mem.remember("The project meeting was originally scheduled for May 29th")
-        
-        # Modify the timestamp of the first memory to be 14 hours older using Python ISO format
-        from datetime import datetime, timedelta
-        id1_ts = (datetime.now() - timedelta(hours=100)).isoformat()
-        cursor = mem.conn.cursor()
-        cursor.execute("UPDATE working_memory SET timestamp = ? WHERE id = ?", (id1_ts, id1))
-        mem.conn.commit()
+    from datetime import datetime, timedelta
 
-        # Add the newer correction
-        id2 = mem.remember("No wait, the project meeting is definitely on June 5th")
-        
-        # Modify the timestamp of the second memory to be 13 hours older using Python ISO format
-        id2_ts = (datetime.now() - timedelta(hours=99)).isoformat()
-        cursor.execute("UPDATE working_memory SET timestamp = ? WHERE id = ?", (id2_ts, id2))
-        mem.conn.commit()
+    id1 = "conflict-old"
+    id2 = "conflict-new"
+    id1_ts = (datetime.now() - timedelta(hours=100)).isoformat()
+    id2_ts = (datetime.now() - timedelta(hours=99)).isoformat()
+    cursor = mem.conn.cursor()
+    cursor.executemany(
+        "INSERT INTO working_memory (id, content, source, timestamp, session_id) VALUES (?, ?, ?, ?, ?)",
+        [
+            (id1, "The project meeting was originally scheduled for May 29th", "conversation", id1_ts, "test_session"),
+            (id2, "No wait, the project meeting is definitely on June 5th", "conversation", id2_ts, "test_session"),
+        ],
+    )
+    mem.conn.commit()
 
-        # Verify heuristic detection triggers them as candidate conflict
-        ctx = mem.get_context(limit=10)
-        candidates = mem._detect_conflicts(ctx, similarity_threshold=0.8)
-        assert (id1, id2) in candidates or (id2, id1) in candidates
-
-        # Let's test sleep consolidation with LLM active
+    # This test targets the sleep → LLM validation → invalidation path.
+    # Mock the heuristic candidate seam directly instead of depending on
+    # embedding implementation details or phrase overlap thresholds.
+    with patch.object(mem, "_detect_conflicts", return_value=[(id1, id2)]):
         with patch("mnemosyne.core.llm_conflict_detector.LLM_CONFLICT_DETECTION_ENABLED", True):
-            # Run sleep
             res = mem.sleep()
             assert res.get("conflicts_resolved", 0) >= 1
 
-            # Verify older memory (id1) is indeed invalidated/superseded_by the newer one (id2)
-            row = mem.get(id1)
-            # Since it was invalidated, we should see it marked as superseded
-            # Let's check db row directly
             cursor = mem.conn.cursor()
             cursor.execute("SELECT superseded_by FROM working_memory WHERE id = ?", (id1,))
             superseded = cursor.fetchone()[0]
             assert superseded == id2
-

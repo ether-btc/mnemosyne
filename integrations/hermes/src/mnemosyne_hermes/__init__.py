@@ -115,6 +115,37 @@ _PREFETCH_DEDUP_STOPWORDS = _PREFETCH_FRAGMENT_STOPWORDS | frozenset({
     "like", "more", "need", "needs", "than", "them", "they", "want", "wants",
     "when", "where", "which", "while", "would", "yourself",
 })
+def _parse_token_set_env(key: str, default: Set[str]) -> Set[str]:
+    """Read a comma/space-separated token set from env.
+
+    Empty/unset means use ``default``. This keeps relevance tuning generic for
+    upstream users while allowing deployments to mark local owner/assistant
+    names as non-topical via configuration.
+    """
+    raw = os.environ.get(key, "").strip()
+    if not raw:
+        return set(default)
+    tokens: Set[str] = set()
+    for token in re.split(r"[,\s]+", raw.lower()):
+        token = token.strip(".,;!?()[]{}\"'“”’‘")
+        if len(token) > 2:
+            tokens.add(token)
+    return tokens or set(default)
+
+
+# Generic schema/system labels do not, by themselves, prove a canonical fact is
+# relevant to a turn. Deployments can extend this list with local owner/assistant
+# names using MNEMOSYNE_PREFETCH_CANONICAL_GENERIC_TOKENS.
+_PREFETCH_CANONICAL_GENERIC_TOKEN_DEFAULTS = {
+    "user", "owner", "assistant", "agent", "system", "profile", "identity", "default"
+}
+
+
+def _prefetch_canonical_generic_tokens() -> Set[str]:
+    return _parse_token_set_env(
+        "MNEMOSYNE_PREFETCH_CANONICAL_GENERIC_TOKENS",
+        _PREFETCH_CANONICAL_GENERIC_TOKEN_DEFAULTS,
+    )
 
 
 def _is_low_quality_prefetch(content: str) -> bool:
@@ -141,10 +172,68 @@ def _prefetch_tokens(content: str) -> Set[str]:
     c = _strip_prefetch_prefix(content).lower()
     tokens: Set[str] = set()
     for token in _PREFETCH_TOKEN_RE.findall(c):
+        # Keep internal URL/path separators, but trim sentence punctuation so
+        # canonical facts ending in "branding." still match query token
+        # "branding". This is a relevance fix, not fuzzy matching.
+        token = token.strip(".,;!?()[]{}\"'“”’‘")
         if len(token) <= 2 or token in _PREFETCH_DEDUP_STOPWORDS:
             continue
         tokens.add(token)
     return tokens
+
+
+def _canonical_prefetch_rows(store: Any, owner_id: str, query: str, *, limit: int = 3) -> List[Dict[str, Any]]:
+    """Return canonical facts relevant enough for automatic memory-context injection.
+
+    Canonical rows are small, owner-scoped, and single-source-of-truth, so a
+    lightweight lexical pass over current slots is enough and avoids LLM/reranker
+    cost. Importance cannot rescue a row here; it must share query terms.
+    """
+    query_tokens = _prefetch_tokens(query)
+    if not query_tokens:
+        return []
+    try:
+        rows = store.list(owner_id)
+    except Exception:
+        return []
+    candidates: List[Dict[str, Any]] = []
+    for row in rows:
+        body = str(row.get("body") or "").strip()
+        if not body:
+            continue
+        # Score canonical relevance from the fact body itself. Category/name
+        # labels such as "identity" or "profile" are schema metadata; counting
+        # them as topical evidence made generic identity slots inject into
+        # unrelated professional-identity questions.
+        row_tokens = _prefetch_tokens(body)
+        overlap = query_tokens & row_tokens
+        generic_tokens = _prefetch_canonical_generic_tokens()
+        distinctive_overlap = overlap - generic_tokens
+        if not distinctive_overlap:
+            continue
+        # One distinctive token can be enough for canonical slots such as
+        # profile URLs; broad queries need a little more coverage. Generic
+        # owner/system words do not count toward the minimum overlap.
+        coverage = len(overlap) / max(len(query_tokens), 1)
+        distinctive_coverage = len(distinctive_overlap) / max(len(query_tokens - generic_tokens), 1)
+        if len(distinctive_overlap) < 2 and max(coverage, distinctive_coverage) < 0.30:
+            continue
+        score = min(1.0, 0.72 + coverage * 0.24 + min(len(overlap), 3) * 0.03)
+        candidates.append({
+            "content": body,
+            "source": f"canonical:{row.get('category') or 'fact'}",
+            "timestamp": row.get("valid_from") or row.get("created_at") or "",
+            "importance": 0.95,
+            "score": score,
+            "keyword_score": max(0.35, coverage),
+            "fact_match": True,
+            "trust_tier": "CANONICAL",
+            "tier": "canonical",
+            "canonical_category": row.get("category"),
+            "canonical_name": row.get("name"),
+        })
+    candidates.sort(key=lambda r: (float(r.get("score") or 0.0), float(r.get("keyword_score") or 0.0)), reverse=True)
+    return candidates[:limit]
 
 
 def _prefetch_topic_signal(row: Dict[str, Any]) -> float:
@@ -360,7 +449,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
         self._reflect_calls_this_session = 0
         self._reflect_budget_lock = threading.Lock()
         self._ignore_patterns: List[str] = []  # Regex patterns to filter from memory
-        self._sync_roles: Set[str] = set(self._VALID_SYNC_ROLES)
+        self._sync_roles: Set[str] = {"user"}
         _sync_env = os.environ.get("MNEMOSYNE_SYNC_ROLES")
         if _sync_env is not None:
             _parsed_roles = {r.strip().lower() for r in _sync_env.split(",") if r.strip()}
@@ -937,7 +1026,19 @@ class MnemosyneMemoryProvider(MemoryProvider):
             if author_id:
                 recall_kwargs["author_id"] = author_id
             results = self._beam.recall(**recall_kwargs)
-            if not results:
+
+            canonical_rows: List[Dict[str, Any]] = []
+            try:
+                store = getattr(self._beam, "canonical", None)
+                if store is None:
+                    from mnemosyne.core.canonical import CanonicalStore
+                    store = CanonicalStore(db_path=self._beam.db_path, conn=self._beam.conn)
+                    self._beam.canonical = store
+                canonical_rows = _canonical_prefetch_rows(store, self._canonical_owner(), query)
+            except Exception:
+                canonical_rows = []
+
+            if not results and not canonical_rows:
                 return ""
             # Filter out low-relevance results to prevent context pollution.
             # Importance alone is not enough for silent injection: a memory must
@@ -959,6 +1060,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
                     continue
                 filtered.append(r)
 
+            if canonical_rows:
+                filtered.extend(canonical_rows)
             filtered.sort(key=_prefetch_adjusted_score, reverse=True)
             filtered = _semantic_dedup_prefetch(filtered)[:_PREFETCH_TOP_K]
             if not filtered:
@@ -1135,6 +1238,10 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 return self._handle_remember_canonical(args)
             elif tool_name == "mnemosyne_recall_canonical":
                 return self._handle_recall_canonical(args)
+            elif tool_name == "mnemosyne_model_card":
+                return self._handle_model_card(args)
+            elif tool_name == "mnemosyne_model_refresh":
+                return self._handle_model_refresh(args)
             elif tool_name == "mnemosyne_scratchpad_write":
                 return self._handle_scratchpad_write(args)
             elif tool_name == "mnemosyne_scratchpad_read":
@@ -1273,6 +1380,25 @@ class MnemosyneMemoryProvider(MemoryProvider):
             results = recall_payload.get("results", [])
         else:
             results = recall_payload
+
+        # Merge owner-scoped canonical facts into normal recall. Canonical rows
+        # are the adapter's compact profile/directive surface, so callers should
+        # not need to know a separate tool exists for ordinary profile/fact queries.
+        try:
+            store = getattr(self._beam, "canonical", None)
+            if store is None:
+                from mnemosyne.core.canonical import CanonicalStore
+                store = CanonicalStore(db_path=self._beam.db_path, conn=self._beam.conn)
+                self._beam.canonical = store
+            canonical_rows = _canonical_prefetch_rows(store, self._canonical_owner(), query, limit=max(2, min(top_k, 5)))
+        except Exception:
+            canonical_rows = []
+        if canonical_rows:
+            results = list(results) + canonical_rows
+            results.sort(key=lambda x: x.get("score") or 0.0, reverse=True)
+            results = _semantic_dedup_prefetch(results)[:top_k]
+            if explain_payload is not None:
+                explain_payload.setdefault("provider", {})["canonical_untraced"] = len(canonical_rows)
 
         # Tag private results with their bank so callers can distinguish from
         # shared-surface entries when surface read is enabled.
@@ -1724,6 +1850,46 @@ class MnemosyneMemoryProvider(MemoryProvider):
         return json.dumps({"mode": "list", "owner_id": owner_id,
                            "category": category or None,
                            "count": len(results), "results": results})
+
+    def _handle_model_card(self, args: Dict[str, Any]) -> str:
+        category = (args.get("category") or "").strip()
+        if not category:
+            return json.dumps({"error": "category is required"})
+        title = (args.get("title") or "").strip() or None
+        raw_names = args.get("names") or []
+        if isinstance(raw_names, str):
+            names = [n.strip() for n in raw_names.split(",") if n.strip()]
+        else:
+            names = [str(n).strip() for n in raw_names if str(n).strip()]
+        owner_id = self._canonical_owner()
+        store = getattr(self._beam, "canonical", None)
+        if store is None:
+            from mnemosyne.core.canonical import CanonicalStore
+            store = CanonicalStore(db_path=self._beam.db_path, conn=self._beam.conn)
+            self._beam.canonical = store
+        card = store.model_card(owner_id, category, title=title, names=names or None)
+        return json.dumps(card)
+
+    def _handle_model_refresh(self, args: Dict[str, Any]) -> str:
+        action = (args.get("action") or "list").strip().lower()
+        if action != "list":
+            return json.dumps({"error": "mnemosyne_model_refresh is diagnostic-only; sleep applies or rejects proposals automatically"})
+        from mnemosyne.core import model_refresh
+        try:
+            limit = int(args.get("limit", 20))
+        except (TypeError, ValueError):
+            limit = 20
+        status = (args.get("status") or "all").strip().lower()
+        proposals = model_refresh.list_model_refresh_proposals(
+            self._beam, status=status, limit=limit,
+        )
+        return json.dumps({
+            "status": "ok",
+            "mode": "diagnostic",
+            "filter": status,
+            "count": len(proposals),
+            "proposals": proposals,
+        })
 
     def _handle_scratchpad_write(self, args: Dict[str, Any]) -> str:
         content = args.get("content", "").strip()

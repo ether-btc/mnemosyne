@@ -36,8 +36,8 @@ class TestSyncRoles:
             except OSError:
                 pass
 
-    def test_default_saves_both_roles(self, provider):
-        """Default sync_roles saves both user and assistant turns."""
+    def test_default_saves_user_only(self, provider):
+        """Default sync_roles saves user turns only; assistant autosave is opt-in."""
         provider._beam.remember = MagicMock()
         provider.sync_turn("Tell me about memory systems", "Here is what I know about memory.")
 
@@ -45,7 +45,7 @@ class TestSyncRoles:
         user_calls = [s for s in sources if s.startswith("[USER]")]
         assistant_calls = [s for s in sources if s.startswith("[ASSISTANT]")]
         assert len(user_calls) == 1
-        assert len(assistant_calls) == 1
+        assert len(assistant_calls) == 0
 
     def test_user_only(self, provider):
         """sync_roles=['user'] saves user turns, skips assistant."""
@@ -186,7 +186,7 @@ class TestSyncRolesConfig:
         default = provider._sync_roles.copy()
         provider._apply_provider_config({})
         assert provider._sync_roles == default
-        assert provider._sync_roles == {"user", "assistant"}
+        assert provider._sync_roles == {"user"}
 
     def test_case_insensitive(self, provider):
         provider._apply_provider_config({"sync_roles": ["User", "ASSISTANT"]})
@@ -195,12 +195,12 @@ class TestSyncRolesConfig:
     @pytest.mark.parametrize("value", [True, False, 42, 3.14, {"user": True}])
     def test_invalid_type_preserves_default(self, provider, value):
         provider._apply_provider_config({"sync_roles": value})
-        assert provider._sync_roles == {"user", "assistant"}
+        assert provider._sync_roles == {"user"}
 
     def test_unknown_only_preserves_default(self, provider):
         """Non-empty input with zero valid roles preserves default (typo safety)."""
         provider._apply_provider_config({"sync_roles": ["users", "system"]})
-        assert provider._sync_roles == {"user", "assistant"}
+        assert provider._sync_roles == {"user"}
 
 
 class TestSyncRolesEnvVar:
@@ -223,4 +223,4 @@ class TestSyncRolesEnvVar:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("MNEMOSYNE_SYNC_ROLES", None)
             provider = MnemosyneMemoryProvider()
-            assert provider._sync_roles == {"user", "assistant"}
+            assert provider._sync_roles == {"user"}

@@ -374,6 +374,42 @@ class CanonicalStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def model_card(
+        self,
+        owner_id: str,
+        category: str,
+        title: Optional[str] = None,
+        names: Optional[List[str]] = None,
+    ) -> Dict:
+        """Render current canonical slots as a compact model card.
+
+        This is a deterministic view over existing canonical facts, not a new
+        storage layer. It is useful for identity/user/project/workflow models
+        that need one current value per slot, history through canonical
+        supersession, and stable prompt-ready text.
+        """
+        rows = self.list(owner_id, category)
+        if names is not None:
+            wanted = [name for name in names if name]
+            by_name = {row["name"]: row for row in rows}
+            rows = [by_name[name] for name in wanted if name in by_name]
+
+        card_title = title or category.replace(":", " ").replace("_", " ").title()
+        lines = [f"## {card_title}"] if rows else []
+        for row in rows:
+            label = str(row.get("name") or "").replace("_", " ").strip().title()
+            body = str(row.get("body") or "").strip()
+            if body:
+                lines.append(f"- {label}: {body}")
+
+        return {
+            "owner_id": owner_id,
+            "category": category,
+            "title": card_title,
+            "slots": rows,
+            "body": "\n".join(lines),
+        }
+
     # ------------------------------------------------------------------
     # Export / import (parity with TripleStore / AnnotationStore)
     # ------------------------------------------------------------------
