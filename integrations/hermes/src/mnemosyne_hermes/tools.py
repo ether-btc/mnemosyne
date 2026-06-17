@@ -545,6 +545,11 @@ DIAGNOSE_SCHEMA = {
     },
 }
 
+# These schemas intentionally expose operational surfaces rather than new
+# memory-writing behavior: diagnostics lets operators observe recall health,
+# while task_progress stores a curated current-state pointer in canonical facts.
+# Keeping both as explicit tools prevents silent prompt injection or background
+# transcript autosave from becoming the source of truth for task continuity.
 RECALL_DIAGNOSTICS_SCHEMA = {
     "name": "mnemosyne_recall_diagnostics",
     "description": (

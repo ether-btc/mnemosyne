@@ -2066,10 +2066,12 @@ class MnemosyneMemoryProvider(MemoryProvider):
     def _handle_task_progress(self, args: Dict[str, Any]) -> str:
         """Track and recall cross-session task progression.
 
-        Uses canonical memory slots with category 'task:progress' to
-        store the current state of ongoing tasks. This solves the
-        "where did we leave off?" problem that session_search alone
-        cannot answer cleanly.
+        This is intentionally stored as canonical state instead of another
+        ordinary memory row.  Recent transcript recall can find evidence of
+        past work, but it cannot reliably answer "what is the current state?"
+        after retries, crashes, or superseded attempts.  A task:progress slot
+        gives agents one owner-scoped current value per task, while the normal
+        recall/session-search paths remain available for the historical trail.
         """
         action = args.get("action", "get").strip().lower()
         task = args.get("task", "").strip()

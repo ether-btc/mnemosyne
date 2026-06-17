@@ -5257,11 +5257,14 @@ class BeamMemory:
             )
 
         # ---- Query intent weight adjustment ----
-        # When the caller has not explicitly set any weights, classify the
-        # query intent and adjust the weight distribution to match.  Gated
-        # by MNEMOSYNE_QUERY_INTENT=1 (opt-in, zero behavior change when
-        # unset, same pattern as MNEMOSYNE_POLYPHONIC_RECALL).  If any
-        # weight was explicitly passed by the caller, skip intent
+        # This is deliberately a small opt-in shim, not a new recall mode:
+        # keep the existing hybrid pipeline, but bias its vector/FTS/importance
+        # weights toward the query shape when no caller supplied weights.
+        # Example: temporal/status queries should care more about recency and
+        # exact terms, while preference/fact lookups can lean more on semantic
+        # similarity. The env gate preserves current default behavior for
+        # deployments that have not explicitly chosen intent-aware recall.
+        # If any weight was explicitly passed by the caller, skip intent
         # adjustment -- explicit caller weights win.
         if (os.environ.get("MNEMOSYNE_QUERY_INTENT", "0") == "1"
                 and vec_weight is None and fts_weight is None
