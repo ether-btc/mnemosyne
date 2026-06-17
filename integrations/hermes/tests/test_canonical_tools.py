@@ -14,6 +14,8 @@ def _provider(tmp_path, profile: str = "profile_a") -> MnemosyneMemoryProvider:
         agent_identity=profile,
     )
     assert provider._beam is not None
+    assert provider._beam.canonical_owner_id == profile
+    assert provider._beam.agent_context == "primary"
     return provider
 
 

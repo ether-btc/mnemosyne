@@ -937,6 +937,13 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # becomes redundant -- but until then it's the conservative
         # choice (codex review #1).
         if self._beam is not None:
+            # Core BeamMemory.sleep() performs model-refresh auto-apply without
+            # direct access to Hermes provider state. Attach the provider's
+            # runtime identity so sleep writes canonical model facts into the
+            # same owner namespace as explicit canonical tools, and so cron
+            # contexts can suppress model-refresh mutation.
+            self._beam.canonical_owner_id = self._canonical_owner()
+            self._beam.agent_context = self._agent_context
             self._activate_in_module()
             self._init_audit_log()
 

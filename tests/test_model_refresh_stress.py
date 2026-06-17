@@ -107,6 +107,67 @@ def test_sleep_model_refresh_auto_applies_good_and_rejects_bad(tmp_path, monkeyp
     assert store.recall("default", "model:project", "latest_pr") is None
 
 
+def test_sleep_model_refresh_auto_apply_uses_beam_owner_namespace(tmp_path, monkeypatch):
+    db_path = tmp_path / "mnemo.db"
+    beam = BeamMemory(session_id="stress", db_path=db_path)
+    beam.canonical_owner_id = "research_profile"
+    _old_rows(
+        db_path,
+        [
+            ("wm-owner-1", "The research profile prefers evidence-first notes."),
+            ("wm-owner-2", "The research profile asks for citations before claims."),
+        ],
+    )
+
+    def fake_infer(items):
+        return [
+            {
+                "category": "model:workflow",
+                "name": "research_style",
+                "body": "Prefer evidence-first notes with citations before claims.",
+                "confidence": 0.96,
+                "evidence_ids": ["wm-owner-1", "wm-owner-2"],
+                "action": "update",
+                "reason": "Repeated durable workflow preference.",
+            }
+        ]
+
+    monkeypatch.setattr(model_refresh, "infer_model_update_proposals", fake_infer)
+    result = beam.sleep(dry_run=False)
+
+    assert result["model_refresh"] == {"proposals": 1, "applied": 1}
+    store = CanonicalStore(db_path=db_path, conn=beam.conn)
+    assert store.recall("default", "model:workflow", "research_style") is None
+    research_style = store.recall("research_profile", "model:workflow", "research_style")
+    assert research_style is not None
+    assert research_style["body"].startswith("Prefer evidence-first")
+
+
+def test_sleep_model_refresh_skips_cron_context(tmp_path, monkeypatch):
+    db_path = tmp_path / "mnemo.db"
+    beam = BeamMemory(session_id="stress", db_path=db_path)
+    beam.agent_context = "cron"
+    beam.canonical_owner_id = "cron_profile"
+    _old_rows(
+        db_path,
+        [
+            ("wm-cron-1", "Cron summaries should not mutate canonical model slots."),
+            ("wm-cron-2", "Cron runs may execute sleep as maintenance."),
+        ],
+    )
+
+    def fake_infer(items):
+        raise AssertionError("cron sleep must not run model-refresh inference")
+
+    monkeypatch.setattr(model_refresh, "infer_model_update_proposals", fake_infer)
+    result = beam.sleep(dry_run=False)
+
+    assert result["status"] == "consolidated"
+    assert result["model_refresh"] == {"proposals": 0, "applied": 0}
+    store = CanonicalStore(db_path=db_path, conn=beam.conn)
+    assert store.list("cron_profile", category="model:workflow") == []
+
+
 def test_sleep_model_refresh_conflict_requires_stronger_evidence(tmp_path):
     db_path = tmp_path / "mnemo.db"
     beam = BeamMemory(session_id="stress", db_path=db_path)

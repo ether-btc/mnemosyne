@@ -2727,6 +2727,12 @@ class BeamMemory:
         self.author_id = author_id
         self.author_type = author_type
         self.channel_id = channel_id or session_id  # default channel = session
+        # Canonical model-refresh writes are owner-scoped. Core BeamMemory has
+        # no knowledge of Hermes profiles, so standalone use keeps the legacy
+        # single-owner default. Integrations that know the active profile should
+        # set this attribute after construction.
+        self.canonical_owner_id = "default"
+        self.agent_context = "primary"
         # Coerce path-like inputs (e.g. tempfile-produced strings) to a
         # Path so downstream consumers like _get_connection that do
         # `path.parent.mkdir(...)` don't blow up with
@@ -8004,11 +8010,14 @@ class BeamMemory:
             # for structured candidate updates, then stores pending proposal rows
             # instead of directly overwriting canonical facts.
             proposals = []
-            try:
-                from mnemosyne.core import model_refresh
-                proposals = model_refresh.infer_model_update_proposals(items)
-            except Exception:
-                proposals = []
+            agent_context = str(getattr(self, "agent_context", "") or "").strip().lower()
+            model_refresh_owner_id = str(getattr(self, "canonical_owner_id", "") or "").strip() or "default"
+            if agent_context != "cron":
+                try:
+                    from mnemosyne.core import model_refresh
+                    proposals = model_refresh.infer_model_update_proposals(items)
+                except Exception:
+                    proposals = []
             model_refresh_proposals += len(proposals)
 
             if not dry_run:
@@ -8052,7 +8061,7 @@ class BeamMemory:
                             "UPDATE working_memory SET consolidated_at = ?, consolidation_claimed_at = NULL WHERE id = ?",
                             (proposal_ts, proposal_id),
                         )
-                        if model_refresh.maybe_auto_apply_model_refresh_proposal(self, proposal_id, owner_id="default"):
+                        if model_refresh.maybe_auto_apply_model_refresh_proposal(self, proposal_id, owner_id=model_refresh_owner_id):
                             model_refresh_applied += 1
                     self.conn.commit()
                 group_placeholders = ",".join("?" * len(ids))
