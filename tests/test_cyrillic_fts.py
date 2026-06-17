@@ -38,6 +38,8 @@ from mnemosyne.core.beam import (
     _cyrillic_like_search,
     _fts_search,
     _fts_search_working,
+    _lexical_relevance,
+    _recall_tokens,
 )
 
 
@@ -350,3 +352,61 @@ class TestFtsSearchRoutesCyrillic:
         finally:
             conn.close()
         assert any(r["id"] == "m1" for r in rows)
+
+
+class TestLexicalRelevanceCyrillicGate:
+    """Verify the relevance gate admits inflected Cyrillic forms.
+
+    Before this fix, `_lexical_relevance` returned 0.0 for short inflected
+    Cyrillic queries (тёмная vs тёмную) because exact token matching
+    cannot span Russian case endings. The scoring pipeline generated the
+    candidate via `_cyrillic_like_search` (LIKE + trigram Jaccard) but
+    then dropped it at the relevance gate, so the recall returned 0
+    results for the very queries Cyrillic users actually type.
+    """
+
+    def test_inflected_query_passes_gate(self):
+        # Nominative "тёмная тема" vs accusative "тёмную тему":
+        # exact match returns 0.0; Cyrillic fallback returns trigram
+        # Jaccard, which should be > the 0.15 threshold for a 2-token
+        # query.
+        q = "тёмная тема"
+        content = "Пользователь предпочитает тёмную тему интерфейса"
+        rel = _lexical_relevance(_recall_tokens(q), content, q)
+        cyr_score = _cyrillic_score(q, content)
+        assert rel > 0.0, f"gate returned 0.0 for inflected Cyrillic (cyr_score={cyr_score})"
+        assert rel == pytest.approx(cyr_score), "fallback should mirror _cyrillic_score"
+
+    def test_exact_form_still_full_score(self):
+        # When the query and content use the same surface form, the
+        # exact-token path should still return 1.0 and not get diluted
+        # by the Cyrillic fallback.
+        q = "тёмную тему"
+        content = "Пользователь предпочитает тёмную тему интерфейса"
+        rel = _lexical_relevance(_recall_tokens(q), content, q)
+        assert rel == pytest.approx(1.0)
+
+    def test_english_query_unaffected(self):
+        # Non-Cyrillic queries must not engage the Cyrillic fallback.
+        q = "dark mode"
+        content = "User prefers dark mode interfaces"
+        rel = _lexical_relevance(_recall_tokens(q), content, q)
+        assert rel == pytest.approx(1.0)
+
+    def test_latin_query_against_cyrillic_content_returns_zero(self):
+        # Latin query vs Cyrillic content: no token overlap, no Cyrillic
+        # in query, so neither path fires. The fallback would be wrong
+        # if it engaged here.
+        q = "dark mode"
+        content = "Пользователь предпочитает тёмную тему"
+        rel = _lexical_relevance(_recall_tokens(q), content, q)
+        assert rel == 0.0
+
+    def test_second_decline_inflection_passes_gate(self):
+        # "резервная копия" vs "Резервное копирование": the second
+        # word's inflection (копия -> копирование) also defeats exact
+        # matching. The Cyrillic fallback should still admit this.
+        q = "резервная копия"
+        content = "Резервное копирование Яндекс Диска включено по расписанию"
+        rel = _lexical_relevance(_recall_tokens(q), content, q)
+        assert rel > 0.0, f"gate returned 0.0 for inflected Cyrillic (rel={rel})"

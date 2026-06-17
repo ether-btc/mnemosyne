@@ -1694,6 +1694,13 @@ def _lexical_relevance(query_tokens: List[str], content: str, query_lower: str =
                 or "\uac00" <= ch <= "\ud7af"
             }
             score = len(query_cjk & content_cjk) / len(query_cjk)
+        elif _has_cyrillic(query_lower):
+            # Cyrillic inflected forms (тёмная/тёмную, резервная/резервное)
+            # defeat exact token matching. _cyrillic_score uses trigram
+            # Jaccard, which handles inflection correctly. The scoring
+            # pipeline already uses _cyrillic_like_search for candidate
+            # generation; this keeps the relevance gate consistent.
+            score = _cyrillic_score(query_lower, content_lower)
 
     return min(score, 1.0)
 
