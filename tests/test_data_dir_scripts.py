@@ -15,6 +15,7 @@ def _isolated_env(tmp_path):
     home = tmp_path / "home"
     data_dir = tmp_path / "custom-data"
     env = os.environ.copy()
+    env.pop("HERMES_HOME", None)
     env["HOME"] = str(home)
     env["MNEMOSYNE_DATA_DIR"] = str(data_dir)
     env["MNEMOSYNE_NO_EMBEDDINGS"] = "1"
@@ -75,6 +76,7 @@ def test_empty_mnemosyne_data_dir_falls_back_to_default_for_scripts(tmp_path):
     home = tmp_path / "home"
     default_db = home / ".hermes" / "mnemosyne" / "data" / "mnemosyne.db"
     env = os.environ.copy()
+    env.pop("HERMES_HOME", None)
     env["HOME"] = str(home)
     env["MNEMOSYNE_DATA_DIR"] = ""
     env["MNEMOSYNE_NO_EMBEDDINGS"] = "1"

@@ -28,7 +28,10 @@ _thread_local = threading.local()
 # Default data directory
 # NOTE: On Fly.io and ephemeral VMs, only ~/.hermes is persisted.
 # This MUST match beam.py's DEFAULT_DATA_DIR to avoid split-brain.
-_DEFAULT_ROOT = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+_DEFAULT_ROOT = Path(
+    os.environ.get("HERMES_HOME")
+    or (Path(os.environ["HOME"]) / ".hermes" if os.environ.get("HOME") else Path.home() / ".hermes")
+)
 DEFAULT_DATA_DIR = _DEFAULT_ROOT / "mnemosyne" / "data"
 DEFAULT_DB_PATH = DEFAULT_DATA_DIR / "mnemosyne.db"
 

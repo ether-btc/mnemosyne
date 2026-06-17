@@ -545,6 +545,65 @@ DIAGNOSE_SCHEMA = {
     },
 }
 
+RECALL_DIAGNOSTICS_SCHEMA = {
+    "name": "mnemosyne_recall_diagnostics",
+    "description": (
+        "Return recall path diagnostics: per-tier hit counts, fallback rates, "
+        "and total call counts. Use to monitor recall health — high fallback "
+        "rates indicate weak-signal recall paths dominating. Pass reset=true "
+        "to clear counters and start a fresh measurement window."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reset": {
+                "type": "boolean",
+                "description": "If true, reset all counters after snapshotting. Default false.",
+                "default": False,
+            },
+        },
+    },
+}
+
+TASK_PROGRESS_SCHEMA = {
+    "name": "mnemosyne_task_progress",
+    "description": (
+        "Track and recall cross-session task progression. Uses canonical "
+        "memory slots with category 'task:progress' to store where you left "
+        "off on a specific task. Set a task's current state with "
+        "action='set', query the latest state with action='get', list all "
+        "tracked tasks with action='list'. This solves the 'where did we "
+        "leave off?' problem across sessions — session_search finds old "
+        "transcripts, but this gives you the curated current state."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "set | get | list | clear",
+                "default": "get",
+            },
+            "task": {
+                "type": "string",
+                "description": "Task identifier (e.g. 'pdas-q08', 'mnemo-impl', 'qudomec-deploy'). Required for set/get/clear.",
+                "default": "",
+            },
+            "state": {
+                "type": "string",
+                "description": "Current task state description. Required for set.",
+                "default": "",
+            },
+            "metadata": {
+                "type": "object",
+                "description": "Optional metadata (status, next_step, blockers, etc.).",
+                "default": {},
+            },
+        },
+        "required": ["action"],
+    },
+}
+
 GRAPH_QUERY_SCHEMA = {
     "name": "mnemosyne_graph_query",
     "description": "Traverse the memory graph to find memories related to a seed memory. Uses multi-hop BFS through graph_edges with optional edge_type and min_weight filtering.",
@@ -654,6 +713,8 @@ ALL_TOOL_SCHEMAS = [
     REMEMBER_CANONICAL_SCHEMA, RECALL_CANONICAL_SCHEMA, MODEL_CARD_SCHEMA,
     MODEL_REFRESH_SCHEMA, SCRATCHPAD_WRITE_SCHEMA, SCRATCHPAD_READ_SCHEMA, SCRATCHPAD_CLEAR_SCHEMA,
     EXPORT_SCHEMA, UPDATE_SCHEMA, FORGET_SCHEMA, IMPORT_SCHEMA, DIAGNOSE_SCHEMA,
+    RECALL_DIAGNOSTICS_SCHEMA,
+    TASK_PROGRESS_SCHEMA,
     GRAPH_QUERY_SCHEMA, GRAPH_LINK_SCHEMA,
     SYNC_PUSH_SCHEMA, SYNC_PULL_SCHEMA, SYNC_STATUS_SCHEMA,
     PERSONA_PROMOTE_SCHEMA, PERSONA_DEMOTE_SCHEMA, PERSONA_LIST_SCHEMA, PERSONA_REINFORCE_SCHEMA,

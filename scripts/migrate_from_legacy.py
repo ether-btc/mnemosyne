@@ -31,17 +31,18 @@ from pathlib import Path
 # Current canonical path (matches mnemosyne.core.beam DEFAULT_DB_PATH)
 # NOTE: On Fly.io and other ephemeral VMs, ~/.hermes is the only persisted path
 # unless MNEMOSYNE_DATA_DIR explicitly points elsewhere.
+_HOME_ROOT = Path(os.environ["HOME"]) if os.environ.get("HOME") else Path.home()
 CANONICAL_DATA_DIR = Path(
     os.environ.get("MNEMOSYNE_DATA_DIR")
-    or Path.home() / ".hermes" / "mnemosyne" / "data"
+    or _HOME_ROOT / ".hermes" / "mnemosyne" / "data"
 )
 CANONICAL_DB = CANONICAL_DATA_DIR / "mnemosyne.db"
 
 # Legacy / ephemeral paths to scan and migrate from
 LEGACY_CANDIDATES = [
-    Path.home() / ".mnemosyne" / "data" / "mnemosyne.db",  # ephemeral BEAM data
-    Path.home() / ".mnemosyne" / "data" / "mnemosyne_native.db",
-    Path.home() / ".hermes" / "mnemosyne" / "data" / "mnemosyne_native.db",
+    _HOME_ROOT / ".mnemosyne" / "data" / "mnemosyne.db",  # ephemeral BEAM data
+    _HOME_ROOT / ".mnemosyne" / "data" / "mnemosyne_native.db",
+    _HOME_ROOT / ".hermes" / "mnemosyne" / "data" / "mnemosyne_native.db",
 ]
 
 

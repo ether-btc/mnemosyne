@@ -208,7 +208,10 @@ import re
 
 # On Fly.io and other ephemeral VMs, only ~/.hermes is persisted.
 # Default to the legacy Hermes path so memories survive restarts.
-_DEFAULT_ROOT = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+_DEFAULT_ROOT = Path(
+    os.environ.get("HERMES_HOME")
+    or (Path(os.environ["HOME"]) / ".hermes" if os.environ.get("HOME") else Path.home() / ".hermes")
+)
 DEFAULT_DATA_DIR = _DEFAULT_ROOT / "mnemosyne" / "data"
 DEFAULT_DB_PATH = DEFAULT_DATA_DIR / "mnemosyne.db"
 
@@ -5252,6 +5255,26 @@ class BeamMemory:
                 },
                 weights={"vec": vw, "fts": fw, "importance": iw, "temporal": temporal_weight},
             )
+
+        # ---- Query intent weight adjustment ----
+        # When the caller has not explicitly set any weights, classify the
+        # query intent and adjust the weight distribution to match.  Gated
+        # by MNEMOSYNE_QUERY_INTENT=1 (opt-in, zero behavior change when
+        # unset, same pattern as MNEMOSYNE_POLYPHONIC_RECALL).  If any
+        # weight was explicitly passed by the caller, skip intent
+        # adjustment -- explicit caller weights win.
+        if (os.environ.get("MNEMOSYNE_QUERY_INTENT", "0") == "1"
+                and vec_weight is None and fts_weight is None
+                and importance_weight is None):
+            try:
+                from mnemosyne.core.query_intent import classify_intent, adjust_weights
+                _intent = classify_intent(query)
+                vw, fw, iw = adjust_weights(
+                    base_vec=vw, base_fts=fw, base_importance=iw,
+                    intent=_intent,
+                )
+            except Exception:
+                logger.debug("query intent adjustment failed, using default weights", exc_info=True)
 
         # Query embeddings are used by several recall subpaths. Compute the
         # vector at most once per recall() call, then reuse it for working
