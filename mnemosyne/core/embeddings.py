@@ -40,7 +40,13 @@ def _is_fastembed_available() -> bool:
 # Backward-compatible alias for legacy users who import this constant.
 # Use _is_fastembed_available() in new code — it re-evaluates on each call.
 _FASTEMBED_AVAILABLE = _is_fastembed_available()
-_FASTEMBED_CACHE_DIR = os.path.join(os.path.expanduser("~/.hermes"), "cache", "fastembed")
+# Allow CI / scripted environments to redirect the fastembed cache to a
+# stable path that can be restored by actions/cache. Defaults to the
+# user-local ~/.hermes/cache/fastembed directory.
+_FASTEMBED_CACHE_DIR = os.environ.get(
+    "MNEMOSYNE_FASTEMBED_CACHE_DIR",
+    os.path.join(os.path.expanduser("~/.hermes"), "cache", "fastembed"),
+)
 
 # --- OpenAI-compatible API ---
 # Mnemosyne embedding config is independent of general OpenRouter/OpenAI settings.
@@ -52,6 +58,22 @@ _OPENAI_BASE_URL = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", "https://openro
 _DEFAULT_MODEL = os.environ.get("MNEMOSYNE_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 _embedding_model = None
 _API_CALL_COUNT = 0
+
+
+def _is_disabled() -> bool:
+    """True when dense retrieval has been opted out via env var.
+
+    Three flags, in priority order:
+    - MNEMOSYNE_NO_EMBEDDINGS: hard off, used in CI and unit tests that
+      exercise non-embedding code paths
+    - MNEMOSYNE_SKIP_EMBEDDINGS: same intent, shorter alias
+    - MNEMOSYNE_EMBEDDINGS_OFF: same intent, longer alias
+    """
+    return bool(
+        os.environ.get("MNEMOSYNE_NO_EMBEDDINGS")
+        or os.environ.get("MNEMOSYNE_SKIP_EMBEDDINGS")
+        or os.environ.get("MNEMOSYNE_EMBEDDINGS_OFF")
+    )
 
 
 def _is_api_model(model_name: str) -> bool:
@@ -123,19 +145,59 @@ def _get_embedding_dim(model_name: str) -> int:
 
 
 def _get_model():
-    """Lazy-load the embedding model (local fastembed)."""
+    """Lazy-load the embedding model (local fastembed).
+
+    Honors MNEMOSYNE_NO_EMBEDDINGS / MNEMOSYNE_SKIP_EMBEDDINGS to short-
+    circuit the model download. Retries on 429 Too Many Requests from
+    Hugging Face with exponential backoff so a single rate-limit hiccup
+    does not cascade into test failures.
+    """
     global _embedding_model
+    if _is_disabled():
+        return None
     if _is_api_model(_DEFAULT_MODEL):
         return "api"  # Sentinel for API mode
     if not _is_fastembed_available():
         return None
     if _embedding_model is None:
         os.makedirs(_FASTEMBED_CACHE_DIR, exist_ok=True)
-        _embedding_model = TextEmbedding(
-            model_name=_DEFAULT_MODEL,
-            cache_dir=_FASTEMBED_CACHE_DIR,
+        last_err: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                _embedding_model = TextEmbedding(
+                    model_name=_DEFAULT_MODEL,
+                    cache_dir=_FASTEMBED_CACHE_DIR,
+                )
+                return _embedding_model
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                if _is_rate_limit_error(exc):
+                    import time
+                    time.sleep(min(2 ** attempt, 8))
+                    continue
+                break
+        # Re-raise the final error so the caller sees a clear failure
+        # instead of a generic None that masks the underlying cause.
+        raise RuntimeError(
+            f"Failed to load embedding model {_DEFAULT_MODEL}: {last_err}"
         )
     return _embedding_model
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """True for transient rate-limit / 429 errors that should be retried.
+
+    Substring matching on "rate" alone is too aggressive — a message like
+    "rate limit detection failed" would falsely match. We require either
+    the explicit HTTP 429 status, or a phrase that names the rate limit
+    pattern in full.
+    """
+    msg = str(exc).lower()
+    if "429" in msg or "too many requests" in msg:
+        return True
+    if "rate limit" in msg or "rate-limit" in msg:
+        return True
+    return False
 
 
 def _embed_api(texts: List[str]) -> Optional[np.ndarray]:
@@ -187,7 +249,7 @@ def _embed_api(texts: List[str]) -> Optional[np.ndarray]:
 
 def available() -> bool:
     """Check if dense retrieval is available."""
-    if os.environ.get("MNEMOSYNE_NO_EMBEDDINGS"):
+    if _is_disabled():
         return False
     if _is_api_model(_DEFAULT_MODEL):
         # Custom endpoints (non-OpenRouter) may not require an API key
