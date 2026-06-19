@@ -5,11 +5,16 @@ Covers: event log, encryption roundtrip, conflict resolution,
 pull/push protocol, and end-to-end client-server sync.
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 
 import pytest
@@ -218,6 +223,106 @@ def _free_port():
     port = s.getsockname()[1]
     s.close()
     return port
+
+
+def _jwt(payload, secret="test-secret", header=None, signature=None):
+    header = header or {"alg": "HS256", "typ": "JWT"}
+
+    def b64(obj):
+        raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    signing_input = f"{b64(header)}.{b64(payload)}"
+    if signature is None:
+        digest = hmac.new(
+            secret.encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256
+        ).digest()
+        signature = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return f"{signing_input}.{signature}"
+
+
+def _request_sync_status_with_jwt(token, secret="test-secret"):
+    from http.server import HTTPServer
+    from mnemosyne.core.sync_server import SyncHTTPHandler
+
+    class DummySync:
+        def get_status(self):
+            return {"ok": True}
+
+    SyncHTTPHandler.sync_engine = DummySync()
+    SyncHTTPHandler.api_key = None
+    SyncHTTPHandler.jwt_secret = secret
+    server = HTTPServer(("127.0.0.1", 0), SyncHTTPHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/sync/status",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_sync_server_rejects_forged_hs256_jwt_signature():
+    token = _jwt(
+        {"sub": "attacker", "exp": time.time() + 3600},
+        signature="forged",
+    )
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _request_sync_status_with_jwt(token)
+
+    assert exc.value.code == 401
+    assert "invalid JWT signature" in exc.value.read().decode("utf-8")
+
+
+def test_sync_server_rejects_unsupported_jwt_algorithm():
+    token = _jwt(
+        {"sub": "attacker", "exp": time.time() + 3600},
+        header={"alg": "none", "typ": "JWT"},
+        signature="forged",
+    )
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _request_sync_status_with_jwt(token)
+
+    assert exc.value.code == 401
+    assert "unsupported JWT algorithm" in exc.value.read().decode("utf-8")
+
+
+def test_sync_server_rejects_malformed_jwt_signature_cleanly():
+    token = _jwt(
+        {"sub": "attacker", "exp": time.time() + 3600},
+        signature="förged",
+    )
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _request_sync_status_with_jwt(token)
+
+    assert exc.value.code == 401
+    assert "invalid JWT signature" in exc.value.read().decode("utf-8")
+
+
+def test_sync_server_accepts_valid_hs256_jwt():
+    token = _jwt({"sub": "client", "exp": time.time() + 3600})
+
+    status, body = _request_sync_status_with_jwt(token)
+
+    assert status == 200
+    assert json.loads(body) == {"ok": True}
+
+
+def test_sync_server_rejects_expired_jwt():
+    token = _jwt({"sub": "client", "exp": time.time() - 1})
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _request_sync_status_with_jwt(token)
+
+    assert exc.value.code == 401
 
 
 def test_e2e_plaintext_sync():
