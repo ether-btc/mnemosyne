@@ -436,6 +436,14 @@ Full docs: [`docs/`](docs/README.md) . Changelog: [`CHANGELOG.md`](CHANGELOG.md)
 
 ---
 
+## Sponsors
+
+Mnemosyne development is supported by companies providing compute credits (LLM, embedding, GPU), hosting, and developer tooling. See the full list and sponsorship policy at **[mnemosyne.site/partners](https://mnemosyne.site/partners)**.
+
+If your company runs an OSS credits program and wants to partner, open an issue tagged `sponsorship` or email `sponsors@mnemosyne.site`.
+
+---
+
 ## Support
 
 <div align="center">
