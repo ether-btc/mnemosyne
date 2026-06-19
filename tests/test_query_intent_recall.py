@@ -35,7 +35,7 @@ def test_recall_works_with_query_intent_enabled_and_disabled(monkeypatch):
         db_path = Path(tmpdir) / "mnemosyne.db"
         beam = BeamMemory(session_id="test", db_path=db_path)
         beam.remember("Yesterday we configured the deployment workflow", importance=0.8)
-        beam.remember("Phin prefers compact direct answers", importance=0.9)
+        beam.remember("The user prefers compact direct answers", importance=0.9)
 
         monkeypatch.delenv("MNEMOSYNE_QUERY_INTENT", raising=False)
         off_results = beam.recall("what happened yesterday", top_k=5)

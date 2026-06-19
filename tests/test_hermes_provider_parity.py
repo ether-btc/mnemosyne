@@ -74,7 +74,7 @@ def test_provider_config_defaults_match(provider_modules):
     integration_config = _config_schema(provider_modules["mnemosyne_hermes"])
 
     assert _json_stable(root_config) == _json_stable(integration_config)
-    assert root_config["sync_roles"]["default"] == ["user", "assistant"]
+    assert root_config["sync_roles"]["default"] == ["user"]
     assert root_config["default_scope"]["choices"] == ["session", "global"]
     assert root_config["default_scope"]["default"] == "session"
 

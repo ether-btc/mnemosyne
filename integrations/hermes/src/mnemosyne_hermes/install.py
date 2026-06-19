@@ -13,13 +13,6 @@ from pathlib import Path
 from typing import Optional
 
 
-class PluginState(Enum):
-    """Possible states of the Hermes plugin symlink."""
-    OK = "ok"
-    BROKEN_SYMLINK = "broken_symlink"
-    MISSING = "missing"
-
-
 PLUGIN_NAME = "mnemosyne"
 
 
@@ -429,33 +422,6 @@ def _do_upgrade(*, force: bool = True, hermes_home_path: str | Path | None = Non
 def is_installed(*, hermes_home_path: str | Path | None = None) -> bool:
     """Return whether the Mnemosyne provider is installed for Hermes discovery."""
     return plugin_state(hermes_home_path=hermes_home_path).installed
-
-
-def plugin_state(*, hermes_home_path: str | Path | None = None) -> PluginState:
-    """Return the current state of the Hermes plugin installation.
-
-    Distinguishes between:
-    - OK: symlink exists and points to a valid plugin
-    - BROKEN_SYMLINK: symlink exists but target is missing (venv rebuild, etc.)
-    - MISSING: no symlink at all
-    """
-    target = plugin_target_dir(hermes_home_path)
-
-    if target.is_symlink():
-        try:
-            real_target = target.resolve(strict=True)
-            if real_target.exists():
-                if is_installed(hermes_home_path=hermes_home_path):
-                    return PluginState.OK
-        except (FileNotFoundError, RuntimeError):
-            pass
-        return PluginState.BROKEN_SYMLINK
-
-    if target.exists():
-        if is_installed(hermes_home_path=hermes_home_path):
-            return PluginState.OK
-
-    return PluginState.MISSING
 
 
 def _parser() -> argparse.ArgumentParser:

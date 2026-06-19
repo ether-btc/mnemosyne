@@ -969,6 +969,70 @@ DIAGNOSE_SCHEMA = {
     },
 }
 
+# These schemas intentionally expose operational surfaces rather than new
+# memory-writing behavior: diagnostics lets operators observe recall health,
+# while task_progress stores a curated current-state pointer in canonical facts.
+# Keeping both as explicit tools prevents silent prompt injection or background
+# transcript autosave from becoming the source of truth for task continuity.
+RECALL_DIAGNOSTICS_SCHEMA = {
+    "name": "mnemosyne_recall_diagnostics",
+    "description": (
+        "Return recall path diagnostics: per-tier hit counts, fallback rates, "
+        "and total call counts. Use to monitor recall health — high fallback "
+        "rates indicate weak-signal recall paths dominating. Pass reset=true "
+        "to clear counters and start a fresh measurement window."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reset": {
+                "type": "boolean",
+                "description": "If true, reset all counters after snapshotting. Default false.",
+                "default": False,
+            },
+        },
+    },
+}
+
+TASK_PROGRESS_SCHEMA = {
+    "name": "mnemosyne_task_progress",
+    "description": (
+        "Track and recall cross-session task progression. Uses canonical "
+        "memory slots with category 'task:progress' to store where you left "
+        "off on a specific task. Set a task's current state with "
+        "action='set', query the latest state with action='get', list all "
+        "tracked tasks with action='list'. This solves the 'where did we "
+        "leave off?' problem across sessions — session_search finds old "
+        "transcripts, but this gives you the curated current state."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "set | get | list | clear",
+                "default": "get",
+            },
+            "task": {
+                "type": "string",
+                "description": "Task identifier (e.g. 'pdas-q08', 'mnemo-impl', 'qudomec-deploy'). Required for set/get/clear.",
+                "default": "",
+            },
+            "state": {
+                "type": "string",
+                "description": "Current task state description. Required for set.",
+                "default": "",
+            },
+            "metadata": {
+                "type": "object",
+                "description": "Optional metadata (status, next_step, blockers, etc.).",
+                "default": {},
+            },
+        },
+        "required": ["action"],
+    },
+}
+
 GRAPH_QUERY_SCHEMA = {
     "name": "mnemosyne_graph_query",
     "description": "Traverse the memory graph to find memories related to a seed memory. Uses multi-hop BFS through graph_edges with optional edge_type and min_weight filtering.",
@@ -1056,6 +1120,7 @@ ALL_TOOL_SCHEMAS = [
     REMEMBER_CANONICAL_SCHEMA, RECALL_CANONICAL_SCHEMA, MODEL_CARD_SCHEMA,
     MODEL_REFRESH_SCHEMA, SCRATCHPAD_WRITE_SCHEMA, SCRATCHPAD_READ_SCHEMA, SCRATCHPAD_CLEAR_SCHEMA,
     EXPORT_SCHEMA, UPDATE_SCHEMA, FORGET_SCHEMA, IMPORT_SCHEMA, DIAGNOSE_SCHEMA,
+    RECALL_DIAGNOSTICS_SCHEMA, TASK_PROGRESS_SCHEMA,
     GRAPH_QUERY_SCHEMA, GRAPH_LINK_SCHEMA,
     *ALL_SYNC_TOOL_SCHEMAS,
     *ALL_PERSONA_TOOL_SCHEMAS,
@@ -2170,6 +2235,10 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 return self._handle_import(args)
             elif tool_name == "mnemosyne_diagnose":
                 return self._handle_diagnose(args)
+            elif tool_name == "mnemosyne_recall_diagnostics":
+                return self._handle_recall_diagnostics(args)
+            elif tool_name == "mnemosyne_task_progress":
+                return self._handle_task_progress(args)
             elif tool_name == "mnemosyne_graph_query":
                 return self._handle_graph_query(args)
             elif tool_name == "mnemosyne_graph_link":
@@ -2776,6 +2845,118 @@ class MnemosyneMemoryProvider(MemoryProvider):
             "count": len(proposals),
             "proposals": proposals,
         })
+
+    def _handle_recall_diagnostics(self, args: Dict[str, Any]) -> str:
+        """Return recall path diagnostics (fallback rates, tier hit counts).
+
+        Gated behind MNEMOSYNE_RECALL_DIAGNOSTICS=1 so operators must opt in
+        to expose the tool. When the flag is unset the tool returns a
+        concise 'disabled' message instead of the snapshot. This prevents
+        accidental information disclosure and keeps the tool surface clean
+        for operators who have not enabled recall instrumentation.
+        """
+        import os as _os
+        if _os.environ.get("MNEMOSYNE_RECALL_DIAGNOSTICS", "0") != "1":
+            return json.dumps({
+                "status": "disabled",
+                "message": (
+                    "Recall diagnostics are not enabled. Set "
+                    "MNEMOSYNE_RECALL_DIAGNOSTICS=1 to expose recall "
+                    "path counters."
+                ),
+            })
+
+        from mnemosyne.core.recall_diagnostics import get_recall_diagnostics, reset_recall_diagnostics
+        snapshot = get_recall_diagnostics()
+        do_reset = bool(args.get("reset", False))
+        if do_reset:
+            reset_recall_diagnostics()
+        return json.dumps({
+            "diagnostics": snapshot,
+            "reset": do_reset,
+        }, indent=2, default=str)
+
+    def _handle_task_progress(self, args: Dict[str, Any]) -> str:
+        """Track and recall cross-session task progression.
+
+        This is intentionally stored as canonical state instead of another
+        ordinary memory row. Recent transcript recall can find evidence of
+        past work, but it cannot reliably answer "what is the current state?"
+        after retries, crashes, or superseded attempts. A task:progress slot
+        gives agents one owner-scoped current value per task, while the normal
+        recall/session-search paths remain available for the historical trail.
+        """
+        action = args.get("action", "get").strip().lower()
+        task = args.get("task", "").strip()
+        state = args.get("state", "").strip()
+        metadata = args.get("metadata", {}) or {}
+
+        owner_id = self._canonical_owner()
+        store = getattr(self._beam, "canonical", None)
+        if store is None:
+            from mnemosyne.core.canonical import CanonicalStore
+            store = CanonicalStore(db_path=self._beam.db_path, conn=self._beam.conn)
+            self._beam.canonical = store
+
+        if action == "set":
+            if not task:
+                return json.dumps({"error": "task is required for set"})
+            if not state:
+                return json.dumps({"error": "state is required for set"})
+            body = state
+            if metadata:
+                body += "\n" + json.dumps(metadata, default=str)
+            store.remember(
+                owner_id=owner_id,
+                category="task:progress",
+                name=task,
+                body=body,
+            )
+            self._audit_event(
+                "task_progress_set",
+                bank="private",
+                source_tool="mnemosyne_task_progress",
+                metadata={"task": task},
+            )
+            return json.dumps({"status": "set", "owner_id": owner_id, "task": task, "state": state})
+
+        elif action == "get":
+            if not task:
+                return json.dumps({"error": "task is required for get"})
+            result = store.recall(owner_id, "task:progress", task)
+            if result is None:
+                return json.dumps({"status": "not_found", "task": task})
+            return json.dumps({
+                "status": "found",
+                "task": task,
+                "owner_id": owner_id,
+                "state": result.get("body", ""),
+                "valid_from": result.get("valid_from"),
+                "created_at": result.get("created_at"),
+            }, default=str)
+
+        elif action == "list":
+            all_facts = store.list(owner_id)
+            tasks = [
+                {
+                    "task": f.get("name", ""),
+                    "state": (f.get("body") or "")[:200],
+                    "valid_from": f.get("valid_from"),
+                    "created_at": f.get("created_at"),
+                }
+                for f in all_facts
+                if f.get("category") == "task:progress"
+            ]
+            return json.dumps({"tasks": tasks, "count": len(tasks)}, default=str)
+
+        elif action == "clear":
+            if not task:
+                return json.dumps({"error": "task is required for clear"})
+            store.forget(owner_id, "task:progress", task)
+            return json.dumps({"status": "cleared", "task": task})
+
+        else:
+            return json.dumps({"error": f"Unknown action: {action}. Use set/get/list/clear."})
 
     def _handle_scratchpad_write(self, args: Dict[str, Any]) -> str:
         content = args.get("content", "").strip()
