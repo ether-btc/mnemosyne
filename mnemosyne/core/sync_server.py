@@ -9,6 +9,9 @@ Provides endpoints for peer-to-peer memory synchronization:
 - GET  /sync/status — server sync statistics
 """
 
+import base64
+import hashlib
+import hmac
 import importlib
 import json
 import logging
@@ -37,7 +40,7 @@ class SyncHTTPHandler(BaseHTTPRequestHandler):
     """
 
     # Set externally by run_sync_server()
-    sync_engine = None  # type: ignore
+    sync_engine: Any = None
     api_key: Optional[str] = None
     jwt_secret: Optional[str] = None
 
@@ -78,6 +81,57 @@ class SyncHTTPHandler(BaseHTTPRequestHandler):
             self._send_error(400, f"Failed to read body: {e}")
             return None
 
+    @staticmethod
+    def _decode_jwt_part(value: str) -> dict:
+        """Decode one base64url-encoded JWT JSON segment."""
+        padding = "=" * (-len(value) % 4)
+        try:
+            raw = base64.urlsafe_b64decode((value + padding).encode("ascii"))
+            decoded = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            raise ValueError("invalid JWT encoding") from e
+        if not isinstance(decoded, dict):
+            raise ValueError("invalid JWT JSON")
+        return decoded
+
+    def _validate_jwt(self, token: str) -> dict:
+        """Validate a compact HS256 JWT using the configured shared secret."""
+        if not self.jwt_secret:
+            raise ValueError("JWT secret is not configured")
+
+        parts = token.split(".")
+        if len(parts) != 3:
+            raise ValueError("invalid JWT format")
+
+        header = self._decode_jwt_part(parts[0])
+        payload = self._decode_jwt_part(parts[1])
+        algorithm = header.get("alg")
+        if algorithm != "HS256":
+            raise ValueError("unsupported JWT algorithm")
+
+        signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
+        expected = hmac.new(
+            self.jwt_secret.encode("utf-8"), signing_input, hashlib.sha256
+        ).digest()
+        expected_sig = base64.urlsafe_b64encode(expected).decode("ascii").rstrip("=")
+        try:
+            valid_signature = hmac.compare_digest(parts[2], expected_sig)
+        except TypeError as e:
+            raise ValueError("invalid JWT signature") from e
+        if not valid_signature:
+            raise ValueError("invalid JWT signature")
+
+        exp = payload.get("exp")
+        if exp is not None:
+            try:
+                if float(exp) < datetime.now(timezone.utc).timestamp():
+                    raise ValueError("token expired")
+            except (TypeError, ValueError) as e:
+                if isinstance(e, ValueError) and str(e) == "token expired":
+                    raise
+                raise ValueError("invalid JWT exp") from e
+        return payload
+
     def _check_auth(self) -> bool:
         """Check API key / JWT authentication.
 
@@ -101,29 +155,11 @@ class SyncHTTPHandler(BaseHTTPRequestHandler):
             if not auth.startswith("Bearer "):
                 self._send_error(401, "Missing Bearer token")
                 return False
-            token = auth[7:]
+
             try:
-                # Minimal JWT decode without dependencies
-                import base64 as _b64
-                parts = token.split(".")
-                if len(parts) != 3:
-                    self._send_error(401, "Invalid JWT format")
-                    return False
-                # Decode payload (part 1, 0-indexed)
-                payload_b64 = parts[1]
-                # Fix padding
-                pad = 4 - len(payload_b64) % 4
-                if pad != 4:
-                    payload_b64 += "=" * pad
-                payload_bytes = _b64.urlsafe_b64decode(payload_b64)
-                payload = json.loads(payload_bytes.decode("utf-8"))
-                # Check expiry
-                exp = payload.get("exp", 0)
-                if exp and exp < datetime.now().timestamp():
-                    self._send_error(401, "Token expired")
-                    return False
+                self._validate_jwt(auth[7:])
                 return True
-            except Exception as e:
+            except ValueError as e:
                 self._send_error(401, f"JWT validation failed: {e}")
                 return False
 
