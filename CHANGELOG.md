@@ -57,16 +57,11 @@ If you cannot upgrade right away, restrict network access to the sync
 endpoint (firewall, reverse proxy with mTLS, or localhost bind with SSH
 tunnel). The vulnerability is not exploitable against an unreachable
 endpoint.
-=======
-- **Host LLM backend registration in skip-context sessions.**
-  `register_hermes_host_llm()` was called at the end of
-  `MnemosyneMemoryProvider.initialize()`, after the skip-context early
-  return. Cron, subagent, and background sessions never reached it, so
-  `mnemosyne_sleep` silently fell back to AAAK. Registration now fires
-  before the skip-context check; `shutdown()` only unregisters when the
-  session is not in a skip context. Also fixes the CLI standalone-loading
-  fallback import path for both `cli.py` copies (#368, supersedes #361).
->>>>>>> 35627ea (docs: add CHANGELOG entry for host LLM skip-context fix + fix _discover_plugins doc reference)
+
+- **hermes integration:** `hermes mnemosyne <stats|sleep|inspect|export>` are now
+  bank-aware under `profile_isolation` — they resolve the active profile bank (or an
+  explicit `--bank`) instead of always reading the default bank, which reported empty
+  state when the profile bank held the data. (#362, #363)
 
 ## [3.10.0] — 2026-06-18
 
