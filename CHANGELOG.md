@@ -7,6 +7,15 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
 ## [Unreleased]
 
+### Changed
+
+- **Hermes sync role default now saves user turns only.** The default for
+  `memory.mnemosyne.sync_roles` changed from `["user", "assistant"]` to
+  `["user"]` so automatic Mnemosyne autosave avoids assistant transcript noise.
+  Existing deployments that want the previous assistant-turn autosave behavior
+  should set `memory.mnemosyne.sync_roles: ["user", "assistant"]` in
+  `config.yaml`.
+
 ## [3.10.1] — 2026-06-22
 
 ### Security
