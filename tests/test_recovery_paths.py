@@ -9,7 +9,10 @@ wrong database.
 """
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
+
+import pytest
 
 from mnemosyne.dr import recovery
 
@@ -47,3 +50,47 @@ def test_get_default_paths_data_dir_takes_precedence_over_hermes_home(monkeypatc
     data_dir, _, db_path = recovery.get_default_paths()
     assert data_dir == tmp_path / "explicit"
     assert db_path == tmp_path / "explicit" / "mnemosyne.db"
+
+
+def test_create_backup_succeeds_with_sqlite_vec_tables(tmp_path):
+    """Regression: create_backup() must load sqlite-vec on the source AND
+    destination connections, otherwise sqlite3.Connection.backup() and
+    Connection.iterdump() both fail with ``no such module: vec0`` on
+    databases that use vec0 virtual tables.
+
+    Pre-fix: this test fails with ``sqlite3.OperationalError: no such
+    module: vec0`` raised from inside the backup serialization path.
+    """
+    pytest.importorskip("sqlite_vec")
+
+    db_path = tmp_path / "vec_test.db"
+    backup_dir = tmp_path / "backups"
+
+    # Build a tiny DB that has a vec0 virtual table — the exact schema
+    # shape that triggered the original bug in 3.10.x.
+    conn = sqlite3.connect(str(db_path))
+    conn.enable_load_extension(True)
+    import sqlite_vec
+    sqlite_vec.load(conn)
+    conn.execute(
+        "CREATE VIRTUAL TABLE vec_items USING vec0("
+        "embedding float[4] distance_metric=cosine)"
+    )
+    conn.execute("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT)")
+    conn.executemany("INSERT INTO meta VALUES (?, ?)", [("a", "1"), ("b", "2")])
+    conn.commit()
+    conn.close()
+
+    # Act: this is the call path `mnemosyne backup` uses. Pre-fix it
+    # raised sqlite3.OperationalError: no such module: vec0.
+    result = recovery.create_backup(db_path=db_path, backup_dir=backup_dir)
+
+    # Assert: backup file exists, is non-empty, gzipped, and the gz
+    # contents contain the vec0 table definition.
+    assert Path(result["backup_path"]).exists()
+    assert result["backup_size"] > 0
+    import gzip
+    with gzip.open(result["backup_path"], "rt") as f:
+        dump = f.read()
+    assert "vec_items" in dump
+    assert "CREATE VIRTUAL TABLE" in dump
