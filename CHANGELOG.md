@@ -9,6 +9,15 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
 ### Fixed
 
+- **Host LLM backend registration in skip-context sessions.**
+  `register_hermes_host_llm()` was called at the end of
+  `MnemosyneMemoryProvider.initialize()`, after the skip-context early
+  return. Cron, subagent, and background sessions never reached it, so
+  `mnemosyne_sleep` silently fell back to AAAK. Registration now fires
+  before the skip-context check; `shutdown()` only unregisters when the
+  session is not in a skip context. Also fixes the CLI standalone-loading
+  fallback import path for both `cli.py` copies (#368, supersedes #361).
+
 - **Respect `HERMES_HOME` for the fastembed cache default.** The default ONNX
   model cache path now resolves to `<HERMES_HOME>/cache/fastembed` (falling back
   to `~/.hermes/cache/fastembed` when `HERMES_HOME` is unset), instead of always
@@ -48,6 +57,16 @@ If you cannot upgrade right away, restrict network access to the sync
 endpoint (firewall, reverse proxy with mTLS, or localhost bind with SSH
 tunnel). The vulnerability is not exploitable against an unreachable
 endpoint.
+=======
+- **Host LLM backend registration in skip-context sessions.**
+  `register_hermes_host_llm()` was called at the end of
+  `MnemosyneMemoryProvider.initialize()`, after the skip-context early
+  return. Cron, subagent, and background sessions never reached it, so
+  `mnemosyne_sleep` silently fell back to AAAK. Registration now fires
+  before the skip-context check; `shutdown()` only unregisters when the
+  session is not in a skip context. Also fixes the CLI standalone-loading
+  fallback import path for both `cli.py` copies (#368, supersedes #361).
+>>>>>>> 35627ea (docs: add CHANGELOG entry for host LLM skip-context fix + fix _discover_plugins doc reference)
 
 ## [3.10.0] — 2026-06-18
 

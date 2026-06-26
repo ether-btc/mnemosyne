@@ -1535,6 +1535,20 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # Apply provider-specific config from kwargs (Hermes-passed) or config.yaml fallback
         self._apply_provider_config(kwargs)
 
+        # Register the Hermes auxiliary LLM backend BEFORE the skip-context
+        # early return. The backend is process-global and needed by
+        # mnemosyne_sleep / extract_facts regardless of whether this session
+        # gets memory injection. Without this, cron-context sessions that
+        # still call mnemosyne_sleep as a tool silently fall back to AAAK
+        # because register_hermes_host_llm() was after the early return.
+        # Idempotent: set_host_llm_backend() just overwrites the global.
+        try:
+            from hermes_memory_provider.hermes_llm_adapter import register_hermes_host_llm
+            if register_hermes_host_llm():
+                logger.info("Mnemosyne registered Hermes auxiliary LLM backend for memory operations")
+        except Exception as exc:
+            logger.debug("Mnemosyne could not register Hermes auxiliary LLM backend: %s", exc)
+
         if self._agent_context in self._skip_contexts:
             logger.debug("Mnemosyne skipped: non-primary context=%s", self._agent_context)
             # C13: a skip-context re-init must DEACTIVATE the instance if
@@ -1602,18 +1616,6 @@ class MnemosyneMemoryProvider(MemoryProvider):
         if self._beam is not None:
             self._activate_in_module()
             self._init_audit_log()
-
-        # Register the Hermes auxiliary LLM backend so Mnemosyne can route
-        # consolidation and fact extraction through Hermes' authenticated
-        # provider (e.g., openai-codex via OAuth) when the user opts in via
-        # MNEMOSYNE_HOST_LLM_ENABLED=true. Registration alone does not
-        # change Mnemosyne behavior; failure here must not break the provider.
-        try:
-            from hermes_memory_provider.hermes_llm_adapter import register_hermes_host_llm
-            if register_hermes_host_llm():
-                logger.info("Mnemosyne registered Hermes auxiliary LLM backend for memory operations")
-        except Exception as exc:
-            logger.debug("Mnemosyne could not register Hermes auxiliary LLM backend: %s", exc)
 
     def system_prompt_block(self) -> str:
         if self._beam:
@@ -2900,11 +2902,15 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # Symmetric with initialize(): clear the Hermes host LLM backend so a
         # process that later uses Mnemosyne outside Hermes does not retain a
         # stale reference into agent.auxiliary_client.
-        try:
-            from hermes_memory_provider.hermes_llm_adapter import unregister_hermes_host_llm
-            unregister_hermes_host_llm()
-        except Exception as exc:
-            logger.debug("Mnemosyne could not unregister Hermes auxiliary LLM backend: %s", exc)
+        # BUT: skip-context sessions (cron, subagent, etc.) did not own the
+        # backend — it was registered by a primary session. Skip unregister
+        # so we don't kill the backend for the whole process.
+        if self._agent_context not in self._skip_contexts:
+            try:
+                from hermes_memory_provider.hermes_llm_adapter import unregister_hermes_host_llm
+                unregister_hermes_host_llm()
+            except Exception as exc:
+                logger.debug("Mnemosyne could not unregister Hermes auxiliary LLM backend: %s", exc)
         self._beam = None
 
         # C13: decrement this instance's contribution to the module-level
