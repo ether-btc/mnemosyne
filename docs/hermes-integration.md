@@ -28,8 +28,8 @@ pip install mnemosyne-hermes
 **Debian / Trixie users:** newer Debian releases block bare pip installs. Use a venv:
 
 ```bash
-python3 -m venv ~/.hermes-venv
-source ~/.hermes-venv/bin/activate
+python3 -m venv ~/.hermes/hermes-agent/venv
+source ~/.hermes/hermes-agent/venv/bin/activate
 pip install mnemosyne-hermes
 ```
 
