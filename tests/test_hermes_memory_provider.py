@@ -101,12 +101,17 @@ def test_initialize_does_not_fail_when_register_returns_false(monkeypatch):
 
 
 def test_initialize_skips_for_non_primary_context(monkeypatch):
-    """REGRESSION: subagent/cron/flush contexts still skip initialization entirely."""
+    """REGRESSION: subagent/cron/flush contexts still skip beam initialization.
+
+    The host LLM backend IS registered (it's process-global and needed by
+    mnemosyne_sleep even in skip-context sessions), but the beam must not
+    be initialized (no memory injection for non-primary contexts).
+    """
     provider = MnemosyneMemoryProvider()
     with patch("hermes_memory_provider.hermes_llm_adapter.register_hermes_host_llm") as mock_reg:
         provider.initialize(session_id="x", agent_context="cron")
-    mock_reg.assert_not_called()
-    assert provider._beam is None
+    mock_reg.assert_called_once()  # Backend registered even in skip context
+    assert provider._beam is None   # But no beam initialized
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +119,11 @@ def test_initialize_skips_for_non_primary_context(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_shutdown_clears_host_backend(monkeypatch):
-    """After shutdown(), the host LLM backend must be unregistered."""
+    """After shutdown(), the host LLM backend must be unregistered.
+
+    This test uses the default (primary) agent context, so shutdown()
+    should unregister the backend.
+    """
     from hermes_memory_provider import hermes_llm_adapter
 
     provider = MnemosyneMemoryProvider()
@@ -124,6 +133,24 @@ def test_shutdown_clears_host_backend(monkeypatch):
 
     provider.shutdown()
     assert get_host_llm_backend() is None
+    assert provider._beam is None
+
+
+def test_shutdown_skip_context_preserves_host_backend(monkeypatch):
+    """Skip-context sessions must NOT unregister the host LLM backend on shutdown.
+
+    The backend is process-global and owned by the primary session.
+    A cron/subagent shutdown must not kill it for the whole process.
+    """
+    from hermes_memory_provider import hermes_llm_adapter
+
+    provider = MnemosyneMemoryProvider()
+    provider._agent_context = "cron"  # Simulate skip context
+    hermes_llm_adapter.register_hermes_host_llm()
+    assert get_host_llm_backend() is not None
+
+    provider.shutdown()
+    assert get_host_llm_backend() is not None  # Backend survives
     assert provider._beam is None
 
 

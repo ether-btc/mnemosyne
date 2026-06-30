@@ -16,6 +16,45 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
   should set `memory.mnemosyne.sync_roles: ["user", "assistant"]` in
   `config.yaml`.
 
+### Fixed
+
+- **Named Hermes profiles now get the plugin link** (issue #365). `mnemosyne-install`
+  and `mnemosyne-hermes install` now scan `~/.hermes/profiles/*/config.yaml` for
+  `memory.provider: mnemosyne` and create (or remove, on uninstall) the plugin
+  symlink in each matching profile's `plugins/` directory. Previously the link was
+  only created under the default `~/.hermes/`, so the provider silently failed to
+  load for users with named profiles.
+
+- **Host LLM backend registration in skip-context sessions.**
+  `register_hermes_host_llm()` was called at the end of
+  `MnemosyneMemoryProvider.initialize()`, after the skip-context early
+  return. Cron, subagent, and background sessions never reached it, so
+  `mnemosyne_sleep` silently fell back to AAAK. Registration now fires
+  before the skip-context check; `shutdown()` only unregisters when the
+  session is not in a skip context. Also fixes the CLI standalone-loading
+  fallback import path for both `cli.py` copies (#368, supersedes #361).
+
+- **Respect `HERMES_HOME` for the fastembed cache default.** The default ONNX
+  model cache path now resolves to `<HERMES_HOME>/cache/fastembed` (falling back
+  to `~/.hermes/cache/fastembed` when `HERMES_HOME` is unset), instead of always
+  writing to `~/.hermes`. Keeps the cache co-located with the rest of Hermes'
+  state for users on a relocated layout (e.g. `~/.config/hermes`). No-op for
+  default installs; matches the `HERMES_HOME` handling already used elsewhere in
+  the package. `MNEMOSYNE_FASTEMBED_CACHE_DIR` still overrides.
+
+### Added
+
+- Hermes Mnemosyne providers can now restrict exposed tools with the optional
+  `memory.mnemosyne.tools` allowlist while preserving memory context/prefetch
+  behavior.
+
+- **Hermes wrapper install mode for read-only / Docker deployments.**
+  `mnemosyne-hermes install --mode wrapper --python <path>` now creates a
+  stable `$HERMES_HOME/plugins/mnemosyne/` shim that imports from the selected
+  Python environment instead of symlinking into a rebuildable Hermes venv.
+  `mnemosyne-hermes status` reports wrapper mode, target interpreter, import
+  health, and stale/broken targets.
+
 ## [3.10.1] — 2026-06-22
 
 ### Security
@@ -47,6 +86,11 @@ If you cannot upgrade right away, restrict network access to the sync
 endpoint (firewall, reverse proxy with mTLS, or localhost bind with SSH
 tunnel). The vulnerability is not exploitable against an unreachable
 endpoint.
+
+- **hermes integration:** `hermes mnemosyne <stats|sleep|inspect|export>` are now
+  bank-aware under `profile_isolation` — they resolve the active profile bank (or an
+  explicit `--bank`) instead of always reading the default bank, which reported empty
+  state when the profile bank held the data. (#362, #363)
 
 ## [3.10.0] — 2026-06-18
 

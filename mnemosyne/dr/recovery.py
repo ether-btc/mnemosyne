@@ -70,7 +70,22 @@ def create_backup(db_path: Path = None, backup_dir: Path = None) -> Dict:
     # approach only copied the .db file, missed .db-wal frames, and
     # could produce corrupted backups under concurrent write load.
     src = sqlite3.connect(str(db_path))
+    # Load sqlite-vec on BOTH connections involved in the backup.
+    # Without this, src.backup(dst) fails with "no such module: vec0"
+    # when copying vec0 virtual tables, AND dst.iterdump() (used to
+    # serialize the in-memory backup to gzipped SQL) fails the same
+    # way when introspecting the destination's vec0 schema.
+    # Mirrors the graceful-fallback pattern in core/beam.py.
+    def _load_sqlite_vec(conn):
+        try:
+            import sqlite_vec
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+        except (ImportError, sqlite3.OperationalError):
+            pass  # optional extra; absence just means no vec0 tables
+    _load_sqlite_vec(src)
     dst = sqlite3.connect(":memory:")
+    _load_sqlite_vec(dst)
     src.backup(dst)
     src.close()
 

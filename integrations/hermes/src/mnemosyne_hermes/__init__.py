@@ -720,6 +720,39 @@ class MnemosyneMemoryProvider(MemoryProvider):
         except Exception:
             return None
 
+
+    def _configured_tool_schemas(self) -> List[Dict[str, Any]]:
+        """Return schemas filtered by memory.mnemosyne.tools, if configured.
+
+        ``tools`` omitted/None preserves the historical behavior and exposes all
+        Mnemosyne tools. ``tools: []`` exposes no tools while still allowing the
+        provider's memory context/prefetch surface to initialize. Unknown names
+        fail loudly so operators catch typos during Hermes startup instead of
+        silently losing tools.
+        """
+        configured = self._read_config_key("tools")
+        if configured is None:
+            return list(ALL_TOOL_SCHEMAS)
+        if isinstance(configured, str):
+            configured = [name.strip() for name in configured.replace(",", "\n").split("\n") if name.strip()]
+        if not isinstance(configured, list):
+            raise ValueError("memory.mnemosyne.tools must be a list of tool names")
+
+        available = {schema["name"]: schema for schema in ALL_TOOL_SCHEMAS}
+        unknown = [name for name in configured if name not in available]
+        if unknown:
+            known = ", ".join(sorted(available))
+            bad = ", ".join(str(name) for name in unknown)
+            raise ValueError(f"Unknown Mnemosyne tool(s) in memory.mnemosyne.tools: {bad}. Known tools: {known}")
+        return [available[name] for name in configured]
+
+    def _configured_tool_names(self) -> Set[str]:
+        return {schema["name"] for schema in self._configured_tool_schemas()}
+
+    def has_tool(self, tool_name: str) -> bool:
+        """Return whether a tool is currently exposed by this provider."""
+        return tool_name in self._configured_tool_names()
+
     def _reflection_skip_response(self, reason: str, trigger: str) -> Dict[str, Any]:
         """Structured skip payload for reflection/sleep guardrails."""
         return {
@@ -759,6 +792,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
             {"key": "skip_contexts", "description": "Agent contexts where Mnemosyne should skip initialization. Comma-separated list. Defaults to 'cron,flush,subagent,background,skill_loop'. Set to empty string to enable all contexts. Also configurable via MNEMOSYNE_SKIP_CONTEXTS env var.", "default": "cron,flush,subagent,background,skill_loop"},
             {"key": "sync_roles", "description": "Conversation roles to autosave in sync_turn(). List of role names: 'user', 'assistant'. Default ['user'] saves user turns only to avoid assistant transcript noise. Set to ['user', 'assistant'] only if assistant transcript autosave is explicitly wanted, or [] to disable conversation autosave entirely. Does not affect explicit mnemosyne_remember calls. Identity signal capture is gated by user sync — excluding 'user' also disables identity extraction. Also configurable via MNEMOSYNE_SYNC_ROLES env var.", "default": ["user"]},
             {"key": "default_scope", "description": "Default scope for remember() calls when not explicitly specified. 'session' (default) limits memories to the current session. 'global' persists memories across sessions.", "choices": ["session", "global"], "default": "session"},
+            {"key": "tools", "description": "Optional list of Mnemosyne tool names to expose to Hermes. Omit or set null to expose all tools. Set [] to expose no tools while keeping memory context/prefetch enabled. Unknown names raise a clear startup/config error.", "default": None},
         ]
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
@@ -864,6 +898,20 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # Apply provider-specific config from kwargs (Hermes-passed) or config.yaml fallback
         self._apply_provider_config(kwargs)
 
+        # Register the Hermes auxiliary LLM backend BEFORE the skip-context
+        # early return. The backend is process-global and needed by
+        # mnemosyne_sleep / extract_facts regardless of whether this session
+        # gets memory injection. Without this, cron-context sessions that
+        # still call mnemosyne_sleep as a tool silently fall back to AAAK
+        # because register_hermes_host_llm() was after the early return.
+        # Idempotent: set_host_llm_backend() just overwrites the global.
+        try:
+            from .hermes_llm_adapter import register_hermes_host_llm
+            if register_hermes_host_llm():
+                logger.info("Mnemosyne registered Hermes auxiliary LLM backend for memory operations")
+        except Exception as exc:
+            logger.debug("Mnemosyne could not register Hermes auxiliary LLM backend: %s", exc)
+
         if self._agent_context in self._skip_contexts:
             logger.debug("Mnemosyne skipped: non-primary context=%s", self._agent_context)
             # C13: a skip-context re-init must DEACTIVATE the instance if
@@ -946,18 +994,6 @@ class MnemosyneMemoryProvider(MemoryProvider):
             self._beam.agent_context = self._agent_context
             self._activate_in_module()
             self._init_audit_log()
-
-        # Register the Hermes auxiliary LLM backend so Mnemosyne can route
-        # consolidation and fact extraction through Hermes' authenticated
-        # provider (e.g., openai-codex via OAuth) when the user opts in via
-        # MNEMOSYNE_HOST_LLM_ENABLED=true. Registration alone does not
-        # change Mnemosyne behavior; failure here must not break the provider.
-        try:
-            from .hermes_llm_adapter import register_hermes_host_llm
-            if register_hermes_host_llm():
-                logger.info("Mnemosyne registered Hermes auxiliary LLM backend for memory operations")
-        except Exception as exc:
-            logger.debug("Mnemosyne could not register Hermes auxiliary LLM backend: %s", exc)
 
     def system_prompt_block(self) -> str:
         if self._beam:
@@ -1191,10 +1227,15 @@ class MnemosyneMemoryProvider(MemoryProvider):
             pass
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Return tool schemas — static, do not depend on initialization state."""
-        return list(ALL_TOOL_SCHEMAS)
+        """Return configured tool schemas; independent of Beam initialization state."""
+        return self._configured_tool_schemas()
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
+        try:
+            if not self.has_tool(tool_name):
+                return json.dumps({"error": f"Unknown Mnemosyne tool: {tool_name}"})
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
         if tool_name == "mnemosyne_sleep" and self._reflect_disabled_for_cron and (self._agent_context or "").strip().lower() == "cron":
             return json.dumps(self._reflection_skip_response("reflect_disabled_for_cron", "tool"))
         if not self._beam:
@@ -2333,11 +2374,15 @@ class MnemosyneMemoryProvider(MemoryProvider):
         # Symmetric with initialize(): clear the Hermes host LLM backend so a
         # process that later uses Mnemosyne outside Hermes does not retain a
         # stale reference into agent.auxiliary_client.
-        try:
-            from .hermes_llm_adapter import unregister_hermes_host_llm
-            unregister_hermes_host_llm()
-        except Exception as exc:
-            logger.debug("Mnemosyne could not unregister Hermes auxiliary LLM backend: %s", exc)
+        # BUT: skip-context sessions (cron, subagent, etc.) did not own the
+        # backend — it was registered by a primary session. Skip unregister
+        # so we don't kill the backend for the whole process.
+        if self._agent_context not in self._skip_contexts:
+            try:
+                from .hermes_llm_adapter import unregister_hermes_host_llm
+                unregister_hermes_host_llm()
+            except Exception as exc:
+                logger.debug("Mnemosyne could not unregister Hermes auxiliary LLM backend: %s", exc)
         self._beam = None
 
         # C13: decrement this instance's contribution to the module-level
