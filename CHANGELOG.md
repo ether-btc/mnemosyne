@@ -5,55 +5,86 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
-## [Unreleased]
-
-### Changed
-
-- **Hermes sync role default now saves user turns only.** The default for
-  `memory.mnemosyne.sync_roles` changed from `["user", "assistant"]` to
-  `["user"]` so automatic Mnemosyne autosave avoids assistant transcript noise.
-  Existing deployments that want the previous assistant-turn autosave behavior
-  should set `memory.mnemosyne.sync_roles: ["user", "assistant"]` in
-  `config.yaml`.
-
-### Fixed
-
-- **Named Hermes profiles now get the plugin link** (issue #365). `mnemosyne-install`
-  and `mnemosyne-hermes install` now scan `~/.hermes/profiles/*/config.yaml` for
-  `memory.provider: mnemosyne` and create (or remove, on uninstall) the plugin
-  symlink in each matching profile's `plugins/` directory. Previously the link was
-  only created under the default `~/.hermes/`, so the provider silently failed to
-  load for users with named profiles.
-
-- **Host LLM backend registration in skip-context sessions.**
-  `register_hermes_host_llm()` was called at the end of
-  `MnemosyneMemoryProvider.initialize()`, after the skip-context early
-  return. Cron, subagent, and background sessions never reached it, so
-  `mnemosyne_sleep` silently fell back to AAAK. Registration now fires
-  before the skip-context check; `shutdown()` only unregisters when the
-  session is not in a skip context. Also fixes the CLI standalone-loading
-  fallback import path for both `cli.py` copies (#368, supersedes #361).
-
-- **Respect `HERMES_HOME` for the fastembed cache default.** The default ONNX
-  model cache path now resolves to `<HERMES_HOME>/cache/fastembed` (falling back
-  to `~/.hermes/cache/fastembed` when `HERMES_HOME` is unset), instead of always
-  writing to `~/.hermes`. Keeps the cache co-located with the rest of Hermes'
-  state for users on a relocated layout (e.g. `~/.config/hermes`). No-op for
-  default installs; matches the `HERMES_HOME` handling already used elsewhere in
-  the package. `MNEMOSYNE_FASTEMBED_CACHE_DIR` still overrides.
+## [3.11.0] — 2026-06-30
 
 ### Added
 
-- Hermes Mnemosyne providers can now restrict exposed tools with the optional
-  `memory.mnemosyne.tools` allowlist while preserving memory context/prefetch
-  behavior.
+- **Automated sleep model refresh.** During `sleep()`, Mnemosyne now asks
+  the LLM for structured candidate updates to canonical model slots (user
+  model, workflow model, project model). Validates the LLM response against
+  the expected schema, generates proposals with confidence scores, and
+  auto-applies or auto-rejects them by policy. New `mnemosyne_model_refresh`
+  diagnostic tool for inspecting proposal outcomes.
+
+- **Recall diagnostics and task progress tools.** `mnemosyne_recall_diagnostics`
+  exposes per-row recall scoring breakdowns (weights, scores, signal
+  contributions) for debugging hybrid ranking. `mnemosyne_task_progress`
+  tracks multi-step task state across sessions with create/update/get/list
+  operations.
+
+- **`MNEMOSYNE_LLM_TIMEOUT` env var.** Configurable HTTP timeout for remote
+  LLM consolidation and extraction calls (default 60s). Useful for deployments
+  routing through local proxies or models with long generation times. (#375)
+
+- **Tool whitelist allowlist.** Hermes Mnemosyne providers can now restrict
+  exposed tools with the optional `memory.mnemosyne.tools` config key while
+  preserving memory context and prefetch behavior. Unknown names raise a
+  clear startup error so typos don't silently lose tools.
 
 - **Hermes wrapper install mode for read-only / Docker deployments.**
-  `mnemosyne-hermes install --mode wrapper --python <path>` now creates a
-  stable `$HERMES_HOME/plugins/mnemosyne/` shim that imports from the selected
-  Python environment instead of symlinking into a rebuildable Hermes venv.
+  `mnemosyne-hermes install --mode wrapper --python <path>` creates a stable
+  `$HERMES_HOME/plugins/mnemosyne/` shim that imports from the selected Python
+  environment instead of symlinking into a rebuildable Hermes venv.
   `mnemosyne-hermes status` reports wrapper mode, target interpreter, import
   health, and stale/broken targets.
+
+### Changed
+
+- **Tool schemas consolidated to single source of truth.** All 37+ tool schema
+  definitions moved from duplicate copies in `hermes_memory_provider/__init__.py`
+  and `integrations/hermes/src/mnemosyne_hermes/tools.py` to a shared
+  `mnemosyne/tool_schemas.py` module. Both provider copies import from the
+  canonical source, ensuring tool definitions stay in sync.
+
+- **Hermes sync role default now saves user turns only.** The `sync_roles`
+  default changed from `["user", "assistant"]` to `["user"]` so automatic
+  turn autosave avoids assistant transcript noise. Set
+  `memory.mnemosyne.sync_roles: ["user", "assistant"]` in `config.yaml` to
+  restore the prior behavior.
+
+### Fixed
+
+- **`mnemosyne backup` now works with sqlite-vec databases.** `create_backup()`
+  loads the sqlite-vec extension on backup connections so `iterdump()` and
+  `Connection.backup()` can serialize vec0 virtual tables. Previously raised
+  `OperationalError: no such module: vec0` on all 3.10.x installs.
+
+- **Named Hermes profiles now get the plugin link** (issue #365). Both
+  `mnemosyne-install` and `mnemosyne-hermes install` now scan
+  `~/.hermes/profiles/*/config.yaml` for `memory.provider: mnemosyne`, creating
+  or removing the plugin symlink in each matching profile's `plugins/` directory.
+  Previously the link was only created under the default `~/.hermes/`.
+
+- **Host LLM backend registration in skip-context sessions.**
+  `register_hermes_host_llm()` was at the end of `initialize()`, after the
+  skip-context early return. Cron, subagent, and background sessions never
+  reached it, so `mnemosyne_sleep` silently fell back to AAAK. Registration
+  now fires before the skip-context check; `shutdown()` only unregisters when
+  the session is not in a skip context (#368, supersedes #361).
+
+- **`HERMES_HOME` respected for fastembed cache default.** The default ONNX
+  model cache path resolves to `<HERMES_HOME>/cache/fastembed` (falling back
+  to `~/.hermes/cache/fastembed`). `MNEMOSYNE_FASTEMBED_CACHE_DIR` still
+  overrides.
+
+- **`mnemosyne` CLI bank-aware under `profile_isolation`.** CLI commands
+  (`stats`, `inspect`, `sleep`, `export`) now resolve the active profile bank
+  instead of always reading the default bank, which reported empty state when
+  the profile bank held the data. (#362, #363)
+
+- **Scope model refresh auto-apply edge cases.** The auto-apply logic in
+  sleep's model-refresh pass now handles edge cases around session boundaries
+  and empty proposal sets.
 
 ## [3.10.1] — 2026-06-22
 
@@ -1112,3 +1143,8 @@ endpoint.
 [3.6.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.6.0
 [3.5.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.5.0
 [3.4.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.4.0
+[3.8.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.8.0
+[3.9.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.9.0
+[3.10.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.10.0
+[3.10.1]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.10.1
+[3.11.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.11.0

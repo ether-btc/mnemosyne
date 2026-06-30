@@ -3,10 +3,10 @@
 Covers all upgrade paths: v2.7 → latest, source installs, PyPI installs,
 and systems with Python's `externally-managed-environment` (PEP 668).
 
-If you're on **v3.7.0** and want the latest (v3.8.0), jump to
+If you're on **v3.10.1** and want the latest (v3.11.0), jump to
+[Upgrading to v3.11.0](#upgrading-to-v3110-automated-sleep-model-refresh).
+Already on v3.8.0? See
 [Upgrading to v3.8.0](#upgrading-to-v380-sync-vecworking-and-reindex).
-Already on v3.6.0? See
-[Upgrading to v3.6.0](#upgrading-to-v360-canonical-facts--api-embedding-fallback).
 
 Already on v3.0.0? See [Upgrading to v3.0.0](#upgrading-to-v300-memoria-architecture).
 
@@ -188,6 +188,120 @@ pip install 'mnemosyne-memory==3.7.0'
 The sync tables persist but are ignored by v3.7.0 code. vec_working table
 persists but v3.7.0 memory_embeddings fallback reads it as a normal table —
 no collision.
+
+---
+
+## Upgrading to v3.9.0 — Synchronous Reindex + Diagnose Tool
+
+Released 2026-06-18. Adds `mnemosyne reindex` for rebuilding vectors after
+a model or dimension change, and `mnemosyne diagnose` for deployment health
+checks.
+
+### What changed
+
+- New `mnemosyne reindex` command — synchronous vector rebuild across all
+  memory tables (working, episodic, facts). Replaces the old incremental
+  approach that could leave stale vectors.
+- `mnemosyne diagnose` now reports `vec_working` migration coverage so you
+  can confirm working-memory vector search is active.
+
+### User action
+
+```bash
+pip install --upgrade mnemosyne-memory==3.9.0
+```
+
+No manual migration needed. The upgrade adds `memoria_` tables on first init.
+
+---
+
+## Upgrading to v3.10.0 — L3 Persona Layer
+
+Released 2026-06-18. Adds always-on behavioral rule layer that survives past
+the working-memory TTL. New `memoria_persona` table with four tiers:
+permanent, long-term, working, ephemeral.
+
+### What changed
+
+- **L3 persona facts** (`memoria_persona` table) — behavioral rules extracted
+  from conversation, persisted across sessions, injected into system prompt.
+  Four confidence tiers with automatic reinforcement and decay.
+- **5 new Hermes tools**: `mnemosyne_persona_list`, `mnemosyne_persona_add`,
+  `mnemosyne_persona_reinforce`, `mnemosyne_persona_demote`,
+  `mnemosyne_persona_remove`.
+- **Auto-injection**: persona.md is appended to the system prompt when
+  triggered by session-start, tool-call, recall, or periodic refresh.
+
+### User action
+
+```bash
+pip install --upgrade mnemosyne-memory==3.10.0
+```
+
+No manual migration. Persona extraction starts automatically. To disable
+persona auto-injection, set `memory.mnemosyne.persona_inject: false` in
+`config.yaml`.
+
+---
+
+## Upgrading to v3.10.1 — Security Fix (Sync JWT Bypass)
+
+Released 2026-06-22. **Security release** — fixes CVE GHSA-xcw4-53cc-hv32
+(CVSS 9.1). The sync server's JWT verification was missing signature
+validation.
+
+### What changed
+
+- HMAC-SHA256 signature verification added to sync server auth
+- Strict `alg: HS256` allowlist (rejects `none`, RS256, etc.)
+- Constant-time signature comparison via `hmac.compare_digest`
+
+### User action
+
+```bash
+pip install --upgrade mnemosyne-memory==3.10.1
+```
+
+If you operate a sync server with network exposure, upgrade immediately.
+If you cannot upgrade, restrict network access to the sync endpoint.
+
+---
+
+## Upgrading to v3.11.0 — Automated Sleep Model Refresh
+
+Released 2026-06-30. Adds LLM-assisted canonical model refresh during
+sleep, recall diagnostics + task progress tools, tool whitelist, wrapper
+install mode, and several fixes.
+
+### What changed
+
+- **Automated sleep model refresh** — during `sleep()`, Mnemosyne asks the
+  LLM for structured candidate updates to canonical model slots (user model,
+  workflow model, project model). Validated candidates are auto-applied or
+  auto-rejected by policy. New `mnemosyne_model_refresh` diagnostic tool.
+- **Recall diagnostics** — `mnemosyne_recall_diagnostics` exposes per-row
+  scoring breakdowns (weights, scores, signal contributions).
+- **Task progress** — `mnemosyne_task_progress` tracks multi-step task state
+  across sessions.
+- **Tool whitelist** — restrict exposed tools via
+  `memory.mnemosyne.tools` config key. Unknown names raise a clear error.
+- **Wrapper install mode** — `mnemosyne-hermes install --mode wrapper`
+  for read-only / Docker deployments.
+- **`MNEMOSYNE_LLM_TIMEOUT`** — configurable HTTP timeout for remote LLM
+  calls (default 60s).
+- **`mnemosyne backup`** now works with sqlite-vec databases.
+- **CLI bank-aware** under `profile_isolation` — CLI commands now read
+  the correct profile bank.
+
+### User action
+
+```bash
+pip install --upgrade mnemosyne-memory==3.11.0
+```
+
+No manual migration. Sync role default changed to `["user"]` — if you
+want assistant-turn autosave, set `memory.mnemosyne.sync_roles:
+["user", "assistant"]` in `config.yaml`.
 
 ---
 

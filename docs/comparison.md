@@ -1,6 +1,6 @@
 # Mnemosyne vs Hindsight Self-Hosted
 
-**Last updated:** 2026-05-18 · Mnemosyne v3.1.0
+**Last updated:** 2026-06-30 · Mnemosyne v3.11.0
 
 This is an honest, technical comparison between Mnemosyne and Hindsight self-hosted (local Docker, not the managed Cloud product). Every claim below is grounded in source code — no fabricated benchmarks or aspirational APIs.
 

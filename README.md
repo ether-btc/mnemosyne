@@ -7,9 +7,9 @@
 *Zero-dependency AI memory that works everywhere. SQLite-backed. Sub-millisecond.*
 
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://python.org)
-[![PyPI](https://img.shields.io/pypi/v/mnemosyne-memory.svg?v=3.7.0)](https://pypi.org/project/mnemosyne-memory/)
+[![PyPI](https://img.shields.io/pypi/v/mnemosyne-memory.svg?v=3.11.0)](https://pypi.org/project/mnemosyne-memory/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/AxDSan/mnemosyne/actions/workflows/ci.yml/badge.svg)](https://github.com/AxDSan/mnemosyne/actions/workflows/ci.yml)
+[![CI](https://github.com/mnemosyne-oss/mnemosyne/actions/workflows/ci.yml/badge.svg)](https://github.com/mnemosyne-oss/mnemosyne/actions/workflows/ci.yml)
 [![BEAM](https://img.shields.io/badge/BEAM-ICLR%202026-purple.svg)](https://beam-benchmark.github.io/)
 [![Discord](https://badgen.net/discord/online-members/29ZszXTgY3)](https://discord.gg/Cgzpw9x3R)
 [![ProductHunt](https://img.shields.io/badge/ProductHunt-Launch-orange)](https://www.producthunt.com/posts/mnemosyne)
