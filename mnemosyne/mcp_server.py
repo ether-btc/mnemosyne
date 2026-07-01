@@ -163,9 +163,11 @@ def _build_sse_app(host: str = "127.0.0.1"):
     async def handle_sse(request):
         async with transport.connect_sse(request.scope, request.receive, request._send) as streams:
             await server.run(streams[0], streams[1], server.create_initialization_options())
+        return JSONResponse({})
 
     async def handle_messages(request):
         await transport.handle_post_message(request.scope, request.receive, request._send)
+        return JSONResponse({"status": "ok"}, status_code=202)
 
     middleware = []
     if require_auth:
