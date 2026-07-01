@@ -190,6 +190,7 @@ def _handle_remember(arguments: Dict[str, Any]) -> Dict[str, Any]:
     extract = arguments.get("extract", False)
     scope = arguments.get("scope", _resolve_default_scope())
     valid_until = arguments.get("valid_until") or None
+    veracity = arguments.get("veracity", "unknown")
     bank = _resolve_bank(arguments)
 
     mem = _create_instance(author_id=arguments.get("author_id"), author_type=arguments.get("author_type"), channel_id=arguments.get("channel_id"), bank=bank)
@@ -202,6 +203,7 @@ def _handle_remember(arguments: Dict[str, Any]) -> Dict[str, Any]:
         extract=extract,
         scope=scope,
         valid_until=valid_until,
+        veracity=veracity,
     )
 
     return {
