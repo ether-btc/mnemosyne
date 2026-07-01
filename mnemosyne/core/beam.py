@@ -7016,7 +7016,7 @@ class BeamMemory:
         # Caller-supplied filters.
         if from_date and (row_dict.get("timestamp") or "") < from_date:
             return False
-        if to_date and (row_dict.get("timestamp") or "") > to_date:
+        if to_date and (row_dict.get("timestamp") or "") > f"{to_date}T23:59:59":
             return False
         if source and row_dict.get("source") != source:
             return False
