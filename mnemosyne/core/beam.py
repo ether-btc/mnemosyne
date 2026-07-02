@@ -398,6 +398,26 @@ def _warn_about_veracity_weight_overrides(force: bool = False) -> bool:
 
 _warn_about_veracity_weight_overrides()
 
+
+# Cross-session recall toggle. When enabled via MNEMOSYNE_CROSS_SESSION=1,
+# the session filter (session_id = ? OR scope = 'global') is replaced with
+# (1=1), making all working and episodic memories visible across sessions.
+# Default off preserves backward compatibility.
+_CROSS_SESSION = os.environ.get("MNEMOSYNE_CROSS_SESSION", "0") == "1"
+
+
+def _session_scope_filter(extra_col: str = "") -> str:
+    """Return a WHERE clause for session scoping.
+
+    When _CROSS_SESSION is enabled, returns (1=1) to disable filtering.
+    Otherwise returns (session_id = ? OR scope = 'global'[ OR col = ?]).
+    """
+    if _CROSS_SESSION:
+        return "(1=1)"
+    if extra_col:
+        return f"(session_id = ? OR scope = 'global' OR {extra_col} = ?)"
+    return "(session_id = ? OR scope = 'global')"
+
 # Vector compression: float32 | int8 | bit
 VEC_TYPE = os.environ.get("MNEMOSYNE_VEC_TYPE", "int8").lower()
 if VEC_TYPE not in ("float32", "int8", "bit"):
@@ -5356,12 +5376,12 @@ class BeamMemory:
         # Session scope: channel filter only when explicitly specified.
         # Author-only searches have no session/channel restriction.
         if channel_id:
-            wm_where_clauses.append("(session_id = ? OR scope = 'global' OR channel_id = ?)")
+            wm_where_clauses.append(_session_scope_filter("channel_id"))
             wm_params.extend([self.session_id, channel_id])
         elif author_id or author_type:
             wm_where_clauses.append("(1=1)")
         else:
-            wm_where_clauses.append("(session_id = ? OR scope = 'global')")
+            wm_where_clauses.append(_session_scope_filter())
             wm_params.append(self.session_id)
         
         if from_date:
@@ -5612,13 +5632,13 @@ class BeamMemory:
             # Also check episodic memory for entity matches
             em_placeholders = ",".join("?" * len(entity_memory_ids))
             if channel_id:
-                em_entity_scope = "(session_id = ? OR scope = 'global' OR channel_id = ?)"
+                em_entity_scope = _session_scope_filter("channel_id")
                 em_entity_params = [*tuple(entity_memory_ids), self.session_id, channel_id]
             elif author_id or author_type:
                 em_entity_scope = "(1=1)"
                 em_entity_params = [*tuple(entity_memory_ids)]
             else:
-                em_entity_scope = "(session_id = ? OR scope = 'global')"
+                em_entity_scope = _session_scope_filter()
                 em_entity_params = [*tuple(entity_memory_ids), self.session_id]
             em_entity_params.extend([datetime.now().isoformat()])
             cursor.execute(f"""
@@ -5732,13 +5752,13 @@ class BeamMemory:
             
             # Also check episodic memory for fact matches
             if channel_id:
-                fact_em_scope = "(session_id = ? OR scope = 'global' OR channel_id = ?)"
+                fact_em_scope = _session_scope_filter("channel_id")
                 fact_em_params = [*tuple(fact_memory_ids), self.session_id, channel_id]
             elif author_id or author_type:
                 fact_em_scope = "(1=1)"
                 fact_em_params = [*tuple(fact_memory_ids)]
             else:
-                fact_em_scope = "(session_id = ? OR scope = 'global')"
+                fact_em_scope = _session_scope_filter()
                 fact_em_params = [*tuple(fact_memory_ids), self.session_id]
             fact_em_params.extend([datetime.now().isoformat()])
             cursor.execute(f"""
@@ -5854,12 +5874,12 @@ class BeamMemory:
         # Session scope: channel filter only when explicitly specified.
         # Author-only searches have no session/channel restriction.
         if channel_id:
-            em_where_clauses.append("(session_id = ? OR scope = 'global' OR channel_id = ?)")
+            em_where_clauses.append(_session_scope_filter("channel_id"))
             em_params.extend([self.session_id, channel_id])
         elif author_id or author_type:
             em_where_clauses.append("(1=1)")
         else:
-            em_where_clauses.append("(session_id = ? OR scope = 'global')")
+            em_where_clauses.append(_session_scope_filter())
             em_params.append(self.session_id)
         
         if from_date:
@@ -6295,11 +6315,11 @@ class BeamMemory:
         em_ids = [r["id"] for r in final_results if r.get("tier") == "episodic"]
         cursor = self.conn.cursor()
         if channel_id:
-            rec_scope = "(session_id = ? OR scope = 'global' OR channel_id = ?)"
+            rec_scope = _session_scope_filter("channel_id")
         elif author_id or author_type:
             rec_scope = "(1=1)"
         else:
-            rec_scope = "(session_id = ? OR scope = 'global')"
+            rec_scope = _session_scope_filter()
         if wm_ids:
             placeholders = ",".join("?" * len(wm_ids))
             rec_params = [now_iso, *tuple(wm_ids)]
@@ -6899,11 +6919,11 @@ class BeamMemory:
         # gap; rebuilding from `final` post-dedup is the right shape, so
         # add the scope guard here too.
         if channel_id:
-            rec_scope = "(session_id = ? OR scope = 'global' OR channel_id = ?)"
+            rec_scope = _session_scope_filter("channel_id")
         elif author_id or author_type:
             rec_scope = "(1=1)"
         else:
-            rec_scope = "(session_id = ? OR scope = 'global')"
+            rec_scope = _session_scope_filter()
 
         def _rec_scope_params() -> List:
             if channel_id:
@@ -6994,17 +7014,12 @@ class BeamMemory:
         Always-on filters: session scope, valid_until, superseded_by.
         Conditional filters: caller-supplied kwargs.
         """
-        # Always-on session/scope isolation: only return rows visible
-        # to this session. Matches the linear path's WHERE clauses for
-        # both working_memory (session_id = self.session_id OR scope =
-        # 'global') and episodic_memory (same shape).
-        row_session = row_dict.get("session_id") if "session_id" in row_dict else None
-        # Some rows don't carry session_id in the engine row dict -- re-fetch
-        # via the cursor to enforce. For now, treat global scope as
-        # always-visible and same-session as visible.
-        row_scope = row_dict.get("scope") or "session"
-        if row_scope != "global" and row_session is not None and row_session != self.session_id:
-            return False
+        # Session scope filter (honors MNEMOSYNE_CROSS_SESSION).
+        if not _CROSS_SESSION:
+            row_session = row_dict.get("session_id") if "session_id" in row_dict else None
+            row_scope = row_dict.get("scope") or "session"
+            if row_scope != "global" and row_session is not None and row_session != self.session_id:
+                return False
 
         # Validity filters.
         valid_until = row_dict.get("valid_until")
