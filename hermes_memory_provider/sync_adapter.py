@@ -133,7 +133,7 @@ class SyncAdapter:
         host = os.environ.get("MNEMOSYNE_SYNC_HOST", "").strip()
         port = os.environ.get("MNEMOSYNE_SYNC_PORT", "").strip()
         if host and port:
-            return f"http://{host}:{port}"
+            return f"https://{host}:{port}"
         return ""
 
     def _resolve_key(self) -> str:
@@ -144,12 +144,13 @@ class SyncAdapter:
             return raw
 
         # 2. Key source routing
-        source = self._string("key_source", "env").lower()
+        raw_source = self._string("key_source", "env")
+        source = raw_source.lower()
 
         if source == "env":
             return os.environ.get("MNEMOSYNE_SYNC_KEY", "").strip()
         elif source.startswith("file:"):
-            path = source[5:]
+            path = raw_source[5:]
             try:
                 return Path(os.path.expanduser(path)).read_text().strip()
             except Exception as exc:
@@ -186,7 +187,7 @@ class SyncAdapter:
 
             encryption = None
             if self.encrypt_enabled and self.encryption_key:
-                encryption = SyncEncryption(key=self.encryption_key)
+                encryption = SyncEncryption.from_config(key_source=self.encryption_key)
                 logger.info("Sync encryption enabled (key length: %d)", len(self.encryption_key))
             elif self.encrypt_enabled and not self.encryption_key:
                 logger.warning(
@@ -283,7 +284,7 @@ class SyncAdapter:
             return json.dumps(result)
 
         accepted = result.get("accepted", 0)
-        cursor = result.get("next_cursor") or changes.get("next_cursor", "")
+        cursor = result.get("next_cursor") or changes.get("next_cursor") or ""
 
         if cursor:
             self._engine._meta_set("last_sync_cursor", cursor)
@@ -322,7 +323,7 @@ class SyncAdapter:
         # Apply locally
         push_result = self._engine.push_changes(incoming)
         accepted = push_result.get("accepted", 0)
-        cursor = result.get("next_cursor", "")
+        cursor = result.get("next_cursor") or ""
 
         if cursor:
             self._engine._meta_set("last_sync_cursor", cursor)
