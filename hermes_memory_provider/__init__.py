@@ -34,6 +34,14 @@ if str(_mnemosyne_root) not in sys.path:
 
 from mnemosyne.core.episodic_graph import GraphEdge
 from mnemosyne.core.beam import WORKING_MEMORY_TTL_HOURS
+from mnemosyne.batch_tool import (
+    BatchValidationError,
+    apply_beam_batch,
+    batch_validation_error_payload,
+    dry_run_batch,
+    validate_batch_operations,
+)
+from mnemosyne.hermes_config import read_hermes_config_key
 
 logger = logging.getLogger(__name__)
 
@@ -902,6 +910,50 @@ FORGET_SCHEMA = {
     },
 }
 
+BATCH_SCHEMA = {
+    "name": "mnemosyne_batch",
+    "description": (
+        "Apply multiple Mnemosyne memory mutations atomically in one tool call. "
+        "Supported v1 actions: remember, update, forget, invalidate. "
+        "All operations are validated before mutation; on failure the whole batch rolls back. "
+        "Destructive actions require exact memory IDs. Recall/search/canonical/persona/shared-surface operations are not included in v1."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "operations": {
+                "type": "array",
+                "maxItems": 50,
+                "description": "Ordered mutation operations to apply atomically.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["remember", "update", "forget", "invalidate"]},
+                        "content": {"type": "string"},
+                        "memory_id": {"type": "string"},
+                        "importance": {"type": "number"},
+                        "source": {"type": "string"},
+                        "scope": {"type": "string"},
+                        "valid_until": {"type": "string"},
+                        "metadata": {"type": "object"},
+                        "extract_entities": {"type": "boolean"},
+                        "extract": {"type": "boolean"},
+                        "veracity": {"type": "string"},
+                        "replacement_id": {"type": "string"},
+                    },
+                    "required": ["action"],
+                },
+            },
+            "dry_run": {"type": "boolean", "default": False},
+            "bank": {"type": "string"},
+            "author_id": {"type": "string"},
+            "author_type": {"type": "string"},
+            "channel_id": {"type": "string"},
+        },
+        "required": ["operations"],
+    },
+}
+
 IMPORT_SCHEMA = {
     "name": "mnemosyne_import",
     "description": "Import Mnemosyne memories from a JSON file or another memory provider (Hindsight, Mem0). Idempotent by default.",
@@ -1120,7 +1172,7 @@ ALL_TOOL_SCHEMAS = [
     TRIPLE_END_SCHEMA,
     REMEMBER_CANONICAL_SCHEMA, RECALL_CANONICAL_SCHEMA, MODEL_CARD_SCHEMA,
     MODEL_REFRESH_SCHEMA, SCRATCHPAD_WRITE_SCHEMA, SCRATCHPAD_READ_SCHEMA, SCRATCHPAD_CLEAR_SCHEMA,
-    EXPORT_SCHEMA, UPDATE_SCHEMA, FORGET_SCHEMA, IMPORT_SCHEMA, DIAGNOSE_SCHEMA,
+    EXPORT_SCHEMA, UPDATE_SCHEMA, FORGET_SCHEMA, BATCH_SCHEMA, IMPORT_SCHEMA, DIAGNOSE_SCHEMA,
     RECALL_DIAGNOSTICS_SCHEMA, TASK_PROGRESS_SCHEMA,
     GRAPH_QUERY_SCHEMA, GRAPH_LINK_SCHEMA,
     *ALL_SYNC_TOOL_SCHEMAS,
@@ -1528,16 +1580,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
     def _read_config_key(self, key: str) -> Any:
         """Read a single key from memory.mnemosyne in config.yaml."""
-        try:
-            import yaml, os
-            config_path = os.path.join(self._hermes_home, "config.yaml") if self._hermes_home else ""
-            if not config_path or not os.path.exists(config_path):
-                return None
-            with open(config_path, "r") as f:
-                config = yaml.safe_load(f) or {}
-            return config.get("memory", {}).get("mnemosyne", {}).get(key)
-        except Exception:
-            return None
+        return read_hermes_config_key(getattr(self, "_hermes_home", None), key)
 
     def _configured_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return schemas filtered by memory.mnemosyne.tools, if configured.
@@ -2313,6 +2356,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
         try:
             if tool_name == "mnemosyne_remember":
                 return self._handle_remember(args)
+            elif tool_name == "mnemosyne_batch":
+                return self._handle_batch(args)
             elif tool_name == "mnemosyne_recall":
                 return self._handle_recall(args)
             elif tool_name == "mnemosyne_shared_remember":
@@ -2455,6 +2500,25 @@ class MnemosyneMemoryProvider(MemoryProvider):
             "metadata": metadata,
             "veracity": veracity,
         })
+
+    def _handle_batch(self, args: Dict[str, Any]) -> str:
+        try:
+            normalized = validate_batch_operations(args.get("operations"))
+        except BatchValidationError as exc:
+            return json.dumps(batch_validation_error_payload(exc))
+
+        if bool(args.get("dry_run", False)):
+            return json.dumps(dry_run_batch(normalized))
+
+        return json.dumps(apply_beam_batch(
+            self._beam,
+            normalized,
+            default_scope=self._default_scope,
+            remember_source_default="user",
+            remember_source_tool="mnemosyne_batch",
+            audit_event=self._audit_event,
+            extract_defaults_global=False,
+        ))
 
     def _handle_recall(self, args: Dict[str, Any]) -> str:
         query = args.get("query", "")

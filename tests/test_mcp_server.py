@@ -28,6 +28,7 @@ class TestToolSchemas:
         assert "mnemosyne_remember_canonical" in names
         assert "mnemosyne_recall_canonical" in names
         assert "mnemosyne_remember" in names
+        assert "mnemosyne_batch" in names
         assert "mnemosyne_recall" in names
         assert "mnemosyne_sleep" in names
         assert "mnemosyne_scratchpad_read" in names
@@ -97,6 +98,15 @@ class TestToolSchemas:
         assert "mnemosyne_invalidate" in names
         assert "mnemosyne_export" in names
         assert "mnemosyne_import" in names
+
+    def test_batch_schema_has_operations(self):
+        batch_tool = next(t for t in TOOLS if t["name"] == "mnemosyne_batch")
+        schema = batch_tool["inputSchema"]
+        assert "operations" in schema["required"]
+        assert schema["properties"]["operations"]["type"] == "array"
+        assert schema["properties"]["operations"]["maxItems"] == 50
+        for context_field in ("bank", "author_id", "author_type", "channel_id"):
+            assert context_field in schema["properties"]
 
 
 class TestToolHandlers:
@@ -201,6 +211,109 @@ class TestToolHandlers:
         assert result["status"] == "stored"
         assert result["bank"] == "personal"
         assert create_instance.call_args.kwargs["bank"] == "personal"
+
+    def test_handle_batch_multiple_remember(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        result = handle_tool_call("mnemosyne_batch", {
+            "operations": [
+                {"action": "remember", "content": "mcp batch one"},
+                {"action": "remember", "content": "mcp batch two"},
+            ],
+        })
+
+        assert result["status"] == "ok"
+        assert [item["status"] for item in result["results"]] == ["stored", "stored"]
+        assert [event["event"] for event in result["audit_events"]] == ["remember", "remember"]
+        mem = _create_instance(bank="default")
+        legacy_count = mem.conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE content IN (?, ?)",
+            ("mcp batch one", "mcp batch two"),
+        ).fetchone()[0]
+        assert legacy_count == 2
+
+    def test_handle_batch_updates_beam_only_memory(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        mem = _create_instance(bank="default")
+        memory_id = mem.beam.remember("beam only before", importance=0.2)
+
+        result = handle_tool_call("mnemosyne_batch", {
+            "operations": [
+                {"action": "update", "memory_id": memory_id, "content": "beam only after", "importance": "0.9"},
+            ],
+        })
+
+        assert result["status"] == "ok"
+        assert result["results"][0]["status"] == "updated"
+        updated = _create_instance(bank="default").beam.get(memory_id)
+        assert updated["content"] == "beam only after"
+        assert updated["importance"] == 0.9
+
+
+    def test_handle_batch_wrapper_update_forget_invalidate_and_scope(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        stored = handle_tool_call("mnemosyne_batch", {
+            "operations": [
+                {"action": "remember", "content": "mcp update target"},
+                {"action": "remember", "content": "mcp forget target"},
+                {"action": "remember", "content": "mcp invalidate target"},
+                {"action": "remember", "content": "mcp extract target", "extract": True},
+            ],
+        })
+        ids = [row["memory_id"] for row in stored["results"]]
+
+        result = handle_tool_call("mnemosyne_batch", {
+            "operations": [
+                {"action": "update", "memory_id": ids[0], "content": "mcp updated", "importance": "0.7"},
+                {"action": "forget", "memory_id": ids[1]},
+                {"action": "invalidate", "memory_id": ids[2]},
+            ],
+        })
+
+        assert result["status"] == "ok"
+        assert [item["status"] for item in result["results"]] == ["updated", "deleted", "invalidated"]
+        assert [event["event"] for event in result["audit_events"]] == ["update", "forget", "invalidate"]
+        mem = _create_instance(bank="default")
+        updated = mem.beam.get(ids[0])
+        assert updated["content"] == "mcp updated"
+        assert updated["importance"] == 0.7
+        assert mem.beam.get(ids[1]) is None
+        invalidated = mem.beam.conn.execute(
+            "SELECT valid_until FROM working_memory WHERE id = ?",
+            (ids[2],),
+        ).fetchone()
+        assert invalidated[0]
+        extract_scope = mem.beam.conn.execute(
+            "SELECT scope FROM working_memory WHERE id = ?",
+            (ids[3],),
+        ).fetchone()
+        assert extract_scope[0] == "session"
+
+
+    def test_handle_batch_failure_rolls_back(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        result = handle_tool_call("mnemosyne_batch", {
+            "operations": [
+                {"action": "remember", "content": "mcp rollback"},
+                {"action": "update", "memory_id": "missing", "content": "x"},
+            ],
+        })
+
+        assert result["status"] == "error"
+        assert result["failed_index"] == 1
+        mem = _create_instance(bank="default")
+        row = mem.beam.conn.execute(
+            "SELECT COUNT(*) FROM working_memory WHERE content = ?",
+            ("mcp rollback",),
+        ).fetchone()
+        assert row[0] == 0
 
     def test_handle_recall_uses_mcp_bank_env_default(self, mock_mnemosyne, monkeypatch):
         """MCP recall should use the server default bank when omitted."""

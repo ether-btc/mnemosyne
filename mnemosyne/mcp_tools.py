@@ -31,6 +31,13 @@ from mnemosyne.core.memory import Mnemosyne
 from mnemosyne.core.beam import BeamMemory
 
 from mnemosyne.tool_schemas import ALL_TOOL_SCHEMAS
+from mnemosyne.batch_tool import (
+    BatchValidationError,
+    apply_beam_batch,
+    batch_validation_error_payload,
+    dry_run_batch,
+    validate_batch_operations,
+)
 
 # ---------------------------------------------------------------------------
 # Tool Definitions
@@ -178,6 +185,47 @@ def _serialize(obj):
 # Tool Handlers
 # ---------------------------------------------------------------------------
 
+class _WrapperBatchAdapter:
+    """Expose Mnemosyne wrapper mutations through the Beam batch interface."""
+
+    def __init__(self, mem: Mnemosyne):
+        self._mem = mem
+        self.conn = mem.beam.conn
+        self.wrapper_events = []
+
+    def remember(self, **kwargs):
+        return self._call_wrapper("remember", **kwargs)
+
+    def update_working(self, memory_id: str, *, content=None, importance=None):
+        wrapper_ok = self._call_wrapper("update", memory_id, content=content, importance=importance)
+        if wrapper_ok:
+            return True
+        return self._mem.beam.update_working(memory_id, content=content, importance=importance)
+
+    def forget_working(self, memory_id: str):
+        return self._call_wrapper("forget", memory_id)
+
+    def invalidate(self, memory_id: str, *, replacement_id=None):
+        return self._call_wrapper("invalidate", memory_id, replacement_id=replacement_id)
+
+    def replay_wrapper_events(self) -> None:
+        for event_type, memory_id, kwargs in self.wrapper_events:
+            self._mem._emit_wrapper(event_type, memory_id, **kwargs)
+
+    def _call_wrapper(self, method_name: str, *args, **kwargs):
+        original_conn = self._mem.conn
+        original_emit = self._mem._emit_wrapper
+        self._mem.conn = self.conn
+        self._mem._emit_wrapper = lambda event_type, memory_id, **event_kwargs: self.wrapper_events.append(
+            (event_type, memory_id, event_kwargs)
+        )
+        try:
+            return getattr(self._mem, method_name)(*args, **kwargs)
+        finally:
+            self._mem.conn = original_conn
+            self._mem._emit_wrapper = original_emit
+
+
 def _handle_remember(arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Handle mnemosyne_remember tool call."""
     content = arguments["content"]
@@ -210,6 +258,40 @@ def _handle_remember(arguments: Dict[str, Any]) -> Dict[str, Any]:
         "content_preview": content[:100],
         "bank": bank
     }
+
+
+def _handle_batch(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Handle mnemosyne_batch tool call."""
+    try:
+        normalized = validate_batch_operations(arguments.get("operations"))
+    except BatchValidationError as exc:
+        return batch_validation_error_payload(exc)
+
+    if bool(arguments.get("dry_run", False)):
+        return dry_run_batch(normalized)
+
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(
+        author_id=arguments.get("author_id"),
+        author_type=arguments.get("author_type"),
+        channel_id=arguments.get("channel_id"),
+        bank=bank,
+    )
+    audit_events = []
+    adapter = _WrapperBatchAdapter(mem)
+    result = apply_beam_batch(
+        adapter,
+        normalized,
+        default_scope=_resolve_default_scope(),
+        remember_source_default="mcp",
+        audit_event=lambda name, **kwargs: audit_events.append({"event": name, **kwargs}),
+    )
+    if result.get("status") == "ok":
+        adapter.replay_wrapper_events()
+    result["bank"] = bank
+    if audit_events:
+        result["audit_events"] = audit_events
+    return result
 
 
 def _handle_recall(arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -925,6 +1007,7 @@ def _handle_hygiene_clean(arguments: Dict[str, Any]) -> Dict[str, Any]:
 
 _TOOL_HANDLERS = {
     "mnemosyne_remember": _handle_remember,
+    "mnemosyne_batch": _handle_batch,
     "mnemosyne_recall": _handle_recall,
     "mnemosyne_shared_remember": _handle_shared_remember,
     "mnemosyne_shared_recall": _handle_shared_recall,

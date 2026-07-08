@@ -27,7 +27,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from datetime import datetime, timedelta
 
-# Mnemosyne core is installed via pip (mnemosyne-memory>=3.1 dependency),
+from .tools import ALL_TOOL_SCHEMAS
+from mnemosyne.batch_tool import (
+    BatchValidationError,
+    apply_beam_batch,
+    batch_validation_error_payload,
+    dry_run_batch,
+    validate_batch_operations,
+)
+from mnemosyne.hermes_config import read_hermes_config_key
+
+# Mnemosyne core is installed via pip (mnemosyne-memory>=3.11.1 dependency),
 # but keep imports lazy so installer/status CLI commands still work in broken
 # or partially-installed environments.
 
@@ -346,10 +356,6 @@ def _sync_turn_assistant_limit() -> int:
             raw,
         )
         return 800
-
-
-# ---------------------------------------------------------------------------
-from .tools import ALL_TOOL_SCHEMAS
 
 
 # ---------------------------------------------------------------------------
@@ -735,16 +741,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
 
     def _read_config_key(self, key: str) -> Any:
         """Read a single key from memory.mnemosyne in config.yaml."""
-        try:
-            import yaml, os
-            config_path = os.path.join(self._hermes_home, "config.yaml") if self._hermes_home else ""
-            if not config_path or not os.path.exists(config_path):
-                return None
-            with open(config_path, "r") as f:
-                config = yaml.safe_load(f) or {}
-            return config.get("memory", {}).get("mnemosyne", {}).get(key)
-        except Exception:
-            return None
+        return read_hermes_config_key(getattr(self, "_hermes_home", None), key)
 
 
     def _configured_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -1356,6 +1353,8 @@ class MnemosyneMemoryProvider(MemoryProvider):
         try:
             if tool_name == "mnemosyne_remember":
                 return self._handle_remember(args)
+            elif tool_name == "mnemosyne_batch":
+                return self._handle_batch(args)
             elif tool_name == "mnemosyne_recall":
                 return self._handle_recall(args)
             elif tool_name == "mnemosyne_shared_remember":
@@ -1458,13 +1457,10 @@ class MnemosyneMemoryProvider(MemoryProvider):
         source = args.get("source", "user")
         extract = bool(args.get("extract", False))
         extract_entities = bool(args.get("extract_entities", False))
-        # When extract=true and scope is not explicitly passed by the caller,
-        # auto-default to global. Facts extracted via LLM are identity-significant
-        # and should survive session boundaries. When extract=false, fall back
-        # to the configured default_scope (user-configurable via default_scope
-        # in config.yaml). If the caller explicitly passed scope, respect that
-        # choice.
-        scope = args.get("scope", "global" if extract else self._default_scope)
+        # Use the configured default scope unless the caller explicitly passes
+        # a scope. This matches the root Hermes provider and keeps
+        # mnemosyne_remember / mnemosyne_batch scope behavior in parity.
+        scope = args.get("scope", self._default_scope)
         valid_until = args.get("valid_until", None) or None
         metadata = args.get("metadata") or None
         # Trust-boundary clamp — see VERACITY_ALLOWED in
@@ -1498,6 +1494,25 @@ class MnemosyneMemoryProvider(MemoryProvider):
             "metadata": metadata,
             "veracity": veracity,
         })
+
+    def _handle_batch(self, args: Dict[str, Any]) -> str:
+        try:
+            normalized = validate_batch_operations(args.get("operations"))
+        except BatchValidationError as exc:
+            return json.dumps(batch_validation_error_payload(exc))
+
+        if bool(args.get("dry_run", False)):
+            return json.dumps(dry_run_batch(normalized))
+
+        return json.dumps(apply_beam_batch(
+            self._beam,
+            normalized,
+            default_scope=self._default_scope,
+            remember_source_default="user",
+            remember_source_tool="mnemosyne_batch",
+            audit_event=self._audit_event,
+            extract_defaults_global=False,
+        ))
 
     def _handle_recall(self, args: Dict[str, Any]) -> str:
         query = args.get("query", "")
