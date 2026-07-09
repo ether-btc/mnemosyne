@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from mnemosyne.cli import cmd_hygiene
 from mnemosyne.core.beam import BeamMemory, init_beam
 from mnemosyne.core.hygiene import (
     AuditReport,
@@ -233,7 +234,7 @@ class TestAuditNoise:
         assert {c.memory_id for c in full.candidates} == {"noise0", "noise1", "noise2"}
 
     def test_audit_noise_rejects_invalid_pagination_args(self, temp_db):
-        db_path, beam = temp_db
+        db_path, _beam = temp_db
 
         with pytest.raises(ValueError, match="limit must be >= 0"):
             audit_noise(db_path=db_path, limit=-1)
@@ -242,8 +243,31 @@ class TestAuditNoise:
         with pytest.raises(ValueError, match="batch_size must be > 0"):
             audit_noise(db_path=db_path, batch_size=0)
 
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            (["audit", "--limit"], "--limit requires a value"),
+            (["audit", "--limit", "--json"], "--limit requires a value"),
+            (["audit", "--offset"], "--offset requires a value"),
+            (["audit", "--batch-size"], "--batch-size requires a value"),
+            (["audit", "--min-score"], "--min-score requires a value"),
+            (["audit", "--bogus"], "Unknown hygiene audit option: --bogus"),
+            (["status", "--limit"], "--limit requires a value"),
+            (["status", "--limit", "--json"], "--limit requires a value"),
+            (["status", "--bogus"], "Unknown hygiene status option: --bogus"),
+            (["restore", "--limit"], "--limit requires a value"),
+            (["restore", "--limit", "--dry-run"], "--limit requires a value"),
+            (["restore", "--bogus"], "Unknown hygiene restore option: --bogus"),
+        ],
+    )
+    def test_cmd_hygiene_fails_fast_on_invalid_options(self, args, message, capsys):
+        with pytest.raises(SystemExit):
+            cmd_hygiene(args)
+
+        assert message in capsys.readouterr().err
+
     def test_hygiene_status_without_audit_log(self, temp_db):
-        db_path, beam = temp_db
+        db_path, _beam = temp_db
 
         status = hygiene_status(db_path=db_path, limit=10)
 
@@ -252,7 +276,7 @@ class TestAuditNoise:
         assert status["audit_log"]["by_action"] == {}
 
     def test_hygiene_status_can_skip_noise_summary(self, temp_db):
-        db_path, beam = temp_db
+        db_path, _beam = temp_db
 
         status = hygiene_status(db_path=db_path, include_noise_summary=False)
 
@@ -303,6 +327,20 @@ class TestAuditNoise:
         assert status["audit_log"]["total_entries"] == 1
         assert status["audit_log"]["by_action"]["flagged"] == 1
         assert "heartbeat" not in json.dumps(status)
+
+    def test_audit_preserves_zero_importance(self, temp_db):
+        db_path, beam = temp_db
+        _insert_row(beam, "working_memory", "zero", "heartbeat", source="heartbeat", importance=0.0)
+
+        report = audit_noise(db_path=db_path, tables=["working_memory"], min_score=0.0)
+
+        assert report.candidates[0].importance == 0.0
+
+    def test_audit_rejects_invalid_table_identifiers(self, temp_db):
+        db_path, _beam = temp_db
+
+        with pytest.raises(ValueError, match="Invalid table identifier"):
+            audit_noise(db_path=db_path, tables=["working_memory; DROP TABLE memories"])
 
     def test_audit_min_score_filter(self, temp_db):
         db_path, beam = temp_db

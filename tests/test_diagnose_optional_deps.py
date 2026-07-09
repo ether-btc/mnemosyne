@@ -90,6 +90,8 @@ def test_diagnose_reports_memory_orphans_without_mutating_rows(tmp_path, monkeyp
         "INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, ?)",
         ("legacy-live", "[1.0]", "test"),
     )
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=OFF")
     conn.execute(
         "INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, ?)",
         ("missing-memory", "[0.0]", "test"),

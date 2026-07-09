@@ -42,6 +42,17 @@ def _usage(message: str, exit_code: int = 2) -> NoReturn:
     raise SystemExit(exit_code)
 
 
+def _require_value(rest, i, flag, parser):
+    """Extract a value for a CLI flag at position i. Returns (parsed_value, i+2).
+
+    Raises SystemExit if the flag is at the end of the argument list (missing
+    value). Used by hygiene audit/status/restore parsers.
+    """
+    if i + 1 >= len(rest) or rest[i + 1].startswith("--"):
+        _fail(f"{flag} requires a value")
+    return parser(rest[i + 1], flag.lstrip("-")), i + 2
+
+
 def _parse_float(value: str, name: str) -> float:
     """Parse a float argument or exit with a user-facing CLI error."""
     try:
@@ -741,26 +752,22 @@ def cmd_hygiene(args):
         as_json = False
         i = 0
         while i < len(rest):
-            if rest[i] == "--limit" and i + 1 < len(rest):
-                limit = _parse_int(rest[i + 1], "limit")
-                i += 2
-            elif rest[i] == "--offset" and i + 1 < len(rest):
-                offset = _parse_int(rest[i + 1], "offset")
-                i += 2
-            elif rest[i] == "--batch-size" and i + 1 < len(rest):
-                batch_size = _parse_int(rest[i + 1], "batch-size")
-                i += 2
+            if rest[i] == "--limit":
+                limit, i = _require_value(rest, i, "--limit", _parse_int)
+            elif rest[i] == "--offset":
+                offset, i = _require_value(rest, i, "--offset", _parse_int)
+            elif rest[i] == "--batch-size":
+                batch_size, i = _require_value(rest, i, "--batch-size", _parse_int)
+            elif rest[i] == "--min-score":
+                min_score, i = _require_value(rest, i, "--min-score", _parse_float)
             elif rest[i] == "--all":
                 scan_all = True
                 i += 1
-            elif rest[i] == "--min-score" and i + 1 < len(rest):
-                min_score = _parse_float(rest[i + 1], "min-score")
-                i += 2
             elif rest[i] == "--json":
                 as_json = True
                 i += 1
             else:
-                i += 1
+                _fail(f"Unknown hygiene audit option: {rest[i]}")
 
         db_path = Path(DATA_DIR) / "mnemosyne.db"
         if not db_path.exists():
@@ -806,11 +813,10 @@ def cmd_hygiene(args):
             if rest[i] == "--json":
                 as_json = True
                 i += 1
-            elif rest[i] == "--limit" and i + 1 < len(rest):
-                limit = _parse_int(rest[i + 1], "limit")
-                i += 2
+            elif rest[i] == "--limit":
+                limit, i = _require_value(rest, i, "--limit", _parse_int)
             else:
-                i += 1
+                _fail(f"Unknown hygiene status option: {rest[i]}")
         db_path = Path(DATA_DIR) / "mnemosyne.db"
         if not db_path.exists():
             _fail(f"Database not found at {db_path}")
@@ -910,11 +916,10 @@ def cmd_hygiene(args):
         restore_limit = 100
         i = 0
         while i < len(rest):
-            if rest[i] == "--limit" and i + 1 < len(rest):
-                restore_limit = _parse_int(rest[i + 1], "limit")
-                i += 2
+            if rest[i] == "--limit":
+                restore_limit, i = _require_value(rest, i, "--limit", _parse_int)
             else:
-                i += 1
+                _fail(f"Unknown hygiene restore option: {rest[i]}")
 
         db_path = Path(DATA_DIR) / "mnemosyne.db"
         if not db_path.exists():
