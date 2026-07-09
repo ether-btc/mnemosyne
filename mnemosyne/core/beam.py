@@ -476,6 +476,7 @@ def _get_connection(db_path: Path = None) -> sqlite3.Connection:
         except ValueError:
             _busy_ms = 5000
         conn.execute(f"PRAGMA busy_timeout={_busy_ms}")
+        conn.execute("PRAGMA foreign_keys=ON")
         if _SQLITE_VEC_AVAILABLE:
             try:
                 conn.enable_load_extension(True)
