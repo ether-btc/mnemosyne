@@ -42,6 +42,7 @@ from mnemosyne.batch_tool import (
     validate_batch_operations,
 )
 from mnemosyne.hermes_config import read_hermes_config_key
+from mnemosyne.integrations.hermes_persona_prompt import HermesPersonaPromptMixin
 
 logger = logging.getLogger(__name__)
 
@@ -1239,7 +1240,7 @@ def _parse_env_optional_int(key: str, default: Optional[int]) -> Optional[int]:
     return _coerce_optional_int(os.environ.get(key), default)
 
 
-class MnemosyneMemoryProvider(MemoryProvider):
+class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
     """Mnemosyne native memory — local SQLite with vector + FTS5 hybrid search."""
 
     # How long on_session_end will wait for sleep/consolidation to finish before
@@ -1853,7 +1854,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
             # (matches the auto-capture for identity-significant feelings
             # added in that PR), and keep C27's three-branch structure
             # (working / init-failed-visible / skip-context-silent).
-            return (
+            base = (
                 "# Mnemosyne Memory\n"
                 "Active (native local memory). Use mnemosyne_remember to store ANY "
                 "durable fact, preference, identity, or insight. Use mnemosyne_recall to search. "
@@ -1865,6 +1866,7 @@ class MnemosyneMemoryProvider(MemoryProvider):
                 "answer directly. Use session_search only when the injected Mnemosyne "
                 "context is missing, stale, or insufficient."
             )
+            return self._with_persona_block(base)
         # C27: when init failed (as opposed to a deliberate skip-context),
         # surface the failure in the system prompt so the agent -- and through
         # it the user -- can see that memory is unavailable rather than
