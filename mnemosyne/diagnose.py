@@ -132,6 +132,18 @@ def _memory_orphan_diagnostics(conn) -> Dict[str, int]:
     return diagnostics
 
 
+
+
+def _sqlite_integrity_diagnostics(conn) -> Dict[str, str]:
+    """Return PII-safe SQLite integrity diagnostics."""
+    try:
+        rows = conn.execute("PRAGMA quick_check").fetchall()
+        result = "; ".join(str(row[0]) for row in rows) if rows else "unknown"
+    except Exception as exc:
+        return {"quick_check": "ERROR", "detail": str(exc)[:200]}
+    return {"quick_check": result, "detail": ""}
+
+
 def run_diagnostics(*, repair_vec_working: bool = False, dry_run: bool = False) -> Dict:
     """
     Run full diagnostic scan and write PII-safe log.
@@ -255,6 +267,18 @@ def run_diagnostics(*, repair_vec_working: bool = False, dry_run: bool = False) 
         log("db", "db_path", stats.get("database", "unknown"))
 
         try:
+            integrity = _sqlite_integrity_diagnostics(mem.beam.conn)
+            quick_check = integrity["quick_check"]
+            log(
+                "db",
+                "sqlite_quick_check",
+                "OK" if quick_check == "ok" else quick_check,
+                integrity.get("detail", ""),
+            )
+        except Exception as exc:
+            log("db", "sqlite_quick_check", "ERROR", str(exc))
+
+        try:
             orphan_diag = _memory_orphan_diagnostics(mem.beam.conn)
             log("db", "foreign_keys_enabled", "YES" if orphan_diag["foreign_keys_enabled"] else "NO")
             log("db", "gists_total", str(orphan_diag["gists_total"]))
@@ -265,6 +289,20 @@ def run_diagnostics(*, repair_vec_working: bool = False, dry_run: bool = False) 
             log("db", "orphan_memory_id_overlap", str(orphan_diag["orphan_memory_id_overlap"]))
         except Exception as exc:
             log("db", "memory_orphan_diagnostics", "ERROR", str(exc))
+
+        try:
+            from mnemosyne.core.hygiene import noise_summary as _noise_summary
+            db_path_str = stats.get("database")
+            if not db_path_str or db_path_str == "unknown":
+                log("db", "hygiene_noise_summary", "SKIPPED", "database path unavailable")
+            else:
+                hygiene = _noise_summary(Path(db_path_str), limit=200)
+                log("db", "hygiene_noise_scanned", str(hygiene.get("total_scanned", 0)))
+                log("db", "hygiene_noise_candidates", str(hygiene.get("total_candidates", 0)))
+                log("db", "hygiene_noise_ratio", str(hygiene.get("candidate_ratio", 0.0)))
+                log("db", "hygiene_noise_with_secrets", str(hygiene.get("with_secrets", 0)))
+        except Exception as exc:
+            log("db", "hygiene_noise_summary", "ERROR", str(exc))
 
         try:
             from mnemosyne.core.beam import repair_vec_working as _repair_vec_working, vec_working_coverage
@@ -327,6 +365,26 @@ def run_diagnostics(*, repair_vec_working: bool = False, dry_run: bool = False) 
     working_embedding_rows = next((e for e in entries if e["check"] == "working_embedding_rows"), None)
     vec_working_repair_status = next((e for e in entries if e["check"] == "vec_working_repair_status"), None)
     vec_working_repair_inserted = next((e for e in entries if e["check"] == "vec_working_repair_inserted"), None)
+    sqlite_quick_check = next((e for e in entries if e["check"] == "sqlite_quick_check"), None)
+    hygiene_noise_candidates = next((e for e in entries if e["check"] == "hygiene_noise_candidates"), None)
+    hygiene_noise_scanned = next((e for e in entries if e["check"] == "hygiene_noise_scanned"), None)
+    hygiene_noise_with_secrets = next((e for e in entries if e["check"] == "hygiene_noise_with_secrets"), None)
+
+    if sqlite_quick_check and sqlite_quick_check["status"] != "OK":
+        summary["key_findings"].append(
+            f"SQLite quick_check reported: {sqlite_quick_check['status']}"
+        )
+    if hygiene_noise_candidates and hygiene_noise_scanned:
+        candidates = int(hygiene_noise_candidates["status"])
+        scanned = int(hygiene_noise_scanned["status"])
+        if scanned:
+            summary["key_findings"].append(
+                f"Hygiene noise summary: {candidates} candidates across {scanned} scanned rows (read-only sample)"
+            )
+            if hygiene_noise_with_secrets and int(hygiene_noise_with_secrets["status"]) > 0:
+                summary["key_findings"].append(
+                    f"Hygiene scan flagged {hygiene_noise_with_secrets['status']} rows with possible secrets - review before sharing/export"
+                )
 
     if not embed_ok:
         summary["key_findings"].append("fastembed not available - install with: pip install mnemosyne-memory[embeddings]")
