@@ -1190,6 +1190,38 @@ class _BeamConnection(sqlite3.Connection):
 
 
 @contextlib.contextmanager
+def _guarded_transaction(conn: sqlite3.Connection):
+    """Run the enclosed statements as one transaction, rolling back on ANY
+    failure before re-raising.
+
+    Centralizes the guarded commit/rollback pattern shared by
+    ``get_context()``'s recall touch and ``forget_working()``'s cascade
+    delete. Left unguarded, a failure mid-transaction (for example
+    "database is locked" while a consolidation pass is writing) abandons
+    the long-lived thread-local connection inside an open, stale
+    transaction, and every later write on that thread fails
+    "database is locked" instantly (stale-snapshot upgrade; the busy
+    handler is not consulted) until something resets it. The rollback is
+    itself guarded so a dead connection cannot mask the original
+    exception.
+
+    Not used by ``_deferred_commits()``: that context manager implements
+    commit-DEFERRAL semantics (suppressing nested commits behind a
+    per-connection flag), which is a different mechanism from a plain
+    guarded transaction.
+    """
+    try:
+        yield
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass  # rollback of a dead connection must not mask the cause
+        raise
+
+
+@contextlib.contextmanager
 def _deferred_commits(conn: sqlite3.Connection):
     """Suppress nested commit() calls so the caller can wrap many
     sub-helpers in a single transaction.
@@ -3780,14 +3812,18 @@ class BeamMemory:
             ts = new_last.isoformat()
             updates.setdefault(ts, []).append(row["id"])
 
-        cursor.execute("BEGIN TRANSACTION")
-        for ts, ids in updates.items():
-            placeholders = ",".join("?" for _ in ids)
-            cursor.execute(
-                f"UPDATE working_memory SET recall_count = recall_count + 1, last_recalled = ? WHERE id IN ({placeholders})",
-                (ts, *ids)
-            )
-        self.conn.commit()
+        # Guarded: a failure here (e.g. "database is locked" while a
+        # consolidation pass is writing) must roll back rather than abandon
+        # the thread-local connection inside an open, stale transaction --
+        # see _guarded_transaction.
+        with _guarded_transaction(self.conn):
+            cursor.execute("BEGIN TRANSACTION")
+            for ts, ids in updates.items():
+                placeholders = ",".join("?" for _ in ids)
+                cursor.execute(
+                    f"UPDATE working_memory SET recall_count = recall_count + 1, last_recalled = ? WHERE id IN ({placeholders})",
+                    (ts, *ids)
+                )
         return rows
 
     def invalidate(self, memory_id: str, replacement_id: str = None) -> bool:
@@ -4096,6 +4132,8 @@ class BeamMemory:
         return None
 
     def forget_working(self, memory_id: str) -> bool:
+        """Delete a session-authorized working memory row and its cascade
+        (vector, annotations, embeddings) atomically."""
         # E6.a: the cascade-delete of annotations must be authorized by the
         # session-scoped working_memory DELETE. The annotations table has no
         # session_id column, so an unconditional `DELETE FROM annotations
@@ -4112,7 +4150,7 @@ class BeamMemory:
         # uncommitted on the connection for a later unrelated commit to
         # silently include.
         cursor = self.conn.cursor()
-        try:
+        with _guarded_transaction(self.conn):
             authorized_row = cursor.execute(
                 "SELECT rowid FROM working_memory WHERE id = ? AND (session_id = ? OR scope = 'global')",
                 (memory_id, self.session_id),
@@ -4129,10 +4167,6 @@ class BeamMemory:
                     "DELETE FROM annotations WHERE memory_id = ?", (memory_id,)
                 )
                 cursor.execute("DELETE FROM memory_embeddings WHERE memory_id = ?", (memory_id,))
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
         return wm_rows > 0
 
     # ------------------------------------------------------------------
