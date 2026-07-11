@@ -145,27 +145,29 @@ layered memory roadmap
 @PlainWu, @ClaytonChew, @bruvv, @justanotherAIcontributor, @BurakBayır,
 @Iman-Sharif, @webtecnica — bug reports, fixes, and docs improvements
 
-## [Unreleased]
+## [3.12.1] — 2026-07-11
+
+### Added
+
+- **Config.yaml auto-seed on first access.** Mnemosyne now creates a
+  `config.yaml` at the standard location with all 106 known keys and their
+  default values. The file is created automatically on first access — no
+  manual setup needed. For each key, if the corresponding env var is set,
+  its value is used instead of the default, ensuring existing env var
+  configurations are never silently overridden. Hot-reload with
+  `mnemosyne config reload`. Precedence unchanged: config.yaml > env vars
+  > hardcoded defaults.
 
 ### Fixed
 
-- **Polyphonic recall to_date filter excludes the bound day.** The
-  polyphonic path compared ISO timestamps against bare `to_date` with raw
-  lexical `>`, so `2026-06-29T10:30:00 > 2026-06-29` evaluated True and the
-  entire bound day was dropped. Now appends `T23:59:59` to the bound,
-  matching the linear path. (#390, reported by @NodeGuy)
+- **Config.yaml auto-seed respects existing env vars.** The initial
+  implementation wrote all defaults blindly, which would silently override
+  any `MNEMOSYNE_*` env vars the user had set (since config.yaml takes
+  precedence over env vars). Now each key checks for an active env var
+  before writing. Type coercion is applied: env var strings are parsed as
+  bool/int/float to match the default type.
 
-- **MCP remember handler silently drops veracity.** `_handle_remember()`
-  accepted veracity in the tool schema but never extracted it from arguments
-  or passed it to `mem.remember()`. Every MCP remember call stored
-  `veracity: "unknown"` regardless of what was passed. Now properly forwards
-  the veracity argument. (#386, reported by @freeformz)
-
-- **mnemosyne-hermes CLI crashes on fresh install.** The 0.3.0 release had
-  two bugs: the CLI entry point was broken by a function rename in
-  install.py, and eager imports from `mnemosyne.core` crashed when core
-  wasn't in the pipx venv. Fixed by restoring the entry point and converting
-  to lazy imports. (#388, reported by @SeaXen, fixed by @dplush in #391)
+## [Unreleased]
 
 ## [3.11.0] — 2026-06-30
 
