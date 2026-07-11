@@ -47,6 +47,11 @@ def temp_config(monkeypatch):
 
     with tempfile.TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "config.yaml"
+        # Create an empty config.yaml so auto-seed doesn't fire.
+        # The auto-seed writes defaults which would override test env vars
+        # (config.yaml > env vars in precedence). An empty file means
+        # the config starts clean and env vars take effect as expected.
+        config_path.write_text("")
         MnemosyneConfig.reset_instance()
         config = MnemosyneConfig(config_path=config_path)
         # Monkey-patch the singleton
