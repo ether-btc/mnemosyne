@@ -167,6 +167,27 @@ layered memory roadmap
   before writing. Type coercion is applied: env var strings are parsed as
   bool/int/float to match the default type.
 
+## [3.12.2] — 2026-07-11
+
+### Fixed
+
+- **Config reload now bridges to the Hermes provider.** `mnemosyne config
+  set` and `mnemosyne config reload` previously wrote to the Mnemosyne
+  config.yaml but the Hermes provider only read from the Hermes config.yaml
+  (`memory.mnemosyne.<key>`). The two files never connected, so config
+  changes appeared to do nothing. Now the provider falls back to the
+  Mnemosyne config singleton when the Hermes config has no value, and
+  `MnemosyneConfig.get()` auto-reloads on file mtime changes so `config set`
+  takes effect immediately without an explicit reload.
+
+- **Config.yaml auto-seed on all entry points.** The auto-seed now fires on
+  `Mnemosyne()` and `BeamMemory()` init, not just explicit config imports.
+  Idempotent — checks file existence first.
+
+- **Test isolation for config auto-seed.** Config profile tests now create
+  an empty config.yaml before init so the auto-seed doesn't override test
+  env vars with defaults.
+
 ## [Unreleased]
 
 ## [3.11.0] — 2026-06-30
