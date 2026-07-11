@@ -7,43 +7,143 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
 ## [3.12.0] — 2026-07-11
 
+### Added
+
+- **Config.yaml system with profiles, hot-reload, and write filters.**
+  Mnemosyne now supports profile-based configuration, hot-reloading config
+  changes without restart, and write filters for fine-grained control over
+  what gets stored. (#431, #433)
+
+- **`MNEMOSYNE_CROSS_SESSION` env var for cross-session recall.**
+  When set, `recall()` searches across all sessions instead of only the
+  current one. (#371)
+
+- **Atomic `mnemosyne_batch` tool.** Batch multiple memory operations
+  (remember, update, forget, invalidate) in a single atomic transaction
+  via the Hermes provider. (#400)
+
+- **Sync turn diagnostics.** `sync_turn` now exposes diagnostic information
+  for debugging sync pipeline issues. (#115162b)
+
+- **Read-only doctor hygiene signals.** The doctor diagnostic tool now
+  reports hygiene signals (foreign key gaps, orphaned rows, stale
+  connections) without requiring write access. (#71e013d)
+
+- **Orphan diagnostics to doctor.** Doctor now detects orphaned memory
+  rows with no corresponding FTS5 or embedding entries. (#417)
+
+- **CLI bank selection, bank list, and schema migration.**
+  `mnemosyne store` and other CLI commands now honor `MNEMOSYNE_BANK`.
+  New `mnemosyne bank list` command for multi-tenant visibility.
+  New `mnemosyne migrate` command for 3.11.0-era banks. (#404)
+
+- **Hermes memory providers skill v2.0.0.** Bundled skill for the Hermes
+  ecosystem documenting all memory providers. (#4ee3a58)
+
+- **Zero agent integration.** Mnemosyne now integrates with the Zero
+  agent framework. (#418)
+
+- **Layered agent memory roadmap.** Architecture document defining the
+  L0-L4 memory layer model for AI agents. (#96e6978)
+
 ### Fixed
 
-- **CLI memory commands honor `MNEMOSYNE_BANK`.** `mnemosyne store`
-  and other `_get_memory()`-backed CLI commands now write to the selected
-  bank database instead of always using the default database.
+- **`MNEMOSYNE_ENHANCED_RECALL=1` now routes through the full enhanced
+  recall pipeline.** `Mnemosyne.recall()` always called `beam.recall()`
+  directly, bypassing `beam.recall_enhanced()` entirely. The flag had zero
+  effect on production call paths. Now routes to `recall_enhanced()` when
+  the flag is set. (#436, reported by @ValentinSergief with full RCA)
 
-- **`mnemosyne bank list` no longer reports a phantom default bank.**
-  The CLI suppresses `default` when `<DATA_DIR>/mnemosyne.db` does not
-  exist, while preserving the core `BankManager` virtual-default contract.
+- **SSE transport Route handlers no longer crash Starlette.** Route
+  handlers returning `None` caused Starlette crashes in SSE transport
+  mode. (#383)
 
-- **Existing 3.11.0-era banks can be migrated to the 3.11.1 sync schema.**
-  Added an explicit `mnemosyne migrate [--bank <name>]` command that
-  idempotently ensures `memory_events` and `sync_meta` exist.
+- **Diagnostics fallback DB path now respects `HERMES_HOME`.**
+  The diagnostics tool used a hardcoded fallback path instead of
+  resolving from `HERMES_HOME`. (#384)
 
-- **`MNEMOSYNE_ENHANCED_RECALL=1` now routes through the full enhanced recall pipeline.**
-  `Mnemosyne.recall()` always called `beam.recall()` directly, bypassing
-  `beam.recall_enhanced()` entirely. The flag had zero effect on production
-  call paths. Now routes to `recall_enhanced()` when the flag is set, which
-  already has its own internal gate so behavior is unchanged when the flag
-  is off. (#436, reported by @ValentinSergief with full RCA)
+- **Veracity forwarding through `Mnemosyne.remember()`.** The module-level
+  `remember()` function now forwards the veracity argument to the
+  underlying beam, fixing the MCP remember handler silently dropping
+  veracity. (#399, #386)
+
+- **Namespace collision: `tools/` renamed to `_benchmarks/`.** The
+  `tools/` directory collided with `hermes-agent` tool discovery.
+  Renamed to avoid the conflict. (#9ca278a)
+
+- **Profile bank resolution in standalone CLI.** CLI commands loaded
+  standalone now correctly resolve the profile bank. (#6725b80)
+
+- **ASGI middleware replaced with pure-ASGI bearer auth.** Replaced
+  `BaseHTTPMiddleware` with a pure-ASGI approach for bearer auth in
+  MCP SSE transport, fixing Mount compatibility. (#be8c865)
+
+- **Current-state recall ranking.** Fixed a bug where recall ranking
+  used stale scores instead of current-state values. (#416)
+
+- **Bank name validation before path operations.** Bank names are now
+  validated before any filesystem path operations, preventing directory
+  traversal and invalid characters. (#415)
+
+- **SQLite write lock released across consolidation LLM calls.**
+  `BeamMemory` no longer holds the SQLite write lock while waiting for
+  LLM consolidation responses, preventing WAL checkpoint blocking.
+  (#432, reported by @kirocop in #382)
+
+- **Recall-touch transaction rolled back on failure.** The recall-touch
+  UPDATE now properly rolls back the transaction on failure instead of
+  leaving a stale write lock. (#f418044)
+
+- **`PRAGMA foreign_keys=ON` in both connection factories.**
+  Foreign key enforcement is now enabled in both the main and the
+  thread-local connection factories. (#408, reported by @Iman-Sharif)
+
+- **Hygiene audit CLI and table handling hardened.** The doctor CLI
+  now handles edge cases in table detection and reporting. (#f072e1a)
+
+- **Host LLM timeout now configurable.** Added `MNEMOSYNE_LLM_TIMEOUT`
+  env var (default 60s) for remote LLM consolidation and extraction
+  calls. (#d290193)
+
+- **Hermes provider fixes (6 commits):**
+  - Auto-sleep default enabled across both provider surfaces (#429)
+  - Bundled memory override skill installer (#424)
+  - Cross-session recall and CLI default scope (#422)
+  - Pip sync adapter parity with core (#419)
+  - L3 persona prompt parity restored (#ed05503)
+  - `HERMES_HOME` leak in CLI bank test (#6664e81)
 
 ### Changed
 
 - **Default prompt context excludes consolidated working-memory rows.**
   `BeamMemory.get_context()` no longer includes rows where
-  `consolidated_at IS NOT NULL`, preventing already-consolidated originals
-  from competing with hot unconsolidated memories in the context window.
-  Consolidated rows remain fully recallable through `recall()`. Set
-  `MNEMOSYNE_CONTEXT_INCLUDE_CONSOLIDATED=1` to temporarily restore legacy
-  injection behavior (truthy values: `1`, `true`, `yes`, `on`).
+  `consolidated_at IS NOT NULL`. Set `MNEMOSYNE_CONTEXT_INCLUDE_CONSOLIDATED=1`
+  to restore legacy behavior. (#427)
+
+### Documentation
+
+- Installation steps revised for Hermes users (#414, @bruvv)
+- Pi integration docs added (#c0a7176)
+- Hermes Tweet compatibility table (#e032008, @Burak Bayır)
+- `.coderabbit.yaml` with grouped reviews and architectural rigor (#da4832a)
 
 ### Thanks
 
-- @codxt for the CLI bank selection + migration PR (#404)
-- @ValentinSergief for the thorough ENHANCED_RECALL RCA (#436)
-- @webtecnica for flagging the auto_sleep default mismatch (#420)
-- @dplush for the full auto_sleep provider parity fix (#429)
+@dplush (Denis H) — 11 commits: sync diagnostics, recall ranking, bank validation,
+orphan detection, auto-sleep, cross-session recall, batch tool, L3 persona,
+hygiene audit, veracity forwarding, pip sync parity
+
+@codxt — 3 commits: CLI bank selection + migration, ASGI middleware fix,
+layered memory roadmap
+
+@Milgauss — 2 commits: SQLite write lock fix, recall-touch rollback
+
+@TurgutKural — 2 commits: profile bank resolution, host LLM timeout
+
+@ValentinSergief — thorough ENHANCED_RECALL RCA with file+line references
+
+@PlainWu, @ClaytonChew, @bruvv, @justanotherAIcontributor, @BurakBayır,
+@Iman-Sharif, @webtecnica — bug reports, fixes, and docs improvements
 
 ## [Unreleased]
 
