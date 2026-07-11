@@ -430,6 +430,20 @@ class Mnemosyne:
         Supports temporal scoring: temporal_weight, query_time, temporal_halflife.
         Supports scoring weight overrides: vec_weight, fts_weight, importance_weight.
         """
+        import os as _os
+        if _os.environ.get("MNEMOSYNE_ENHANCED_RECALL", "0") == "1":
+            return self.beam.recall_enhanced(query, top_k=top_k,
+                                             from_date=from_date, to_date=to_date,
+                                             source=source, topic=topic,
+                                             author_id=author_id, author_type=author_type,
+                                             channel_id=channel_id,
+                                             temporal_weight=temporal_weight,
+                                             query_time=query_time,
+                                             temporal_halflife=temporal_halflife,
+                                             vec_weight=vec_weight,
+                                             fts_weight=fts_weight,
+                                             importance_weight=importance_weight,
+                                             explain=explain)
         return self.beam.recall(query, top_k=top_k,
                                 from_date=from_date, to_date=to_date,
                                 source=source, topic=topic,
