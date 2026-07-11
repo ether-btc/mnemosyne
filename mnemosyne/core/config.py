@@ -354,9 +354,16 @@ class MnemosyneConfig:
         return cls._instance
 
     def _seed(self) -> None:
-        """Create config.yaml with all defaults if it doesn't exist.
+        """Create config.yaml with sensible defaults, respecting existing env vars.
 
-        Writes every known key from DEFAULTS to config.yaml.
+        When the file doesn't exist, creates it with every known key.
+        For each key: if the corresponding env var is set, that value is used.
+        Otherwise the hardcoded default is used.
+
+        This ensures that users with existing env var configurations don't
+        get silently overridden by the auto-seeded defaults. The resulting
+        config.yaml reflects exactly what's already running.
+
         Does NOT overwrite an existing file.
         Returns without error if the file already exists.
         """
@@ -365,14 +372,41 @@ class MnemosyneConfig:
 
         import yaml
         try:
+            # Build the seed data: env var value if set, otherwise default
+            seed_data: Dict[str, Any] = {}
+            for key, default_val in DEFAULTS.items():
+                env_var = ENV_VAR_MAP.get(key)
+                if env_var and env_var in os.environ:
+                    env_val = os.environ[env_var]
+                    # Type-coerce env vars to match the default type
+                    if isinstance(default_val, bool):
+                        seed_data[key] = env_val.strip().lower() in ("1", "true", "yes", "on")
+                    elif isinstance(default_val, int):
+                        try:
+                            seed_data[key] = int(env_val)
+                        except ValueError:
+                            seed_data[key] = default_val
+                    elif isinstance(default_val, float):
+                        try:
+                            seed_data[key] = float(env_val)
+                        except ValueError:
+                            seed_data[key] = default_val
+                    else:
+                        seed_data[key] = env_val
+                else:
+                    seed_data[key] = default_val
+
             self._config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self._config_path, "w") as f:
                 f.write("# Mnemosyne config — edit freely, hot-reload with `mnemosyne config reload`\n")
                 f.write("# Precedence: config.yaml > env vars > hardcoded defaults\n")
-                f.write("# Run `mnemosyne config migrate` to export current env vars here.\n\n")
-                yaml.dump(DEFAULTS, f, default_flow_style=False, sort_keys=True)
-            logger.info("Seeded config.yaml at %s with %d keys",
-                         self._config_path, len(DEFAULTS))
+                f.write("# Values below reflect your current env vars where set, otherwise defaults.\n")
+                f.write("# Run `mnemosyne config migrate` to re-export env vars at any time.\n\n")
+                yaml.dump(seed_data, f, default_flow_style=False, sort_keys=True)
+
+            env_count = sum(1 for k in seed_data if ENV_VAR_MAP.get(k, "") in os.environ)
+            logger.info("Seeded config.yaml at %s (%d keys, %d from env vars)",
+                         self._config_path, len(seed_data), env_count)
         except Exception as e:
             logger.warning("Failed to seed config.yaml: %s", e)
 
