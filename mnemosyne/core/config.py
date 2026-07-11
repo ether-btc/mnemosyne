@@ -185,6 +185,133 @@ ENV_VAR_MAP: Dict[str, str] = {
 # Reverse map: env var name → config key
 CONFIG_KEY_MAP: Dict[str, str] = {v: k for k, v in ENV_VAR_MAP.items()}
 
+# Sensible defaults for every known config key.
+# These are written to config.yaml on first access (seed).
+# They match the hardcoded defaults in beam.py and other modules.
+DEFAULTS: Dict[str, Any] = {
+    # Paths — empty means use the codebase default
+    "data_dir": "",
+    "home": "",
+    "db_path": "",
+    "backup_dir": "",
+    "blob_dir": "",
+    "shared_db_path": "",
+    # Embeddings
+    "embedding_model": "BAAI/bge-small-en-v1.5",
+    "embedding_dim": 384,
+    "embedding_api_key": "",
+    "embedding_api_url": "",
+    "embeddings_via_api": False,
+    "no_embeddings": False,
+    "skip_embeddings": False,
+    "embeddings_off": False,
+    "fastembed_cache_dir": "",
+    "vec_type": "int8",
+    "vec_weight": 0.5,
+    # Recall
+    "fts_weight": 0.3,
+    "importance_weight": 0.2,
+    "temporal_halflife_hours": 168,
+    "recency_halflife": 168,
+    "recall_extra_stopwords": "",
+    "cross_session": False,
+    "polyphonic_recall": False,
+    "query_intent": True,
+    "fact_recall_enabled": True,
+    "enhanced_recall": False,
+    "proactive_linking": True,
+    "lenient_fact_match": False,
+    "recall_diagnostics": False,
+    # Tiers
+    "wm_max_items": 10000,
+    "wm_ttl_hours": 168,
+    "wm_bump_cap_hours": 24,
+    "wm_pinned_ids": "",
+    "ep_limit": 50000,
+    "sleep_batch": 5000,
+    "sp_max": 1000,
+    "tier2_days": 30,
+    "tier3_days": 180,
+    "tier1_weight": 1.0,
+    "tier2_weight": 0.5,
+    "tier3_weight": 0.25,
+    # Compression
+    "smart_compress": True,
+    "tier3_max_chars": 300,
+    "degrade_batch": 100,
+    # LLM
+    "llm_enabled": False,
+    "llm_max_tokens": 512,
+    "llm_n_threads": 4,
+    "llm_n_ctx": 2048,
+    "llm_repo": "",
+    "llm_file": "",
+    "llm_base_url": "",
+    "llm_api_key": "",
+    "llm_model": "",
+    "llm_timeout": 60,
+    "llm_fallback_models": "",
+    "llm_fallback_base_url": "",
+    "llm_fallback_api_key": "",
+    "force_local": False,
+    "sleep_prompt": "",
+    "host_llm_enabled": False,
+    "host_llm_provider": "",
+    "host_llm_model": "",
+    "host_llm_n_ctx": 2048,
+    # Conflict detection
+    "llm_conflict_detection": False,
+    "conflict_llm_base_url": "",
+    "conflict_llm_api_key": "",
+    "conflict_llm_model": "",
+    # Sync
+    "sync_remote": "",
+    "sync_host": "127.0.0.1",
+    "sync_port": 8765,
+    "sync_key": "",
+    "sync_encrypt": False,
+    "sync_roles": "user,assistant",
+    # Provider
+    "auto_sleep_enabled": True,
+    "reflect_disabled_for_cron": True,
+    "reflect_max_calls_per_session": 3,
+    "skip_contexts": "",
+    "prefetch_content_chars": 2000,
+    "sync_turn_user_limit": 10,
+    "sync_turn_assistant_limit": 10,
+    # Persona
+    "persona_enabled": True,
+    "persona_token_cap": 500,
+    "persona_interval": 10,
+    "persona_daily_sync_hour": 3,
+    # Model refresh
+    "sleep_model_refresh_enabled": True,
+    "sleep_model_refresh_auto_apply": True,
+    "sleep_model_refresh_categories": "user,workflow,project",
+    "sleep_model_refresh_max_tokens": 1024,
+    "sleep_model_refresh_temperature": 0.3,
+    "sleep_model_refresh_auto_apply_min_confidence": 0.7,
+    "sleep_model_refresh_min_evidence": 3,
+    "sleep_model_refresh_conflict_min_confidence": 0.8,
+    "sleep_model_refresh_conflict_min_evidence": 5,
+    # SHMR
+    "shmr_batch_size": 50,
+    "shmr_max_iterations": 10,
+    "shmr_similarity_threshold": 0.7,
+    "shmr_harmony_threshold": 0.5,
+    "shmr_model": "",
+    "shmr_min_cluster_size": 3,
+    "shmr_temperature": 0.3,
+    # Migrations
+    "auto_migrate": True,
+    # MCP
+    "default_scope": "session",
+    "default_owner": "",
+    # Filters
+    "ignore_patterns": "",
+    "write_classifier": "",
+}
+
 
 def _default_config_path() -> Path:
     """Resolve the config.yaml path."""
@@ -211,6 +338,11 @@ class MnemosyneConfig:
         self._yaml_cache: Dict[str, Any] = {}
         self._yaml_mtime: float = 0.0
         self._yaml_lock = threading.Lock()
+
+        # Auto-seed config.yaml on first access if it doesn't exist
+        if not self._config_path.exists():
+            self._seed()
+
         self._load_yaml()
 
     @classmethod
@@ -220,6 +352,29 @@ class MnemosyneConfig:
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
+
+    def _seed(self) -> None:
+        """Create config.yaml with all defaults if it doesn't exist.
+
+        Writes every known key from DEFAULTS to config.yaml.
+        Does NOT overwrite an existing file.
+        Returns without error if the file already exists.
+        """
+        if self._config_path.exists():
+            return
+
+        import yaml
+        try:
+            self._config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._config_path, "w") as f:
+                f.write("# Mnemosyne config — edit freely, hot-reload with `mnemosyne config reload`\n")
+                f.write("# Precedence: config.yaml > env vars > hardcoded defaults\n")
+                f.write("# Run `mnemosyne config migrate` to export current env vars here.\n\n")
+                yaml.dump(DEFAULTS, f, default_flow_style=False, sort_keys=True)
+            logger.info("Seeded config.yaml at %s with %d keys",
+                         self._config_path, len(DEFAULTS))
+        except Exception as e:
+            logger.warning("Failed to seed config.yaml: %s", e)
 
     @classmethod
     def reset_instance(cls) -> None:
