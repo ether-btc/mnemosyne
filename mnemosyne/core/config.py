@@ -468,6 +468,20 @@ class MnemosyneConfig:
                 flat.setdefault(leaf, val)
         return flat
 
+    def _maybe_reload(self) -> None:
+        """Re-read config.yaml if it changed on disk since last load.
+
+        Cheap stat() check — no lock contention on the hot path when
+        the file hasn't changed.
+        """
+        try:
+            if not self._config_path.exists():
+                return
+            if self._config_path.stat().st_mtime != self._yaml_mtime:
+                self._load_yaml()
+        except OSError:
+            pass
+
     # -------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------
@@ -510,11 +524,10 @@ class MnemosyneConfig:
                  e.g. "wm_max_items", "vec_type", "llm_enabled".
             default: Fallback if not found in YAML or env.
         """
-        # 1. Check YAML cache.  Use the in-memory cache directly on the
-        # hot path; only re-stat the file if the cache is empty or
-        # enough time has passed (avoids per-call lock contention).
-        if not self._yaml_cache:
-            self._load_yaml()
+        # 1. Check YAML cache.  Auto-reload if the file mtime changed
+        # so that `mnemosyne config set` + provider reads work without
+        # an explicit reload call.
+        self._maybe_reload()
         if key in self._yaml_cache:
             return self._yaml_cache[key]
 
