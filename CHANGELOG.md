@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
-## [Unreleased]
+## [3.12.0] — 2026-07-11
 
 ### Fixed
 
@@ -21,6 +21,12 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
   Added an explicit `mnemosyne migrate [--bank <name>]` command that
   idempotently ensures `memory_events` and `sync_meta` exist.
 
+- **`MNEMOSYNE_ENHANCED_RECALL=1` now routes through the full enhanced recall pipeline.**
+  `Mnemosyne.recall()` always called `beam.recall()` directly, bypassing
+  `beam.recall_enhanced()` entirely. The flag had zero effect on production
+  call paths. Now routes to `recall_enhanced()` when the flag is set, which
+  already has its own internal gate so behavior is unchanged when the flag
+  is off. (#436, reported by @ValentinSergief with full RCA)
 
 ### Changed
 
@@ -32,7 +38,14 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
   `MNEMOSYNE_CONTEXT_INCLUDE_CONSOLIDATED=1` to temporarily restore legacy
   injection behavior (truthy values: `1`, `true`, `yes`, `on`).
 
-## [3.11.1] — 2026-07-01
+### Thanks
+
+- @codxt for the CLI bank selection + migration PR (#404)
+- @ValentinSergief for the thorough ENHANCED_RECALL RCA (#436)
+- @webtecnica for flagging the auto_sleep default mismatch (#420)
+- @dplush for the full auto_sleep provider parity fix (#429)
+
+## [Unreleased]
 
 ### Fixed
 
