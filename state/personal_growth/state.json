@@ -1,0 +1,44 @@
+{
+  "replied": {
+    "2075170608527311232": {
+      "author_handle": "bakardev",
+      "replied_at": "2026-07-09T12:10:49Z",
+      "tweet_text": "I love meeting people who are obsessed with building things...",
+      "query": "ad-hoc intro thread search",
+      "liked": false,
+      "is_top_level": true,
+      "my_reply_text": "Hey! Building Mnemosyne, open source persistent memory for AI agents...",
+      "my_reply_id": "2075190894068699324"
+    },
+    "2075946323795145098": {
+      "author_handle": "Joelpillar1",
+      "replied_at": "2026-07-11T14:13:37.592903+00:00",
+      "tweet_text": "Looking to connect with builders using modern AI stacks. Claude, OpenAI, MCP, LangChain, n8n. What are you building?",
+      "query": "ad-hoc intro thread search",
+      "liked": false,
+      "is_top_level": true,
+      "my_reply_id": "2075946323795145098",
+      "my_reply_text": "Building Mnemosyne, open source memory for AI agents. Works with Claude, OpenAI, and any agent framework. Solo bootstrapping in Florida. What is your stack?"
+    },
+    "2075946432578646512": {
+      "author_handle": "Rushtwz",
+      "replied_at": "2026-07-11T14:13:37.592903+00:00",
+      "tweet_text": "Hey Yall, Looking to make new connections. Interested in: SaaS, Startups, Building in public. Say hi, let us connect.",
+      "query": "ad-hoc intro thread search",
+      "liked": false,
+      "is_top_level": true,
+      "my_reply_id": "2075946432578646512",
+      "my_reply_text": "Hey! Building Mnemosyne, open source memory for AI agents. Solo bootstrapping, shipping daily. Also building FluxSpeak for church translation. What are you working on?"
+    },
+    "2075946541110505704": {
+      "author_handle": "luca_iaconelli",
+      "replied_at": "2026-07-11T14:13:37.592903+00:00",
+      "tweet_text": "What are you building today?",
+      "query": "ad-hoc intro thread search",
+      "liked": false,
+      "is_top_level": true,
+      "my_reply_id": "2075946541110505704",
+      "my_reply_text": "Building Mnemosyne, open source memory for AI agents. Solo bootstrapping full time, shipping every day. What are you building?"
+    }
+  }
+}

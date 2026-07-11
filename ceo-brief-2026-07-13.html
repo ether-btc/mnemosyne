@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CEO Brief - Mnemosyne - 2026-07-13</title>
+<style>
+  @page { size: A4; margin: 2cm; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 11pt; line-height: 1.5; color: #1a1a2e; max-width: 210mm; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 22pt; color: #16213e; border-bottom: 3px solid #0f3460; padding-bottom: 8px; margin-top: 0; }
+  h2 { font-size: 16pt; color: #0f3460; border-bottom: 1px solid #e0e0e0; padding-bottom: 4px; margin-top: 28px; }
+  h3 { font-size: 13pt; color: #1a1a2e; margin-top: 20px; }
+  .meta { color: #666; font-size: 10pt; margin-bottom: 20px; }
+  .finding { background: #fff3f3; border-left: 4px solid #e74c3c; padding: 12px 16px; margin: 12px 0; }
+  .finding-critical { background: #fff0e0; border-left: 4px solid #e67e22; padding: 12px 16px; margin: 12px 0; }
+  .finding-positive { background: #f0fff4; border-left: 4px solid #27ae60; padding: 12px 16px; margin: 12px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 10pt; }
+  th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; }
+  th { background: #0f3460; color: white; }
+  tr:nth-child(even) { background: #f8f9fa; }
+  .score-high { color: #27ae60; font-weight: bold; }
+  .score-mid { color: #e67e22; font-weight: bold; }
+  .score-low { color: #e74c3c; font-weight: bold; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 9pt; }
+  .tag-red { background: #fde8e8; color: #c0392b; }
+  .tag-green { background: #e8f8e8; color: #27ae60; }
+  .tag-orange { background: #fef5e7; color: #e67e22; }
+  .tag-blue { background: #e8f0fe; color: #2980b9; }
+  .tag-gray { background: #f0f0f0; color: #666; }
+  .summary-box { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 6px; padding: 16px; margin: 12px 0; }
+  ul { margin: 6px 0; padding-left: 20px; }
+  li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<h1>Mnemosyne CEO Brief</h1>
+<div class="meta">
+  Date: 2026-07-13 | Version: 3.12.2 | Tag: v3.12.2<br>
+  Source: Cron Triage | Analysis Only (no execution)
+</div>
+
+<h2>Executive Summary</h2>
+
+<div class="finding">
+  <strong>Compound Board State: 73.7% Issue Engagement vs 0% PR Engagement</strong><br>
+  The board is moderately warm on issues (14/19 have AxDSan replies) but frozen on PRs  -  not a single community PR has received a human review or formal approval. All 7 community PRs have zero human reviews. The pre-existing CI regression has been fixed by PR #454, but the frozen PR state persists as a review bandwidth bottleneck, not a technical problem.
+</div>
+
+<div class="finding-critical">
+  <strong>62.5% Bugs Analyzed-But-Unfixed (Critical Threshold)</strong><br>
+  5 of 8 open bugs have been root-caused by the maintainer with no fix shipped. This exceeds the 50% critical threshold. The bottleneck is execution debt, not discovery debt. Most egregious: #382 (kirocop) has a broken timeline commitment.
+</div>
+
+<div class="finding">
+  <strong>First-Timer Retention Crisis: Mi55ed's PR #445 Superseded by Maintainer Self-Ship (PR #454)</strong><br>
+  Mi55ed (first-time contributor) opened PR #445 (+101/-2, CI green, tests + changelog). dplush (high-trust recurring) closed his own PR #444 in favor of #445. Then AxDSan merged PR #454 (+2/-2, minimal fix) for the same issue. PR #445 sits open with 0 AxDSan comments, 0 human reviews. Mi55ed also has a second large PR (#442, +3728/-704) blocked by stale CI. Compound retention risk: high.
+</div>
+
+<h2>Board Overview</h2>
+
+<table>
+  <tr><th>Metric</th><th>Value</th></tr>
+  <tr><td>Open Issues</td><td>19</td></tr>
+  <tr><td>Open PRs</td><td>8 (7 community, 1 maintainer)</td></tr>
+  <tr><td>Issues with AxDSan reply</td><td>14/19 (73.7%)</td></tr>
+  <tr><td>PRs with human review</td><td>0/7 community PRs (0%)</td></tr>
+  <tr><td>Open Bugs</td><td>8</td></tr>
+  <tr><td>Analyzed-But-Unfixed</td><td>5 (62.5%) - <strong>Critical</strong></td></tr>
+  <tr><td>Main Branch CI</td><td><span class="tag tag-green">GREEN</span> (last 2 runs successful)</td></tr>
+  <tr><td>PRs CI-green + CLEAN</td><td>3 (PR #457, #445, #452)</td></tr>
+  <tr><td>PRs with stale CI (rebase-fixable)</td><td>5 (PR #448, #447, #443, #442, #401)</td></tr>
+</table>
+
+<h2>PR Lifecycle Classification</h2>
+
+<table>
+  <tr><th>PR</th><th>Author</th><th>State</th><th>Diff</th><th>Signal</th></tr>
+  <tr>
+    <td>#457</td><td>AxDSan</td><td><span class="tag tag-green">MERGE-READY</span></td>
+    <td>+194/-0</td><td>Write approval gate. Self-authored, CI green. Needs review.</td>
+  </tr>
+  <tr>
+    <td>#452</td><td>ruangraung</td><td><span class="tag tag-green">MERGE-READY</span></td>
+    <td>+299/-4</td><td>FK migration fix for #451. CI green, CLEAN. Returning contributor (1 prior merged PR). 0 human reviews.</td>
+  </tr>
+  <tr>
+    <td>#445</td><td>Mi55ed</td><td><span class="tag tag-orange">SUPERSEDED</span></td>
+    <td>+101/-2</td><td>Defaults fix. Superseded by PR #454 (AxDSan). Has tests + changelog that #454 lacks. 0 AxDSan comments. First-time contributor.</td>
+  </tr>
+  <tr>
+    <td>#448</td><td>TurgutKural</td><td><span class="tag tag-blue">REBASE-FIXABLE</span></td>
+    <td>+695/-16</td><td>Doctor bank routing fix. Stale CI from pre-regression. Returning contributor (3 prior merged PRs).</td>
+  </tr>
+  <tr>
+    <td>#447</td><td>Senophyx</td><td><span class="tag tag-blue">REBASE-FIXABLE</span></td>
+    <td>+2/-1</td><td>SSE stream fix. Fork PR (headRefName="main"). Stale CI. First-time contributor.</td>
+  </tr>
+  <tr>
+    <td>#443</td><td>dplush</td><td><span class="tag tag-blue">REBASE-FIXABLE</span></td>
+    <td>+176/-7</td><td>Hyphenated recall tokens. Stale CI. High-trust recurring (5 prior merged PRs).</td>
+  </tr>
+  <tr>
+    <td>#442</td><td>Mi55ed</td><td><span class="tag tag-blue">REBASE-FIXABLE</span></td>
+    <td>+3728/-704</td><td>Sync correctness hardening. Large PR. Stale CI. First-time contributor (also has #445).</td>
+  </tr>
+  <tr>
+    <td>#401</td><td>daefron-cmd</td><td><span class="tag tag-orange">ENGAGED-BUT-STALLED</span></td>
+    <td>+131/-13</td><td>Embedding prefix env vars. 3 AxDSan comments, verbal LGTM, but CI failure is env var override (infrastructure, not code). Contributor can't fix it. Open 11 days.</td>
+  </tr>
+</table>
+
+<h2>Contrarian Analysis</h2>
+
+<h3>1. The Engagement Asymmetry is the Core Signal</h3>
+<p>73.7% issue engagement vs 0% PR engagement. The bottleneck is not triage or diagnosis  -  it's review velocity. The issue board is moderately warm, but the PR board is frozen. Every open community PR has zero human reviews. The pre-existing CI regression (now fixed by #454) was a force multiplier, making every PR look broken with red badges. But the regression is fixed now, and the PRs remain unreviewed. The asymmetry itself is the signal: the bottleneck is PR review velocity, not issue triage coverage.</p>
+
+<h3>2. The Analyzed-But-Unfixed Backlog has Reached Critical Mass</h3>
+<p>5 of 8 open bugs have been root-caused by the maintainer but no fix has shipped. This is pure execution debt, not discovery debt.</p>
+<ul>
+  <li><strong>#382 (kirocop)</strong>: WAL checkpoint blocked. AxDSan committed to "v3.11.2" and "targeting this weekend." Both timelines passed. The broken commitment is a retention risk beyond the unfixed bug.</li>
+  <li><strong>#451 (Axmr1)</strong>: FK enforcement regression. Root-caused by dplush. PR #452 (ruangraung) is the fix  -  CI green, CLEAN, waiting for review.</li>
+  <li><strong>#435 (jbienz)</strong>: Canonical memories can't be deleted. AxDSan confirmed the exact code gap. No fix shipped.</li>
+  <li><strong>#389 (NodeGuy)</strong>: Polyphonic recall collapses. AxDSan confirmed the bug. No fix shipped.</li>
+  <li><strong>#387 (freeformz)</strong>: Stored content mutated. AxDSan engaged. No fix shipped.</li>
+</ul>
+
+<h3>3. First-Timer Retention Crisis: Mi55ed</h3>
+<p>Mi55ed, a first-time contributor, submitted PR #445 (+101/-2, CI green, tests + changelog) to fix the CI regression. dplush (high-trust recurring, 5 merged PRs) closed his own competing PR #444 in favor of Mi55ed's  -  a strong community endorsement. Then AxDSan merged PR #454 (+2/-2, minimal fix) for the same issue, with no comment on #445, no acknowledgment, no credit. Mi55ed's PR #445 remains open, now superseded but not closed.</p>
+<p>Mi55ed also has a second large PR (#442, +3728/-704) for sync correctness hardening, which is also blocked by stale CI. The compound effect: their first contribution was silently superseded, and their second large PR is unreviewed.</p>
+
+<div class="finding">
+  <strong>Compound First-Timer Keystone Pattern</strong><br>
+  Mi55ed's PR #445 was the CI-regression keystone, endorsed by dplush (who closed #444 in favor). The maintainer then self-shipped the fix (#454) with no acknowledgment. This is a maintainer-self-ship-supersedes-first-timer pattern. The retention risk is extreme: the first-timer sees their endorsed, CI-green fix ignored, their second large PR stalled, and the maintainer's own minimal fix merged instead.
+</div>
+
+<h3>4. PR #401: Engaged But Stalled for 11 Days</h3>
+<p>PR #401 (daefron-cmd, first-time contributor) has 3 AxDSan comments including verbal LGTM ("design is approved"), but the CI failure is an infrastructure-level env var override (MNEMOSYNE_NO_EMBEDDINGS=1) that the contributor cannot fix. The contributor sees engagement but no actionable path forward. The ball is in the maintainer's court  -  either fix the CI env var issue or give the contributor a specific instruction. 11 days is too long for a first-time contributor with a verbal LGTM.</p>
+
+<h3>5. Community Self-Healing Signals</h3>
+<div class="finding-positive">
+  <strong>Positive:</strong> PR #452 (ruangraung) is a returning contributor independently shipping a fix for a regression filed by a different person (Axmr1, #451) within hours. This is a community regression fix pattern  -  high-trust signal. The PR is CI green, CLEAN, and +299/-4. It's the fix for the most impactful open bug.
+</div>
+
+<h2>Weighted Decision Matrix</h2>
+
+<table>
+  <tr><th>PR/Issue</th><th>User Impact (30%)</th><th>Strategic Value (25%)</th><th>Easy to Ship (15%)</th><th>Low Risk (15%)</th><th>Urgency (15%)</th><th>Weighted Score</th></tr>
+  <tr>
+    <td><strong>#452</strong> - FK migration fix</td>
+    <td>9 (blocks all embedding writes)</td>
+    <td>8 (completes #408 Part 2)</td>
+    <td>9 (CI green, CLEAN, +299/-4)</td>
+    <td>8 (migration-tested, edge cases handled)</td>
+    <td>9 (fixes #451, unblocks DB health)</td>
+    <td><strong>8.65</strong></td>
+  </tr>
+  <tr>
+    <td><strong>#457</strong> - Write approval gate</td>
+    <td>7 (affects write_approval users)</td>
+    <td>8 (closes feature gap)</td>
+    <td>9 (CI green, CLEAN, +194/-0)</td>
+    <td>8 (self-authored, additive)</td>
+    <td>5 (new feature, not blocking)</td>
+    <td><strong>7.40</strong></td>
+  </tr>
+  <tr>
+    <td><strong>#401</strong> - Embedding prefixes</td>
+    <td>6 (asymmetric model users)</td>
+    <td>7 (unlocks better embeddings)</td>
+    <td>3 (CI env var issue, needs maintainer fix)</td>
+    <td>7 (well-reviewed verbally)</td>
+    <td>8 (open 11 days, first-timer stalled)</td>
+    <td><strong>6.10</strong></td>
+  </tr>
+  <tr>
+    <td><strong>#448</strong> - Doctor bank routing</td>
+    <td>5 (CLI doctor users)</td>
+    <td>6 (improves diagnostics)</td>
+    <td>7 (rebase + CI then merge)</td>
+    <td>7 (returning contributor)</td>
+    <td>6 (open, no urgency)</td>
+    <td><strong>6.00</strong></td>
+  </tr>
+  <tr>
+    <td><strong>#443</strong> - Hyphenated recall</td>
+    <td>5 (affects recall quality)</td>
+    <td>5 (edge case fix)</td>
+    <td>7 (rebase + CI then merge)</td>
+    <td>8 (high-trust recurring)</td>
+    <td>5 (not urgent)</td>
+    <td><strong>5.85</strong></td>
+  </tr>
+  <tr>
+    <td><strong>#445</strong> - Defaults fix (superseded)</td>
+    <td>0 (already fixed by #454)</td>
+    <td>0 (no new value)</td>
+    <td>10 (CI green, CLEAN)</td>
+    <td>10 (already merged in #454)</td>
+    <td>9 (retention crisis)</td>
+    <td><strong>4.35</strong></td>
+  </tr>
+  <tr>
+    <td><strong>#442</strong> - Sync hardening</td>
+    <td>7 (sync correctness)</td>
+    <td>8 (important hardening)</td>
+    <td>2 (massive: +3728/-704)</td>
+    <td>5 (large diff, needs real review)</td>
+    <td>4 (first-timer, but huge)</td>
+    <td><strong>5.35</strong></td>
+  </tr>
+  <tr>
+    <td><strong>#447</strong> - SSE stream fix</td>
+    <td>4 (local_llm edge case)</td>
+    <td>3 (minor fix)</td>
+    <td>8 (rebase then merge, +2/-1)</td>
+    <td>9 (trivial change)</td>
+    <td>3 (no urgency)</td>
+    <td><strong>5.05</strong></td>
+  </tr>
+  <tr>
+    <td><strong>#382</strong> - WAL bug</td>
+    <td>8 (production DB corruption)</td>
+    <td>7 (DB reliability)</td>
+    <td>4 (thread-local cleanup, subtle)</td>
+    <td>5 (risk of regression)</td>
+    <td>8 (broken timeline, retention risk)</td>
+    <td><strong>6.55</strong></td>
+  </tr>
+  <tr>
+    <td><strong>#435</strong> - Canonical delete</td>
+    <td>6 (blocks DB cleanup)</td>
+    <td>5 (completes feature)</td>
+    <td>6 (well-defined, small scope)</td>
+    <td>7 (additive, no risk)</td>
+    <td>6 (community demand, production need)</td>
+    <td><strong>5.95</strong></td>
+  </tr>
+</table>
+
+<h2>Conflict Analysis</h2>
+
+<h3>File Overlap</h3>
+<ul>
+  <li><strong>PR #445 vs PR #454 (merged):</strong> Both modify config.py. #454 merged, #445 superseded. No ongoing conflict.</li>
+  <li><strong>PR #452 vs PR #401:</strong> Different files (beam.py/memory.py vs embeddings.py). No conflict.</li>
+  <li><strong>PR #442 vs PR #443:</strong> Different files. No conflict.</li>
+  <li><strong>PR #448 vs PR #447:</strong> Different files. No conflict.</li>
+</ul>
+
+<h3>CI Dependency Ordering</h3>
+<p>No keystone dependency remains  -  PR #454 fixed the main branch regression. All 5 UNSTABLE PRs are rebase-fixable. They can merge in any order after rebasing.</p>
+
+<h2>Bug Scan</h2>
+
+<table>
+  <tr><th>Issue</th><th>Author</th><th>Type</th><th>Status</th><th>Notes</th></tr>
+  <tr>
+    <td>#451</td><td>Axmr1</td><td>Bug</td><td><span class="tag tag-blue">FIX IN PR #452</span></td>
+    <td>FK enforcement regression. PR #452 (ruangraung) is CI green, CLEAN, +299/-4. Ready to merge.</td>
+  </tr>
+  <tr>
+    <td>#435</td><td>jbienz</td><td>Bug</td><td><span class="tag tag-red">ANALYZED-UNFIXED</span></td>
+    <td>Canonical memories can't be deleted. Root-caused: no forget_canonical(). Community has 46 canonical facts, ~20 need deletion.</td>
+  </tr>
+  <tr>
+    <td>#434</td><td>jbienz</td><td>Bug</td><td><span class="tag tag-orange">ANALYZED-UNFIXED</span></td>
+    <td>Overuse of canonical memories. Design discussion in progress.</td>
+  </tr>
+  <tr>
+    <td>#408</td><td>Iman-Sharif</td><td>Bug</td><td><span class="tag tag-orange">PART 1 FIXED</span></td>
+    <td>Referential integrity. Part 1 (PRAGMA foreign_keys=ON) shipped. Part 2 (FK migration) is PR #452.</td>
+  </tr>
+  <tr>
+    <td>#389</td><td>NodeGuy</td><td>Bug</td><td><span class="tag tag-red">ANALYZED-UNFIXED</span></td>
+    <td>Polyphonic recall collapses. Voice-name Jaccard bug confirmed. No fix shipped.</td>
+  </tr>
+  <tr>
+    <td>#387</td><td>freeformz</td><td>Bug</td><td><span class="tag tag-red">ANALYZED-UNFIXED</span></td>
+    <td>Stored content mutated. Datetime annotations corrupted. AxDSan engaged, no fix.</td>
+  </tr>
+  <tr>
+    <td>#382</td><td>kirocop</td><td>Bug</td><td><span class="tag tag-red">ANALYZED-UNFIXED</span></td>
+    <td>WAL checkpoint blocked. Broken timeline commitment. AxDSan said "v3.11.2" and "this weekend"  -  both passed. Production issue.</td>
+  </tr>
+  <tr>
+    <td>#329</td><td>jbienz</td><td>Bug</td><td><span class="tag tag-gray">UPSTREAM</span></td>
+    <td>Tools not injected. Tracked to Hermes #47119. Not Mnemosyne debt.</td>
+  </tr>
+</table>
+
+<div class="finding-critical">
+  <strong>Analyzed-But-Unfixed Ratio: 5/8 = 62.5%</strong><br>
+  Above the 50% critical threshold. The brief should open with this as the top contrarian finding. The bottleneck is execution, not diagnosis.
+</div>
+
+<h2>Retention Risk Matrix</h2>
+
+<table>
+  <tr><th>Contributor</th><th>Risk</th><th>Signal</th><th>Mitigation</th></tr>
+  <tr>
+    <td>Mi55ed</td>
+    <td><span class="score-low">EXTREME</span></td>
+    <td>First-time contributor. PR #445 (CI green, endorsed by dplush) superseded by AxDSan's #454 with no acknowledgment. Second large PR (#442, +3728/-704) blocked by stale CI and unreviewed. Compound: superseded fix + cold second PR.</td>
+    <td>1. Close #445 with a personal credit note referencing #454. 2. Acknowledge #442 and give a review timeline. 3. Co-author credit for the defaults fix.</td>
+  </tr>
+  <tr>
+    <td>daefron-cmd</td>
+    <td><span class="score-low">HIGH</span></td>
+    <td>First-time contributor. PR #401 open 11 days. Verbal LGTM from AxDSan but CI failure is infrastructure-level (env var override). No actionable path given. Engaged-but-stalled pattern.</td>
+    <td>1. Fix the CI env var issue (add skipif guard or remove MNEMOSYNE_NO_EMBEDDINGS). 2. Approve and merge. 3. Acknowledge the wait.</td>
+  </tr>
+  <tr>
+    <td>kirocop</td>
+    <td><span class="score-low">HIGH</span></td>
+    <td>Filed #382 (WAL bug) with thorough reproduction. AxDSan committed to "v3.11.2" and "this weekend." Both timelines broken. 0 prior merged PRs (had a closed draft PR #211).</td>
+    <td>1. Post a concrete timeline for the fix. 2. Follow through. 3. Acknowledge the broken commitment.</td>
+  </tr>
+  <tr>
+    <td>israellot</td>
+    <td><span class="score-mid">MEDIUM</span></td>
+    <td>Filed 2 well-structured feature proposals (#449, #450) on Jul 12. Zero engagement. First-time contributor. Cold proposals on a warm board.</td>
+    <td>Acknowledge the proposals. Give roadmap direction (even if "not now"  -  silence is worse).</td>
+  </tr>
+  <tr>
+    <td>Axmr1</td>
+    <td><span class="score-mid">MEDIUM</span></td>
+    <td>Filed #451 (FK regression). 3 community comments, 0 AxDSan. Fix exists in PR #452 but not acknowledged.</td>
+    <td>Reply on #451 linking PR #452. Close the loop when it merges.</td>
+  </tr>
+  <tr>
+    <td>yclrkj</td>
+    <td><span class="score-mid">MEDIUM</span></td>
+    <td>Filed #453 (onnxruntime EINVAL spam). 0 engagement. First-time contributor.</td>
+    <td>Acknowledge the issue. Even a "confirmed, will look into it" is better than silence.</td>
+  </tr>
+  <tr>
+    <td>dplush</td>
+    <td><span class="score-high">LOW</span></td>
+    <td>High-trust recurring (5 merged PRs). PR #443 up for review. Closed #444 in favor of #445 (which was then superseded).</td>
+    <td>Standard review for #443. Wider retention window. Acknowledge the #444 -> #445 -> #454 chain.</td>
+  </tr>
+  <tr>
+    <td>Senophyx</td>
+    <td><span class="score-mid">MEDIUM</span></td>
+    <td>First-time contributor. PR #447 (+2/-1, fork PR, headRefName="main"). Stale CI. No engagement.</td>
+    <td>Acknowledge the PR. Small fix, easy to review and merge after rebase.</td>
+  </tr>
+  <tr>
+    <td>jbienz</td>
+    <td><span class="score-mid">MEDIUM</span></td>
+    <td>Prolific reporter (3 bugs: #329, #434, #435, + #403 feature). All issues have AxDSan replies. 0 PRs. Zero resolution on bugs.</td>
+    <td>Prolific reporter, engaged but unfixed. The risk is frustration with the gap between engagement and resolution.</td>
+  </tr>
+</table>
+
+<h2>Action Plan (Wave 1/2/3)</h2>
+
+<h3>Wave 1 (Immediate)</h3>
+<ol>
+  <li><strong>MERGE PR #452 (ruangraung)</strong>  -  CI green, CLEAN, fixes the most impactful bug (#451). Returning contributor. +299/-4, well-tested.</li>
+  <li><strong>ACKNOWLEDGE Mi55ed (#445)</strong>  -  Close #445 with a personal credit note. The fix was the right approach, AxDSan shipped a minimal version. Credit Mi55ed for the tests and changelog. Add Co-authored-by: on #454's commit.</li>
+  <li><strong>FIX PR #401 CI infrastructure</strong>  -  Add a skipif guard for the env var override or remove MNEMOSYNE_NO_EMBEDDINGS from the failing test. Then approve and merge. The design is already verbally approved.</li>
+  <li><strong>ACKNOWLEDGE cold proposals (#449, #450, #453, #446)</strong>  -  Even brief roadmap direction prevents first-impression retention loss.</li>
+</ol>
+
+<h3>Wave 2 (After Wave 1, same day)</h3>
+<ol>
+  <li><strong>REVIEW and merge rebase-fixable PRs</strong>  -  PR #448 (TurgutKural), #443 (dplush), #447 (Senophyx). Smallest first. Each needs a rebase comment then review.</li>
+  <li><strong>REVIEW PR #457 (write_approval)</strong>  -  Self-authored, CI green. Needs a second pair of eyes or self-merge.</li>
+  <li><strong>ACKNOWLEDGE Mi55ed's PR #442</strong>  -  Give a specific review timeline. This is a large PR (+3728/-704) and needs real review. Don't let it sit cold.</li>
+  <li><strong>REPLY on #382 (kirocop)</strong>  -  New concrete timeline. The broken commitment is a retention risk.</li>
+</ol>
+
+<h3>Wave 3 (This week)</h3>
+<ol>
+  <li><strong>FIX the analyzed-but-unfixed bugs</strong>  -  #435 (canonical delete), #389 (polyphonic recall), #387 (mutation), #382 (WAL). These are all root-caused. The fixes are implementable.</li>
+  <li><strong>REVIEW PR #442</strong>  -  Sync correctness hardening. Large but important. Needs careful review.</li>
+  <li><strong>CLOSE the loop on upstream-tracked #329</strong>  -  Check Hermes #47119 status.</li>
+</ol>
+
+<h2>State of the Repo</h2>
+
+<ul>
+  <li><strong>Version:</strong> 3.12.2. No unreleased section in CHANGELOG since last release.</li>
+  <li><strong>Main branch CI:</strong> <span class="tag tag-green">GREEN</span>. PR #454 fixed the DEFAULTS regression. Last 2 runs successful on all 4 Python versions.</li>
+  <li><strong>PR #454 (merged):</strong> +2/-2 fix for the DEFAULTS sync_roles/skip_contexts mismatch. Minimal fix that fixed the regression.</li>
+  <li><strong>PR #455 (merged):</strong> CLA docs added.</li>
+  <li><strong>PR #444 (closed):</strong> dplush closed in favor of Mi55ed's #445. Positive community self-resolution.</li>
+  <li><strong>PR #441 (merged):</strong> Hygiene audit CLI hardening (dplush).</li>
+  <li><strong>PR #440 (merged):</strong> Read-only doctor hygiene signals (dplush).</li>
+  <li><strong>Cold issues (no AxDSan reply):</strong> #453 (yclrkj), #451 (Axmr1), #450 (israellot), #449 (israellot), #446 (dplush).</li>
+  <li><strong>Broken timeline commitment:</strong> #382 (kirocop)  -  promised v3.11.2 and "this weekend" for the WAL fix. Neither delivered.</li>
+  <li><strong>Community self-healing:</strong> Positive signals from ruangraung (fixing #451), dplush (closing #444 in favor of #445), and the community engagement on #451/#382/#329.</li>
+</ul>
+
+<p style="margin-top: 30px; color: #999; font-size: 9pt; border-top: 1px solid #eee; padding-top: 8px;">
+  CEO Brief generated by Mnemosyne Triage Bot | Analysis Only | 2026-07-13
+</p>
+
+</body>
+</html>
