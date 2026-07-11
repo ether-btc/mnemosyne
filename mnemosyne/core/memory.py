@@ -137,6 +137,10 @@ class Mnemosyne:
     def __init__(self, session_id: str = "default", db_path: Path = None, bank: str = None,
                  author_id: str = None, author_type: str = None,
                  channel_id: str = None):
+        # Auto-seed config.yaml on first Mnemosyne init
+        from mnemosyne.core.config import get_config
+        get_config()  # triggers _seed() if config.yaml doesn't exist
+
         self.session_id = session_id
         self.bank = bank or "default"
         self.author_id = author_id

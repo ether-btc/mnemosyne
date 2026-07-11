@@ -2817,6 +2817,10 @@ class BeamMemory:
                  author_id: str = None, author_type: str = None,
                  channel_id: str = None, use_cloud: bool = False,
                  event_emitter: "Optional[Callable[[Any], None]]" = None):
+        # Auto-seed config.yaml on first BeamMemory init (Hermes provider path)
+        from mnemosyne.core.config import get_config
+        get_config()  # idempotent — no-op if config.yaml already exists
+
         self.session_id = session_id
         self.author_id = author_id
         self.author_type = author_type
