@@ -40,8 +40,8 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 - **Hermes memory providers skill v2.0.0.** Bundled skill for the Hermes
   ecosystem documenting all memory providers. (#4ee3a58)
 
-- **Zero agent integration.** Mnemosyne now integrates with the Zero
-  agent framework. (#418)
+- **Zero and Pi agent integrations.** Mnemosyne now integrates with the Zero
+  agent framework and Pi agent. (#418, #c0a7176)
 
 - **Layered agent memory roadmap.** Architecture document defining the
   L0-L4 memory layer model for AI agents. (#96e6978)
@@ -123,7 +123,7 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 ### Documentation
 
 - Installation steps revised for Hermes users (#414, @bruvv)
-- Pi integration docs added (#c0a7176)
+- Pi agent integration docs added (#c0a7176)
 - Hermes Tweet compatibility table (#e032008, @Burak Bayır)
 - `.coderabbit.yaml` with grouped reviews and architectural rigor (#da4832a)
 
