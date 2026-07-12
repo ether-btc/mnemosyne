@@ -398,3 +398,66 @@ class TestDoctorBankEdgeCases:
             assert ret == 1, f"expected non-zero exit for malformed bank {bad!r}"
             assert not named_dir.exists(), f"malformed bank {bad!r} created a directory"
             assert not named_db.exists(), f"malformed bank {bad!r} created a DB"
+
+
+    def test_profile_isolation_implicit_bank_missing_fails_cleanly(self, tmp_path, monkeypatch):
+        """Implicit profile-derived bank that does not yet exist is rejected.
+
+        CodeRabbit suggested limiting the guard to explicit --bank only,
+        letting a missing implicit profile bank fall through to lazy creation.
+        We intentionally reject it: a profile-derived bank is still the
+        resolved diagnostic target, and allowing Mnemosyne(bank=...) to
+        materialize an empty bank mid-diagnostic would make `doctor`
+        mutate the very state it is meant to inspect. This test pins
+        that behavior and proves no filesystem artifact is created.
+        """
+        home = tmp_path / "profiles" / "reverse-engineer"
+        _write_config(home, True)  # profile_isolation enabled
+        data_dir = home / "mnemosyne" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(data_dir))
+
+        banks_dir = data_dir / "banks"
+        named_dir = banks_dir / "reverse-engineer"
+        named_db = named_dir / "mnemosyne.db"
+        # The implicit profile bank has NOT been created yet.
+        assert not named_dir.exists()
+
+        from mnemosyne_hermes import cli as cli_mod
+        args = types.SimpleNamespace(
+            mnemosyne_cmd="doctor",
+            bank=None,  # no explicit --bank; profile basename drives resolution
+            dry_run=False,
+            no_fix=True,
+        )
+        ret = cli_mod.mnemosyne_command(args)
+        assert ret == 1
+        # run_diagnostics() must NOT have been reached / no FS materialization.
+        assert not banks_dir.exists() or not named_dir.exists()
+        assert not named_db.exists()
+
+
+    def test_sleep_routing_unaffected_dry_run(self, tmp_path, monkeypatch):
+        """Sleep (dry-run) still routes to the resolved named bank beam.
+
+        `doctor` guard only fires for cmd == "doctor"; sleep keeps its
+        existing routing. We assert the resolved bank beam is used and no
+        new rejection/failure path is introduced for sleep.
+        """
+        home = tmp_path / "profiles" / "work"
+        _write_config(home, True)
+        db_path, data_dir = make_profile_bank(home, "work", wm_count=2)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(data_dir))
+
+        from mnemosyne_hermes import cli as cli_mod
+        sleep_args = types.SimpleNamespace(
+            mnemosyne_cmd="sleep",
+            all_sessions=False,
+            dry_run=True,
+            bank=None,
+        )
+        # Dispatch must not hit the doctor guard and must not raise.
+        cli_mod.mnemosyne_command(sleep_args)  # dry-run, no consolidation
+

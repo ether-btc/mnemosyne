@@ -172,9 +172,9 @@ def mnemosyne_command(args):
     # (e.g. via the beam below), defeating the guard and silently writing junk.
     # Use the side-effect-free existence check so we do NOT create the parent
     # `banks/` directory either (BankManager.__init__ eagerly mkdirs it).
-    # Only the narrow bank-name validation error is treated as "not found"; any
-    # real import/I/O failure is let through so the beam-building except below
-    # reports it honestly instead of being masked as a missing bank.
+    # Both explicit `--bank` and profile-derived implicit banks are covered:
+    # a missing implicit profile bank must also fail closed rather than let
+    # `Mnemosyne(bank=...)` materialize an empty bank mid-diagnostic.
     if cmd == "doctor" and bank:
         try:
             from mnemosyne.core.banks import bank_exists_read_only
@@ -184,6 +184,11 @@ def mnemosyne_command(args):
         except ValueError:
             # Raised by _validate_bank_name for malformed bank names.
             print(f"Bank not found: {bank}")
+            return 1
+        except Exception as e:
+            # Import, permission, or probe runtime failures must surface as a
+            # clean error, never escape as a raw traceback.
+            print(f"Bank validation failed: {e}")
             return 1
 
     try:
