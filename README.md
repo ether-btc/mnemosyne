@@ -1,3 +1,5 @@
+> ⚠️ **Personal note** — I'm going through a difficult personal situation and need to step away briefly. Development is paused for the coming week while I focus on family. This isn't goodbye, just a short pause. I'll be back. Thank you for understanding. ❤️
+
 <div align="center">
 
 <img src="/assets/mnemosyne.jpg" alt="Mnemosyne" width="40%">
