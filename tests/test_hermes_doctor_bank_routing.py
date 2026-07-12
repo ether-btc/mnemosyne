@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import types
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -442,8 +443,14 @@ class TestDoctorBankEdgeCases:
         """Sleep (dry-run) still routes to the resolved named bank beam.
 
         `doctor` guard only fires for cmd == "doctor"; sleep keeps its
-        existing routing. We assert the resolved bank beam is used and no
-        new rejection/failure path is introduced for sleep.
+        existing routing. We assert that:
+          * the resolved bank beam is bound to the profile/implicit bank
+            ("work"), not the default bank,
+          * `beam.sleep(dry_run=True)` is actually invoked on that beam
+            (not merely that the command returns without raising),
+          * the doctor guard is NOT applied to sleep (no rejection / no
+            `return 1`),
+          * no real consolidation or DB mutation occurs (mocked beam).
         """
         home = tmp_path / "profiles" / "work"
         _write_config(home, True)
@@ -451,13 +458,39 @@ class TestDoctorBankEdgeCases:
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(data_dir))
 
+        # Build a mock Mnemosyne whose beam records the sleep call.
+        mock_beam = MagicMock()
+        mock_instance = MagicMock()
+        mock_instance.beam = mock_beam
+        # `beam.sleep` must return a dry-run no-op dict.
+        mock_beam.sleep.return_value = {"status": "no_op"}
+
         from mnemosyne_hermes import cli as cli_mod
-        sleep_args = types.SimpleNamespace(
-            mnemosyne_cmd="sleep",
-            all_sessions=False,
-            dry_run=True,
-            bank=None,
+
+        with patch(
+            "mnemosyne.core.memory.Mnemosyne", return_value=mock_instance
+        ) as mock_mnemo:
+            sleep_args = types.SimpleNamespace(
+                mnemosyne_cmd="sleep",
+                all_sessions=False,
+                dry_run=True,
+                bank=None,
+            )
+            ret = cli_mod.mnemosyne_command(sleep_args)
+
+        # Dispatch must not hit the doctor guard and must succeed.
+        assert ret is None or ret == 0, f"sleep unexpectedly rejected: {ret}"
+
+        # Mnemosyne must have been constructed bound to the resolved
+        # profile/implicit bank "work", never the default bank.
+        assert mock_mnemo.called, "Mnemosyne was never constructed"
+        (call_bank,) = [
+            kw.get("bank") for (_, kw) in mock_mnemo.call_args_list
+        ]
+        assert call_bank == "work", (
+            f"sleep bound to wrong bank: expected 'work', got {call_bank!r}"
         )
-        # Dispatch must not hit the doctor guard and must not raise.
-        cli_mod.mnemosyne_command(sleep_args)  # dry-run, no consolidation
+
+        # The resolved-bank beam must have received the dry-run sleep call.
+        mock_beam.sleep.assert_called_once_with(dry_run=True)
 

@@ -489,23 +489,19 @@ def test_bank_exists_read_only_explicit_data_dir_used():
 
 
 def test_bank_exists_read_only_honors_env_override(monkeypatch):
-    """MNEMOSYNE_DATA_DIR is honored when data_dir is omitted."""
+    """MNEMOSYNE_DATA_DIR is honored when data_dir is omitted.
+
+    `_default_data_dir()` re-reads MNEMOSYNE_DATA_DIR on every call, so we
+    rely solely on monkeypatch.setenv — no manual module-global mutation and
+    no try/finally restoration. monkeypatch reverts the env var automatically
+    after the test, so no process-global state leaks and no test-order
+    dependency is introduced.
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         data_dir = Path(tmpdir) / "env_data"
         (data_dir / "banks" / "gamma").mkdir(parents=True)
         monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(data_dir))
-        # Drop the cache so _default_data_dir() re-reads the env var.
-        import mnemosyne.core.banks as banks_mod
-        banks_mod.DEFAULT_DATA_DIR = Path(
-            os.environ.get("MNEMOSYNE_DATA_DIR", banks_mod.DEFAULT_DATA_DIR)
-        )
-        try:
-            assert bank_exists_read_only("gamma") is True
-        finally:
-            # Restore cached default so other tests are unaffected.
-            banks_mod.DEFAULT_DATA_DIR = (
-                Path(os.environ.get("HOME", "/tmp")) / ".hermes" / "mnemosyne" / "data"
-            )
+        assert bank_exists_read_only("gamma") is True
 
 
 def test_validate_bank_name_malformed_raises():
