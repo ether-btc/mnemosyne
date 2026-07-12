@@ -989,6 +989,54 @@ def init_beam(db_path: Path = None):
         )
     """)
 
+    # --- Migration: drop legacy FK on memory_embeddings (#451) ---
+    # Databases created by the old memory.py DDL carry a
+    # FOREIGN KEY (memory_id) REFERENCES memories(id) constraint.
+    # The memories table is unused (0 rows); working_memory ids are
+    # stored here instead. With PRAGMA foreign_keys=ON (#408), every
+    # embedding insert silently fails. This migration rebuilds the
+    # table without the FK, preserving all existing data. Lost embeddings
+    # from the enforcement window are tracked as follow-up work.
+    _me_schema = cursor.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'memory_embeddings'"
+    ).fetchone()
+    if _me_schema and "REFERENCES memories" in _me_schema[0]:
+        # Atomic rebuild: Python's sqlite3 only auto-opens a transaction
+        # before DML, not DDL, so CREATE TABLE below would otherwise
+        # autocommit on its own before the INSERT/DROP/RENAME transaction
+        # starts. Issue an explicit BEGIN so all four statements share one
+        # transaction and a crash/error rolls back to the original table.
+        try:
+            if conn.in_transaction:
+                conn.commit()
+            cursor.execute("BEGIN")
+            cursor.execute("""
+                CREATE TABLE _me_rebuilt (
+                    memory_id TEXT PRIMARY KEY,
+                    embedding_json TEXT NOT NULL,
+                    model TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            # Explicit column list — don't rely on SELECT * column order
+            # matching between legacy and rebuilt table.
+            cursor.execute("""
+                INSERT INTO _me_rebuilt (memory_id, embedding_json, model, created_at)
+                SELECT memory_id, embedding_json, model, created_at FROM memory_embeddings
+            """)
+            cursor.execute("DROP TABLE memory_embeddings")
+            cursor.execute("ALTER TABLE _me_rebuilt RENAME TO memory_embeddings")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            # Clean up temp table if it was created before the failure
+            try:
+                cursor.execute("DROP TABLE IF EXISTS _me_rebuilt")
+                conn.commit()
+            except Exception:
+                pass
+            raise
+
     conn.commit()
 
     # --- Migration: recall tracking columns (v2.1) ---

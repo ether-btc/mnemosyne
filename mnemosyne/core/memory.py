@@ -99,14 +99,15 @@ def init_db(db_path: Path = None):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON memories(timestamp)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_source ON memories(source)")
 
-    # Legacy embeddings table
+    # Legacy embeddings table — no FK to memories(id) (see beam.py DDL).
+    # The FK was removed because working_memory ids (not memories ids)
+    # are stored here, making the constraint invalid. See issue #451.
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS memory_embeddings (
             memory_id TEXT PRIMARY KEY,
             embedding_json TEXT NOT NULL,
             model TEXT DEFAULT 'bge-small-en-v1.5',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
