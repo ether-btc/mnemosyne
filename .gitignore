@@ -83,4 +83,3 @@ results/
 
 # Agent logs
 growth_agent_log_*.json
-.venv/
