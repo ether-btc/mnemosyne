@@ -166,6 +166,22 @@ def mnemosyne_command(args):
         pass
 
     bank = _resolve_cli_bank(args, cmd)
+
+    # Reject unknown named banks BEFORE touching the filesystem. Mnemosyne(bank=)
+    # would otherwise lazily create an empty bank directory + DB on first access
+    # (e.g. via the beam below), defeating the guard and silently writing junk.
+    if cmd == "doctor" and bank:
+        try:
+            from mnemosyne.core.banks import BankManager
+            bm = BankManager()
+            if not bm.bank_exists(bank):
+                print(f"Bank not found: {bank}")
+                return 1
+        except Exception:
+            # If we cannot verify the bank, fail closed rather than create one.
+            print(f"Bank not found: {bank}")
+            return 1
+
     try:
         if bank:
             # Bank-aware beam (Mnemosyne routes the bank to its own SQLite DB),
@@ -227,14 +243,17 @@ def mnemosyne_command(args):
     elif cmd == "doctor":
         dry_run = bool(getattr(args, "dry_run", False))
         no_fix = bool(getattr(args, "no_fix", False))
-        explicit_bank = getattr(args, "bank", None)
-        bank = explicit_bank if explicit_bank else bank
+        # Unknown-bank guard now runs before the beam is built (see top of
+        # mnemosyne_command), so bank is guaranteed to exist here.
         try:
             from mnemosyne.diagnose import run_diagnostics, auto_fix
             result = run_diagnostics(bank=bank)
+            resolved_bank = bank or "default"
             print("\nMnemosyne Diagnostics")
             print("=" * 40)
-            print(f"  resolved_bank: {bank or 'default'}")
+            print(f"  resolved_bank: {resolved_bank}")
+            if result.get("resolved_db"):
+                print(f"  resolved_db: {result.get('resolved_db')}")
             print(f"  Checks passed: {result.get('checks_passed', 0)}/{result.get('checks_total', 0)}")
             if result.get("key_findings"):
                 print("\n  Key findings:")

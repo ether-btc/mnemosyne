@@ -160,6 +160,8 @@ def run_diagnostics(*, repair_vec_working: bool = False, dry_run: bool = False, 
     """
     log_path = _log_path()
     entries: List[Dict] = []
+    resolved_bank: str | None = None
+    resolved_db: str | None = None
 
     def log(category: str, check: str, status: str, detail: str = ""):
         entry = {
@@ -275,6 +277,11 @@ def run_diagnostics(*, repair_vec_working: bool = False, dry_run: bool = False, 
         if bank:
             log("db", "resolved_bank", bank)
             log("db", "resolved_db", stats.get("database", "unknown"))
+            resolved_bank = bank
+            resolved_db = stats.get("database", "unknown")
+        else:
+            resolved_bank = "default"
+            resolved_db = stats.get("database", "unknown")
 
         try:
             integrity = _sqlite_integrity_diagnostics(mem.beam.conn)
@@ -362,6 +369,8 @@ def run_diagnostics(*, repair_vec_working: bool = False, dry_run: bool = False, 
         "key_findings": [],
         "fixable": [],
         "entries": entries,
+        "resolved_bank": resolved_bank,
+        "resolved_db": resolved_db,
     }
 
     # Auto-detect common problems
