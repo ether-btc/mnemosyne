@@ -40,6 +40,10 @@ def register_cli(subparser):
     doctor_cmd = mn_cmds.add_parser("doctor", help="Run diagnostics and auto-fix missing dependencies")
     doctor_cmd.add_argument("--dry-run", action="store_true", help="Show what would be fixed without installing")
     doctor_cmd.add_argument("--no-fix", action="store_true", help="Diagnose only, do not fix")
+    doctor_cmd.add_argument(
+        "--bank", type=str,
+        help="Mnemosyne bank to diagnose. Defaults to the active Hermes profile's bank when profile_isolation is enabled, otherwise the shared default bank.",
+    )
 
     export_cmd = mn_cmds.add_parser("export", help="Export all memories to a JSON file")
     export_cmd.add_argument("--output", "-o", type=str, required=True, help="Output JSON file path")
@@ -223,11 +227,14 @@ def mnemosyne_command(args):
     elif cmd == "doctor":
         dry_run = bool(getattr(args, "dry_run", False))
         no_fix = bool(getattr(args, "no_fix", False))
+        explicit_bank = getattr(args, "bank", None)
+        bank = explicit_bank if explicit_bank else bank
         try:
             from mnemosyne.diagnose import run_diagnostics, auto_fix
-            result = run_diagnostics()
+            result = run_diagnostics(bank=bank)
             print("\nMnemosyne Diagnostics")
             print("=" * 40)
+            print(f"  resolved_bank: {bank or 'default'}")
             print(f"  Checks passed: {result.get('checks_passed', 0)}/{result.get('checks_total', 0)}")
             if result.get("key_findings"):
                 print("\n  Key findings:")
