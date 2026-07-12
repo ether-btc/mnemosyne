@@ -216,7 +216,7 @@ class TestDoctorBankResolution:
         assert "Bank not found: nonexistent-bank-xyz" in out
 
     def test_unknown_bank_creates_no_filesystem_artifacts(self, tmp_path, monkeypatch):
-        """Unknown bank -> no new dirs or DB files."""
+        """Unknown bank -> no banks/ dir, named dir, DB, or any other artifact."""
         home = tmp_path / "profiles" / "default"
         _write_config(home, True)
         data_dir = home / "mnemosyne" / "data"
@@ -224,10 +224,15 @@ class TestDoctorBankResolution:
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(data_dir))
 
-        bank_dir = data_dir / "banks"
-        before = set()
-        if bank_dir.exists():
-            before = set(bank_dir.rglob("*"))
+        banks_dir = data_dir / "banks"
+        named_dir = banks_dir / "nonexistent-bank-xyz"
+        named_db = named_dir / "mnemosyne.db"
+
+        # Full data_dir snapshot BEFORE the command.
+        before = sorted(
+            p.relative_to(data_dir) for p in data_dir.rglob("*")
+        )
+        banks_dir_existed_before = banks_dir.exists()
 
         from mnemosyne_hermes import cli as cli_mod
         args = types.SimpleNamespace(
@@ -236,11 +241,19 @@ class TestDoctorBankResolution:
             dry_run=False,
             no_fix=True,
         )
-        cli_mod.mnemosyne_command(args)
+        ret = cli_mod.mnemosyne_command(args)
+        assert ret == 1
 
-        after = set()
-        if bank_dir.exists():
-            after = set(bank_dir.rglob("*"))
+        # Full data_dir snapshot AFTER the command.
+        after = sorted(
+            p.relative_to(data_dir) for p in data_dir.rglob("*")
+        )
+
+        # No filesystem materialization of the unknown bank.
+        assert banks_dir.exists() == banks_dir_existed_before
+        assert not named_dir.exists()
+        assert not named_db.exists()
+        # And the whole data_dir tree is byte-for-byte unchanged.
         assert before == after
 
     def test_output_contains_resolved_bank_and_db(self, tmp_path, monkeypatch, capsys):
@@ -359,3 +372,29 @@ class TestDoctorBankEdgeCases:
         cli_mod.mnemosyne_command(args)
         out = capsys.readouterr().out
         assert "resolved_bank: default" in out
+
+    def test_malformed_bank_name_rejected_no_artifacts(self, tmp_path, monkeypatch):
+        """Malformed bank name -> non-zero exit, no dir/DB created."""
+        home = tmp_path / ".hermes"
+        _write_config(home, False)
+        data_dir = home / "mnemosyne" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(data_dir))
+
+        banks_dir = data_dir / "banks"
+        # Malformed names that fail _validate_bank_name.
+        for bad in ("bad name!!", "way_too_long_" + "x" * 80):
+            named_dir = banks_dir / bad
+            named_db = named_dir / "mnemosyne.db"
+            from mnemosyne_hermes import cli as cli_mod
+            args = types.SimpleNamespace(
+                mnemosyne_cmd="doctor",
+                bank=bad,
+                dry_run=False,
+                no_fix=True,
+            )
+            ret = cli_mod.mnemosyne_command(args)
+            assert ret == 1, f"expected non-zero exit for malformed bank {bad!r}"
+            assert not named_dir.exists(), f"malformed bank {bad!r} created a directory"
+            assert not named_db.exists(), f"malformed bank {bad!r} created a DB"

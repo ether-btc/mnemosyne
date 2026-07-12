@@ -170,18 +170,19 @@ def mnemosyne_command(args):
     # Reject unknown named banks BEFORE touching the filesystem. Mnemosyne(bank=)
     # would otherwise lazily create an empty bank directory + DB on first access
     # (e.g. via the beam below), defeating the guard and silently writing junk.
+    # Use the side-effect-free existence check so we do NOT create the parent
+    # `banks/` directory either (BankManager.__init__ eagerly mkdirs it).
     # Only the narrow bank-name validation error is treated as "not found"; any
     # real import/I/O failure is let through so the beam-building except below
     # reports it honestly instead of being masked as a missing bank.
     if cmd == "doctor" and bank:
         try:
-            from mnemosyne.core.banks import BankManager
-            bm = BankManager()
-            if not bm.bank_exists(bank):
+            from mnemosyne.core.banks import bank_exists_read_only
+            if not bank_exists_read_only(bank):
                 print(f"Bank not found: {bank}")
                 return 1
         except ValueError:
-            # Raised by BankManager._validate_name for malformed bank names.
+            # Raised by _validate_bank_name for malformed bank names.
             print(f"Bank not found: {bank}")
             return 1
 
