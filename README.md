@@ -1,4 +1,4 @@
-> ⚠️ **Personal note** — I'm going through a difficult personal situation and need to step away briefly. Development is paused for the coming week while I focus on family. This isn't goodbye, just a short pause. I'll be back. Thank you for understanding. ❤️
+> ⚠️ **Personal note** — I'm navigating a difficult personal situation, but I've got the right counsel in place and we're moving forward safely. ❤️
 
 <div align="center">
 
