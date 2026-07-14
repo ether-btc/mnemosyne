@@ -20,6 +20,17 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
   mnemosyne config set skip_contexts cron,flush,subagent,background,skill_loop
   ```
 
+- **Migrate legacy `memory_embeddings` FK on database init (#451).**
+  Databases created by the old `memory.py` DDL carried a
+  `FOREIGN KEY (memory_id) REFERENCES memories(id)` constraint on
+  `memory_embeddings`. The `memories` table is unused — working_memory
+  ids are stored instead. When `PRAGMA foreign_keys=ON` was enabled
+  (#408), every embedding insert silently failed with
+  `IntegrityError: FOREIGN KEY constraint failed`. This release adds
+  an idempotent migration that rebuilds the table without the FK
+  and removes the FK from the `memory.py` DDL so fresh
+  databases are clean.
+
 ## [3.12.0] — 2026-07-11
 
 ### Added
