@@ -766,18 +766,25 @@ class PolyphonicRecallEngine:
         return selected
     
     def _estimate_similarity(self, a: PolyphonicResult, b: PolyphonicResult) -> float:
-        """Estimate similarity between two results."""
-        # Simple Jaccard-like similarity on voice scores
-        voices_a = set(a.voice_scores.keys())
-        voices_b = set(b.voice_scores.keys())
-        
-        if not voices_a or not voices_b:
+        """Estimate similarity between two results using content overlap.
+
+        Uses word-level Jaccard on the content field instead of voice-name
+        Jaccard.  Voice-name Jaccard collapses to 1.0 when a single voice
+        dominates the candidate set, causing MMR diversity reranking to
+        discard all but one result (#389).
+        """
+        content_a = (a.content or "").lower().split()
+        content_b = (b.content or "").lower().split()
+
+        if not content_a or not content_b:
             return 0.0
-        
-        intersection = voices_a & voices_b
-        union = voices_a | voices_b
-        
-        return len(intersection) / len(union)
+
+        set_a = set(content_a)
+        set_b = set(content_b)
+        intersection = set_a & set_b
+        union = set_a | set_b
+
+        return len(intersection) / len(union) if union else 0.0
     
     def _assemble_context(self, results: List[PolyphonicResult],
                          budget: int) -> List[PolyphonicResult]:
