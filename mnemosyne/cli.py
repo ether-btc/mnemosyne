@@ -203,7 +203,7 @@ def cmd_recall(args):
         print(f"  Content: {content[:150]}{'...' if len(content) > 150 else ''}")
         print(f"  Score: {score:.3f}")
         if r.get("entity_match"):
-            print("  [entity match]")
+            print(f"  [entity match]")
         print()
 
 
@@ -638,29 +638,154 @@ def cmd_mcp(args):
         sys.exit(1)
 
 
+def _read_secret_file(path: str, label: str) -> str:
+    """Read a secret through one no-follow file descriptor."""
+    import stat
+    from pathlib import Path
+
+    secret_path = Path(path).expanduser()
+    flags = os.O_RDONLY
+    if os.name != "nt" and hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    elif secret_path.is_symlink():
+        raise ValueError(f"{label} file must not be a symlink: {secret_path}")
+    try:
+        fd = os.open(secret_path, flags)
+    except OSError as exc:
+        raise ValueError(f"cannot securely open {label} file: {secret_path}") from exc
+    try:
+        stat_result = os.fstat(fd)
+        if not stat.S_ISREG(stat_result.st_mode):
+            raise ValueError(f"{label} path is not a regular file: {secret_path}")
+        if os.name != "nt" and stat_result.st_mode & 0o077:
+            raise PermissionError(
+                f"{label} file must not be accessible by group/others: {secret_path}"
+            )
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            value = handle.read().strip()
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if not value:
+        raise ValueError(f"{label} file is empty: {secret_path}")
+    return value
+
+
+def cmd_sync_init(args):
+    """Explicitly initialize or migrate a dedicated shared-surface DB."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="mnemosyne sync-init")
+    parser.add_argument("--db-path", required=True, help="Dedicated shared-surface DB")
+    parser.add_argument(
+        "--session-id",
+        default="hermes_shared_surface",
+        help="Stable session ID used by the shared-surface Beam",
+    )
+    parser.add_argument(
+        "--claim-existing",
+        action="store_true",
+        help="Claim existing global rows after validation",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm mutation of an existing non-empty dedicated DB",
+    )
+    parsed = parser.parse_args(args)
+
+    from mnemosyne.core.memory import Mnemosyne
+    from mnemosyne.core.sync import SyncEngine
+
+    mem = Mnemosyne(db_path=parsed.db_path, session_id=parsed.session_id)
+    existing_rows = mem.beam.conn.execute(
+        "SELECT COUNT(*) FROM working_memory"
+    ).fetchone()[0]
+    invalid_rows = mem.beam.conn.execute(
+        """SELECT COUNT(*) FROM working_memory
+           WHERE scope != 'global' OR session_id != ?""",
+        (parsed.session_id,),
+    ).fetchone()[0]
+    preview = {
+        "db_path": str(parsed.db_path),
+        "session_id": parsed.session_id,
+        "existing_rows": existing_rows,
+        "invalid_rows": invalid_rows,
+    }
+    if invalid_rows:
+        raise SystemExit(
+            "Refusing migration: DB contains non-global or foreign-session rows"
+        )
+    if existing_rows and not (parsed.claim_existing and parsed.yes):
+        preview["status"] = "confirmation_required"
+        preview["required_flags"] = ["--claim-existing", "--yes"]
+        print(json.dumps(preview, sort_keys=True))
+        return
+
+    SyncEngine(
+        mem,
+        surface_only=True,
+        initialize_surface=True,
+        claim_existing_surface=bool(existing_rows),
+    )
+    preview["status"] = "initialized"
+    preview["claimed_rows"] = existing_rows
+    print(json.dumps(preview, sort_keys=True))
+
+
 def cmd_sync(args):
     """Sync memories with a remote Mnemosyne instance."""
     import argparse
     parser = argparse.ArgumentParser(prog="mnemosyne sync")
     parser.add_argument("--remote", required=True, help="Remote sync server URL (e.g. http://192.168.1.50:8765)")
+    parser.add_argument(
+        "--db-path",
+        required=True,
+        help="Explicit SQLite DB to sync; use the dedicated shared-surface DB, not a private DB",
+    )
     parser.add_argument("--mode", choices=["push", "pull", "bidirectional"], default="bidirectional",
                         help="Sync direction (default: bidirectional)")
-    parser.add_argument("--encrypt", help="Encryption key (base64) or path to key file")
-    parser.add_argument("--api-key", help="API key for remote server auth")
-    parser.add_argument("--insecure", action="store_true", help="Skip TLS verification (not implemented in stdlib impl)")
+    encryption_group = parser.add_mutually_exclusive_group()
+    encryption_group.add_argument(
+        "--encrypt", help="Encryption key (visible in process arguments)"
+    )
+    encryption_group.add_argument(
+        "--encrypt-key-file", help="Private file containing the encryption key"
+    )
+    auth_group = parser.add_mutually_exclusive_group()
+    auth_group.add_argument("--api-key", help="API key (visible in process arguments)")
+    auth_group.add_argument("--api-key-file", help="Private file containing the API key")
     parser.add_argument("--interval", type=float, default=0, help="Sync interval in seconds (repeat mode)")
+    parser.add_argument(
+        "--initialize-surface",
+        action="store_true",
+        help="Explicitly mark/claim this dedicated DB as a shared surface on first run",
+    )
 
     # Parse known flags from args; remaining are for internal use
     parsed, _ = parser.parse_known_args(args)
 
-    mem = _get_memory()
+    from mnemosyne.core.memory import Mnemosyne
     from mnemosyne.core.sync import SyncEngine, SyncEncryption
 
-    encryption = None
-    if parsed.encrypt:
-        encryption = SyncEncryption.from_config(parsed.encrypt)
+    mem = Mnemosyne(db_path=parsed.db_path)
 
-    engine = SyncEngine(mem, encryption=encryption)
+    encryption_source = parsed.encrypt
+    if parsed.encrypt_key_file:
+        encryption_source = _read_secret_file(parsed.encrypt_key_file, "encryption key")
+    encryption = SyncEncryption.from_config(encryption_source) if encryption_source else None
+    api_key = parsed.api_key
+    if parsed.api_key_file:
+        api_key = _read_secret_file(parsed.api_key_file, "API key")
+
+    engine = SyncEngine(
+        mem,
+        encryption=encryption,
+        require_encryption=encryption_source is not None,
+        surface_only=True,
+        initialize_surface=parsed.initialize_surface,
+    )
 
     if parsed.interval > 0:
         # Repeating sync
@@ -674,7 +799,7 @@ def cmd_sync(args):
                 result = engine.sync_with(
                     remote_url=parsed.remote,
                     mode=parsed.mode,
-                    api_key=parsed.api_key,
+                    api_key=api_key,
                 )
                 _print_sync_result(result)
                 time.sleep(parsed.interval)
@@ -684,7 +809,7 @@ def cmd_sync(args):
         result = engine.sync_with(
             remote_url=parsed.remote,
             mode=parsed.mode,
-            api_key=parsed.api_key,
+            api_key=api_key,
         )
         _print_sync_result(result)
 
@@ -724,26 +849,60 @@ def cmd_sync_serve(args):
     parser = argparse.ArgumentParser(prog="mnemosyne sync-serve")
     parser.add_argument("--port", type=int, default=8765, help="Server port (default: 8765)")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
-    parser.add_argument("--api-key", help="API key for bearer-token auth")
-    parser.add_argument("--jwt-secret", help="JWT secret for token auth")
+    parser.add_argument(
+        "--db-path",
+        required=True,
+        help="Explicit relay SQLite DB path",
+    )
+    parser.add_argument(
+        "--initialize-surface",
+        action="store_true",
+        help="Explicitly initialize a new dedicated relay DB",
+    )
+    parser.add_argument(
+        "--behind-tls-proxy",
+        action="store_true",
+        help="Allow non-loopback cleartext only behind a trusted TLS proxy",
+    )
+    api_group = parser.add_mutually_exclusive_group()
+    api_group.add_argument(
+        "--api-key", help="API key for bearer-token auth (visible in process arguments)"
+    )
+    api_group.add_argument("--api-key-file", help="Private file containing the API key")
+    jwt_group = parser.add_mutually_exclusive_group()
+    jwt_group.add_argument("--jwt-secret", help="JWT secret (visible in process arguments)")
+    jwt_group.add_argument(
+        "--jwt-secret-file", help="Private file containing the JWT secret"
+    )
     parser.add_argument("--tls-cert", help="TLS certificate file path")
     parser.add_argument("--tls-key", help="TLS key file path")
     parser.add_argument("--device-id", help="Custom device identifier")
 
     parsed = parser.parse_args(args)
 
-    mem = _get_memory()
+    api_key = parsed.api_key
+    if parsed.api_key_file:
+        api_key = _read_secret_file(parsed.api_key_file, "API key")
+    jwt_secret = parsed.jwt_secret
+    if parsed.jwt_secret_file:
+        jwt_secret = _read_secret_file(parsed.jwt_secret_file, "JWT secret")
+
+    from mnemosyne.core.memory import Mnemosyne
     from mnemosyne.core.sync_server import run_sync_server as _run_server
+
+    mem = Mnemosyne(db_path=parsed.db_path)
 
     _run_server(
         host=parsed.host,
         port=parsed.port,
         beam_instance=mem,
         device_id=parsed.device_id,
-        api_key=parsed.api_key,
-        jwt_secret=parsed.jwt_secret,
+        api_key=api_key,
+        jwt_secret=jwt_secret,
         tls_cert=parsed.tls_cert,
         tls_key=parsed.tls_key,
+        initialize_surface=parsed.initialize_surface,
+        behind_tls_proxy=parsed.behind_tls_proxy,
     )
 
 
@@ -751,19 +910,32 @@ def cmd_sync_status(args):
     """Show sync status and statistics."""
     import argparse
     parser = argparse.ArgumentParser(prog="mnemosyne sync-status")
+    parser.add_argument(
+        "--db-path",
+        required=True,
+        help="Explicit shared-surface SQLite DB path",
+    )
     parser.add_argument("--remote", help="Remote sync server URL to check")
-    parser.add_argument("--api-key", help="API key for remote server auth")
+    auth_group = parser.add_mutually_exclusive_group()
+    auth_group.add_argument("--api-key", help="API key (visible in process arguments)")
+    auth_group.add_argument("--api-key-file", help="Private file containing the API key")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
 
     parsed = parser.parse_args(args)
+    api_key = parsed.api_key
+    if parsed.api_key_file:
+        api_key = _read_secret_file(parsed.api_key_file, "API key")
 
-    mem = _get_memory()
+    from mnemosyne.core.memory import Mnemosyne
     from mnemosyne.core.sync import SyncEngine
 
-    engine = SyncEngine(mem)
+    mem = Mnemosyne(db_path=parsed.db_path)
+    engine = SyncEngine(mem, surface_only=True, claim_surface_rows=False)
 
-    # Log a heartbeat event so we have data to show
-    status = engine.get_status(remote_url=parsed.remote if parsed.remote else None)
+    status = engine.get_status(
+        remote_url=parsed.remote if parsed.remote else None,
+        api_key=api_key,
+    )
 
     if parsed.json:
         print(json.dumps(status, indent=2, default=str))
@@ -1426,6 +1598,7 @@ COMMANDS = {
     "verify": cmd_verify,
     "backups": cmd_backups_list,
     "sync": cmd_sync,
+    "sync-init": cmd_sync_init,
     "sync-serve": cmd_sync_serve,
     "sync-server": cmd_sync_serve,
     "sync-status": cmd_sync_status,
@@ -1466,11 +1639,13 @@ def run_cli():
         print("  verify [db_path] [--quick]             Verify database integrity")
         print("  backups [backup_dir]                   List available backups")
         print("  mcp [--transport sse] [--port 8080]    Start MCP server")
-        print("  sync --remote <url> [--mode push|pull|bidirectional]")
+        print("  sync --db-path <path> --remote <url> [--mode push|pull|bidirectional]")
         print("                                      Sync with remote server")
-        print("  sync-serve [--port 8765] [--host 0.0.0.0]")
+        print("  sync-init --db-path <path> [--claim-existing --yes]")
+        print("                                      Initialize/migrate a dedicated surface DB")
+        print("  sync-serve --db-path <path> [--port 8765] [--host 0.0.0.0]")
         print("                                      Start sync server")
-        print("  sync-status [--remote <url>] [--json]")
+        print("  sync-status --db-path <path> [--remote <url>] [--json]")
         print("                                      Show sync status")
         print("  sync-generate-key                    Generate encryption key")
         print("  migrate [--bank <name>]                Add 3.11.1 schema tables to an existing bank")
