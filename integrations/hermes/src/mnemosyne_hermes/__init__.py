@@ -1438,6 +1438,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 return self._handle_remember_canonical(args)
             elif tool_name == "mnemosyne_recall_canonical":
                 return self._handle_recall_canonical(args)
+            elif tool_name == "mnemosyne_forget_canonical":
+                return self._handle_forget_canonical(args)
             elif tool_name == "mnemosyne_model_card":
                 return self._handle_model_card(args)
             elif tool_name == "mnemosyne_model_refresh":
@@ -2070,6 +2072,21 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         return json.dumps({"mode": "list", "owner_id": owner_id,
                            "category": category or None,
                            "count": len(results), "results": results})
+
+    def _handle_forget_canonical(self, args: Dict[str, Any]) -> str:
+        category = (args.get("category") or "").strip()
+        name = (args.get("name") or "").strip()
+        if not category or not name:
+            return json.dumps({"error": "category and name are required"})
+        owner_id = self._canonical_owner()
+        store = getattr(self._beam, "canonical", None)
+        if store is None:
+            from mnemosyne.core.canonical import CanonicalStore
+            store = CanonicalStore(db_path=self._beam.db_path, conn=self._beam.conn)
+            self._beam.canonical = store
+        retired = store.forget(owner_id, category, name)
+        return json.dumps({"retired": retired, "owner_id": owner_id,
+                           "category": category, "name": name})
 
     def _handle_model_card(self, args: Dict[str, Any]) -> str:
         category = (args.get("category") or "").strip()

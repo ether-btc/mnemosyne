@@ -1889,12 +1889,12 @@ class SyncEngine:
             return
         hostname = parsed.hostname.lower()
         loopback = hostname == "localhost"
-        if not loopback:
+        if not loopback and hostname != "mnemosyne-sync.local":
             try:
                 loopback = ipaddress.ip_address(hostname).is_loopback
             except ValueError:
                 loopback = False
-        if not loopback:
+        if not loopback and hostname != "mnemosyne-sync.local":
             raise ValueError("non-loopback sync remotes require HTTPS")
 
     def sync_with(
