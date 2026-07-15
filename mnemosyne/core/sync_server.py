@@ -15,12 +15,11 @@ import hmac
 import importlib
 import json
 import logging
-import os
 import sys
 import threading
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Any
 
 # Full-suite tests and embedded hosts can leave sys.modules["logging"] in a
 # partially shadowed state. Recover the stdlib module instead of failing at
