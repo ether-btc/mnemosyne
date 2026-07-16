@@ -28,6 +28,44 @@ from datetime import datetime, timedelta
 
 # Ensure mnemosyne core is importable from this directory
 # MUST be before any `from mnemosyne.*` imports
+
+import uuid
+
+# Write-approval gate: when memory.write_approval is enabled, writes are
+# staged to pending/memory/<id>.json instead of committed directly.
+# apply_pending() replays approved records through the BEAM write path.
+def _write_approval_enabled() -> bool:
+    """Check if memory.write_approval is enabled in Hermes config."""
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        cfg = load_config()
+        raw = cfg_get(cfg, "memory", "write_approval", default=False)
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"on", "true", "yes", "1", "approve", "enabled"}
+        return False
+    except Exception:
+        return False
+
+
+def _stage_pending_write(payload: Dict[str, Any]) -> str:
+    """Stage a write to the pending store and return the record ID."""
+    from hermes_constants import get_hermes_home
+    pid = uuid.uuid4().hex[:8]
+    pending_dir = get_hermes_home() / "pending" / "memory"
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    record = {
+        "id": pid,
+        "subsystem": "memory",
+        "provider": "mnemosyne",
+        "tool": payload.get("tool", "mnemosyne_remember"),
+        "payload": payload,
+        "summary": payload.get("content", "")[:200],
+        "created_at": time.time(),
+    }
+    (pending_dir / f"{pid}.json").write_text(json.dumps(record, indent=2))
+    return pid
 _mnemosyne_root = Path(__file__).resolve().parent.parent
 if str(_mnemosyne_root) not in sys.path:
     sys.path.insert(0, str(_mnemosyne_root))
@@ -823,6 +861,28 @@ FORGET_CANONICAL_SCHEMA = {
     },
 }
 
+APPLY_PENDING_SCHEMA = {
+    "name": "mnemosyne_apply_pending",
+    "description": (
+        "Commit staged pending memory writes to Mnemosyne. "
+        "When memory.write_approval is enabled, calls to mnemosyne_remember "
+        "and mnemosyne_batch are staged to pending/memory/ instead of "
+        "written directly. This tool replays approved pending records "
+        "through the BEAM write path, committing them to the database."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pending_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of pending record IDs to commit (e.g., ['a1b2c3d4']). From the staged response.",
+            },
+        },
+        "required": ["pending_ids"],
+    },
+}
+
 MODEL_CARD_SCHEMA = {
     "name": "mnemosyne_model_card",
     "description": (
@@ -1189,7 +1249,7 @@ ALL_TOOL_SCHEMAS = [
     SHARED_FORGET_SCHEMA, SHARED_STATS_SCHEMA, SLEEP_SCHEMA, STATS_SCHEMA,
     INVALIDATE_SCHEMA, VALIDATE_SCHEMA, GET_SCHEMA, TRIPLE_ADD_SCHEMA, TRIPLE_QUERY_SCHEMA,
     TRIPLE_END_SCHEMA,
-    REMEMBER_CANONICAL_SCHEMA, RECALL_CANONICAL_SCHEMA, FORGET_CANONICAL_SCHEMA, MODEL_CARD_SCHEMA,
+    REMEMBER_CANONICAL_SCHEMA, RECALL_CANONICAL_SCHEMA, FORGET_CANONICAL_SCHEMA, APPLY_PENDING_SCHEMA, MODEL_CARD_SCHEMA,
     MODEL_REFRESH_SCHEMA, SCRATCHPAD_WRITE_SCHEMA, SCRATCHPAD_READ_SCHEMA, SCRATCHPAD_CLEAR_SCHEMA,
     EXPORT_SCHEMA, UPDATE_SCHEMA, FORGET_SCHEMA, BATCH_SCHEMA, IMPORT_SCHEMA, DIAGNOSE_SCHEMA,
     RECALL_DIAGNOSTICS_SCHEMA, TASK_PROGRESS_SCHEMA,
@@ -2440,6 +2500,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 return self._handle_recall_canonical(args)
             elif tool_name == "mnemosyne_forget_canonical":
                 return self._handle_forget_canonical(args)
+            elif tool_name == "mnemosyne_apply_pending":
+                return self._handle_apply_pending(args)
             elif tool_name == "mnemosyne_model_card":
                 return self._handle_model_card(args)
             elif tool_name == "mnemosyne_model_refresh":
@@ -2521,13 +2583,33 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         extract_entities = bool(args.get("extract_entities", False))
         extract = bool(args.get("extract", False))
         metadata = args.get("metadata") or None
-        # Trust-boundary clamp — see VERACITY_ALLOWED in
-        # mnemosyne/core/veracity_consolidation.py for the canonical set.
         veracity = clamp_veracity(
             args.get("veracity"), context="mnemosyne_remember"
         )
         if not content:
             return json.dumps({"error": "content is required"})
+
+        # Write-approval gate: stage to pending when enabled.
+        if _write_approval_enabled():
+            pid = _stage_pending_write({
+                "tool": "mnemosyne_remember",
+                "content": content,
+                "importance": importance,
+                "source": source,
+                "scope": scope,
+                "valid_until": valid_until,
+                "extract_entities": extract_entities,
+                "extract": extract,
+                "metadata": metadata,
+                "veracity": veracity,
+            })
+            return json.dumps({
+                "status": "staged",
+                "pending_id": pid,
+                "content_preview": content[:100],
+                "message": "Write staged for approval. Use mnemosyne_apply_pending to commit.",
+            })
+
         memory_id = self._beam.remember(
             content=content,
             importance=importance,
@@ -2561,6 +2643,28 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
         if bool(args.get("dry_run", False)):
             return json.dumps(dry_run_batch(normalized))
+
+        # Write-approval gate: stage each operation individually.
+        if _write_approval_enabled():
+            staged = []
+            for op in normalized:
+                pid = _stage_pending_write({
+                    "tool": "mnemosyne_batch",
+                    "action": op.get("action", ""),
+                    "content": op.get("content", ""),
+                    "importance": op.get("importance", 0.5),
+                    "source": op.get("source", "user"),
+                    "scope": op.get("scope", self._default_scope),
+                    "metadata": op.get("metadata"),
+                    "veracity": op.get("veracity"),
+                })
+                staged.append(pid)
+            return json.dumps({
+                "status": "staged",
+                "pending_ids": staged,
+                "count": len(staged),
+                "message": f"{len(staged)} writes staged for approval. Use mnemosyne_apply_pending to commit.",
+            })
 
         return json.dumps(apply_beam_batch(
             self._beam,
@@ -3083,6 +3187,63 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             self._beam.canonical = store
         card = store.model_card(owner_id, category, title=title, names=names or None)
         return json.dumps(card)
+
+    def _handle_apply_pending(self, args: Dict[str, Any]) -> str:
+        """Replay staged pending writes through the BEAM write path.
+
+        Calls beam.remember() directly, bypassing the write_approval
+        gate so approved records are committed without re-staging.
+        """
+        from hermes_constants import get_hermes_home
+        from mnemosyne.core.veracity_consolidation import clamp_veracity
+
+        pending_ids = args.get("pending_ids") or []
+        if isinstance(pending_ids, str):
+            pending_ids = [pid.strip() for pid in pending_ids.split(",") if pid.strip()]
+
+        pending_dir = get_hermes_home() / "pending" / "memory"
+        applied = []
+        failed = []
+
+        for pid in pending_ids:
+            record_path = pending_dir / f"{pid}.json"
+            if not record_path.exists():
+                failed.append({"id": pid, "error": "pending record not found"})
+                continue
+
+            try:
+                record = json.loads(record_path.read_text())
+                payload = record.get("payload", {})
+                content = payload.get("content", "")
+                if not content:
+                    failed.append({"id": pid, "error": "empty content"})
+                    record_path.unlink(missing_ok=True)
+                    continue
+
+                memory_id = self._beam.remember(
+                    content=content,
+                    importance=float(payload.get("importance", 0.5)),
+                    source=payload.get("source", "user"),
+                    scope=payload.get("scope", self._default_scope),
+                    valid_until=payload.get("valid_until"),
+                    extract_entities=bool(payload.get("extract_entities", False)),
+                    extract=bool(payload.get("extract", False)),
+                    metadata=payload.get("metadata"),
+                    veracity=clamp_veracity(
+                        payload.get("veracity"), context="mnemosyne_apply_pending"
+                    ),
+                )
+                record_path.unlink(missing_ok=True)
+                applied.append({"id": pid, "memory_id": memory_id})
+            except Exception as exc:
+                failed.append({"id": pid, "error": str(exc)})
+
+        return json.dumps({
+            "applied": applied,
+            "failed": failed,
+            "applied_count": len(applied),
+            "failed_count": len(failed),
+        })
 
     def _handle_model_refresh(self, args: Dict[str, Any]) -> str:
         action = (args.get("action") or "list").strip().lower()
