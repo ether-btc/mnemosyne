@@ -1511,7 +1511,8 @@ def cmd_config(args):
         config = get_config()
         config.set(key, value)
         print(f"Set {key} = {value}")
-        if key in config.REQUIRES_RESTART:
+        from mnemosyne.core.config import REQUIRES_RESTART
+        if key in REQUIRES_RESTART:
             print(f"  ⚠ {key} requires restart to take effect.")
 
     elif sub == "migrate":

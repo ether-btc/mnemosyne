@@ -86,7 +86,7 @@ These are not mandates — just directions where help would be valuable:
 ## Community
 
 - **Issues & bugs:** [GitHub Issues](https://github.com/AxDSan/mnemosyne/issues)
-- **Feature ideas & questions:** [Join our Discord](https://discord.gg/Cgzpw9x3R) or open an issue
+- **Feature ideas & questions:** [Join our Discord](https://discord.gg/nousresearch) or open an issue
 
 ## Contributor License Agreement (CLA)
 

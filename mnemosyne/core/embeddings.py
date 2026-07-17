@@ -178,6 +178,23 @@ def _get_embedding_dim(model_name: str) -> int:
     return dims.get(model_name, 384)
 
 
+def _embedding_threads() -> int:
+    """Return the thread count for the onnxruntime embedding model.
+
+    Defaults to os.cpu_count() or 4.  Explicitly passing a thread count
+    prevents onnxruntime from calling pthread_setaffinity_np(), which
+    fails with EINVAL in unprivileged LXC containers (#453).
+    The MNEMOSYNE_EMBEDDING_THREADS env var overrides the default.
+    """
+    try:
+        from_env = os.environ.get("MNEMOSYNE_EMBEDDING_THREADS")
+        if from_env is not None:
+            return int(from_env)
+    except (ValueError, TypeError):
+        pass
+    return max(int(os.cpu_count() or 4), 1)
+
+
 def _get_model():
     """Lazy-load the embedding model (local fastembed).
 
@@ -201,6 +218,7 @@ def _get_model():
                 _embedding_model = TextEmbedding(
                     model_name=_DEFAULT_MODEL,
                     cache_dir=_FASTEMBED_CACHE_DIR,
+                    threads=_embedding_threads(),
                 )
                 return _embedding_model
             except Exception as exc:  # noqa: BLE001
