@@ -12,6 +12,8 @@ All imports are guarded — this module loads safely even if mcp is not installe
 """
 
 from typing import Dict, Any, List
+import json
+import math
 import os
 import sqlite3
 from pathlib import Path
@@ -993,32 +995,75 @@ def _handle_hygiene_clean(arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Handle mnemosyne_hygiene_clean tool call."""
     from mnemosyne.core.hygiene import NoiseCandidate, clean_noise
 
-    bank = _resolve_bank(arguments)
-    mem = _create_instance(bank=bank)
-    db_path = mem.beam.db_path if hasattr(mem.beam, "db_path") else mem.db_path
-
     candidates_json = arguments.get("candidates_json", "[]")
     try:
         raw_candidates = json.loads(candidates_json) if isinstance(candidates_json, str) else candidates_json
     except json.JSONDecodeError:
         return {"error": "candidates_json is not valid JSON"}
 
-    candidates = [
-        NoiseCandidate(
-            memory_id=c["memory_id"],
-            table_name=c["table_name"],
-            content_preview=c.get("content_preview", ""),
-            noise_score=c.get("noise_score", 0.0),
-            noise_reasons=c.get("noise_reasons", []),
-            secret_flags=c.get("secret_flags", []),
-            importance=c.get("importance", 0.5),
-            source=c.get("source", ""),
-            timestamp=c.get("timestamp", ""),
-            suggested_action=c.get("suggested_action", "keep"),
-            content_length=c.get("content_length", 0),
+    if not isinstance(raw_candidates, list):
+        return {"error": "candidates_json must be a list of valid hygiene candidates"}
+
+    candidates = []
+    for candidate_data in raw_candidates:
+        if not isinstance(candidate_data, dict):
+            return {"error": "candidates_json must be a list of valid hygiene candidates"}
+        if not all(
+            isinstance(candidate_data.get(key), str) and candidate_data[key].strip()
+            for key in ("memory_id", "table_name")
+        ):
+            return {"error": "candidates_json must be a list of valid hygiene candidates"}
+        if candidate_data["table_name"] not in {"working_memory", "memories", "episodic_memory"}:
+            return {"error": "candidates_json must be a list of valid hygiene candidates"}
+        noise_score = candidate_data.get("noise_score", 0.0)
+        importance = candidate_data.get("importance", 0.5)
+        content_length = candidate_data.get("content_length", 0)
+        if (
+            not isinstance(noise_score, (int, float))
+            or isinstance(noise_score, bool)
+            or not 0 <= noise_score <= 1
+            or (isinstance(noise_score, float) and not math.isfinite(noise_score))
+            or not isinstance(importance, (int, float))
+            or isinstance(importance, bool)
+            or not 0 <= importance <= 1
+            or (isinstance(importance, float) and not math.isfinite(importance))
+            or not isinstance(content_length, int)
+            or isinstance(content_length, bool)
+            or content_length < 0
+        ):
+            return {"error": "candidates_json must be a list of valid hygiene candidates"}
+        if any(
+            key in candidate_data
+            and (not isinstance(candidate_data[key], list) or not all(isinstance(item, str) for item in candidate_data[key]))
+            for key in ("noise_reasons", "secret_flags")
+        ):
+            return {"error": "candidates_json must be a list of valid hygiene candidates"}
+        if any(
+            key in candidate_data and not isinstance(candidate_data[key], str)
+            for key in ("content_preview", "source", "timestamp", "suggested_action")
+        ):
+            return {"error": "candidates_json must be a list of valid hygiene candidates"}
+        if candidate_data.get("suggested_action", "keep") not in {"delete", "archive", "keep", "flag"}:
+            return {"error": "candidates_json must be a list of valid hygiene candidates"}
+        candidates.append(
+            NoiseCandidate(
+                memory_id=candidate_data["memory_id"],
+                table_name=candidate_data["table_name"],
+                content_preview=candidate_data.get("content_preview", ""),
+                noise_score=candidate_data.get("noise_score", 0.0),
+                noise_reasons=candidate_data.get("noise_reasons", []),
+                secret_flags=candidate_data.get("secret_flags", []),
+                importance=candidate_data.get("importance", 0.5),
+                source=candidate_data.get("source", ""),
+                timestamp=candidate_data.get("timestamp", ""),
+                suggested_action=candidate_data.get("suggested_action", "keep"),
+                content_length=candidate_data.get("content_length", 0),
+            )
         )
-        for c in raw_candidates
-    ]
+
+    bank = _resolve_bank(arguments)
+    mem = _create_instance(bank=bank)
+    db_path = mem.beam.db_path if hasattr(mem.beam, "db_path") else mem.db_path
 
     action = arguments.get("action", "keep")
     confirm = arguments.get("confirm", False)
