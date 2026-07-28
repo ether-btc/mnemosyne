@@ -67,7 +67,13 @@ _OPENAI_API_KEY = os.environ.get("MNEMOSYNE_EMBEDDING_API_KEY", os.environ.get("
 _OPENAI_BASE_URL = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", "https://openrouter.ai/api/v1")
 
 # --- Model selection ---
-_DEFAULT_MODEL = os.environ.get("MNEMOSYNE_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+# Normalize a blank (empty or whitespace-only) env var to the default. Such
+# values are routine in Docker Compose (`- MNEMOSYNE_EMBEDDING_MODEL=${X}` with
+# X unset) and .env files; without this, "" would be treated as a model named
+# empty-string, which is unknown and would raise at import under the fail-loud
+# rule even though the user set nothing meaningful. Uses .strip() to mirror the
+# blank handling for MNEMOSYNE_EMBEDDING_DIM in _get_embedding_dim.
+_DEFAULT_MODEL = (os.environ.get("MNEMOSYNE_EMBEDDING_MODEL") or "").strip() or "BAAI/bge-small-en-v1.5"
 _embedding_model = None
 _API_CALL_COUNT = 0
 
@@ -181,16 +187,18 @@ def _get_embedding_dim(model_name: str) -> int:
         "jinaai/jina-embeddings-v2-base-code": 768,
     }
     # Explicit override wins. An explicit-but-invalid value is a configuration
-    # error -- raise rather than silently fall through to a guess.
+    # error -- raise rather than silently fall through to a guess. A set-but-
+    # empty value (routine in Docker Compose / .env / CI matrices) is normalized
+    # to unset so it does not raise for a known model or with embeddings off.
     env_dim = os.environ.get("MNEMOSYNE_EMBEDDING_DIM")
-    if env_dim is not None:
+    if env_dim is not None and env_dim.strip():
         try:
             value = int(env_dim)
-        except (ValueError, TypeError):
+        except ValueError:
             raise ValueError(
                 f"MNEMOSYNE_EMBEDDING_DIM={env_dim!r} is not a valid integer; "
                 f"set it to the embedding model's output dimension."
-            )
+            ) from None
         if value <= 0:
             raise ValueError(
                 f"MNEMOSYNE_EMBEDDING_DIM={value} must be a positive integer; "

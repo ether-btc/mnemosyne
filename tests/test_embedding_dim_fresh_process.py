@@ -59,7 +59,13 @@ def _run_fresh(code: str, tmp_path: Path, *, pythonpath: str | None = None, **en
 
 
 def _assert_fail_fast(result: subprocess.CompletedProcess, tmp_path: Path) -> None:
-    """The process crashed at import with the actionable error, before any DB write."""
+    """The process crashed at import with the actionable error, before any DB write.
+
+    The subprocess reaches init_beam, the schema/vec0 DDL entry point that
+    creates mnemosyne.db, so the no-database assertion is load-bearing: on main
+    (silent 384 fallback) import succeeds and init_beam writes the database;
+    only the import-time ValueError prevents it here.
+    """
     assert result.returncode != 0, result.stderr
     assert any(marker in result.stderr for marker in _ERROR_MARKERS), result.stderr
     assert not list((tmp_path / "data").rglob("*.db")), "a database was written before the error"
@@ -81,8 +87,9 @@ def test_unknown_model_fails_at_import_before_any_write(tmp_path, model, extra_e
     """A fresh process with an unknown embedding model (local, custom-endpoint,
     or API) and no explicit dimension must fail at import -- before any vec0 DDL
     or vector write -- with the actionable error, not silently assume 384."""
+    # Reach init_beam() so the no-database check is load-bearing (see _assert_fail_fast).
     result = _run_fresh(
-        "from mnemosyne.core import beam",
+        "from mnemosyne.core import beam; beam.init_beam()",
         tmp_path,
         MNEMOSYNE_EMBEDDING_MODEL=model,
         **extra_env,
@@ -118,3 +125,23 @@ def test_unknown_model_parity_across_surfaces(tmp_path, code, pythonpath, fail_f
     assert any(marker in result.stderr for marker in _ERROR_MARKERS), result.stderr
     if fail_fast:
         assert result.returncode != 0, result.stderr
+    else:
+        # mnemosyne_hermes graceful-degrades by design: assert it exits 0 so a
+        # regression that crashes the provider outright is still caught.
+        assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("blank", ["", "  "], ids=["empty", "whitespace"])
+def test_blank_embedding_model_env_falls_back_to_default(tmp_path, blank):
+    """A blank (empty or whitespace-only) MNEMOSYNE_EMBEDDING_MODEL (routine in
+    Docker Compose `- VAR=${X}` with X unset, and .env files) normalizes to the
+    default model (bge-small-en-v1.5, 384-dim), not a model named empty/whitespace
+    that would be unknown and raise at import under the fail-loud rule. Mirrors
+    the .strip() blank handling used for MNEMOSYNE_EMBEDDING_DIM."""
+    result = _run_fresh(
+        "from mnemosyne.core import beam; print(beam.EMBEDDING_DIM)",
+        tmp_path,
+        MNEMOSYNE_EMBEDDING_MODEL=blank,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "384", result.stderr

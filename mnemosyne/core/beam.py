@@ -260,11 +260,10 @@ def _default_db_path() -> Path:
     """Return the current default DB path, honoring runtime env changes."""
     return _default_data_dir() / "mnemosyne.db"
 
-# Config — the embedding dimension has ONE authoritative resolver:
-# mnemosyne.core.embeddings._get_embedding_dim (honors MNEMOSYNE_EMBEDDING_DIM,
-# the known-model table, and raises on an unknown model with no explicit
-# dimension instead of silently assuming 384). Beam must not re-derive it;
-# delegating keeps a single source of truth so the two cannot drift apart.
+# Re-export the constant resolved at embeddings module load. The unknown-model
+# ValueError already fires there (binary_vectors imports EMBEDDING_DIM from
+# embeddings, at the import above), not at this line; this just re-exposes the
+# value so Beam cannot drift from embeddings.
 EMBEDDING_DIM = _embeddings.EMBEDDING_DIM
 WORKING_MEMORY_MAX_ITEMS = int(os.environ.get("MNEMOSYNE_WM_MAX_ITEMS", "10000"))
 WORKING_MEMORY_TTL_HOURS = int(os.environ.get("MNEMOSYNE_WM_TTL_HOURS", "168"))

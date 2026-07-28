@@ -37,6 +37,18 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 - **Enhanced Recall served invalidated rows until TTL expiry (#550, #554).** `BeamMemory.invalidate()` now clears the query cache after a successful update, including the persisted `query_cache.db` when the instance has no in-memory cache of its own. Missing or unauthorized IDs leave the cache untouched. Remaining gaps are tracked in #552 (live peer coherence) and #553 (`forget_working`).
 - **Catastrophic regex backtracking in version-string extraction (#544).** The pattern used by `extract_and_store_facts` could be driven into exponential backtracking by Title-Case input, hanging every `remember()` and import on attacker- or user-supplied content. The separator is now `\s+`, which makes each whitespace-delimited word consumable exactly one way. Behavioral equivalence was verified across a 200,000-string fuzz with zero differences.
 
+## [3.16.0] - 2026-07-28
+
+### Changed
+
+- **Unknown embedding models now fail loud at startup instead of silently assuming 384 dimensions (#518, #521).** `_get_embedding_dim` resolves an explicit `MNEMOSYNE_EMBEDDING_DIM` first (must be a positive integer), then the built-in model table, and raises `ValueError` for an unknown model with no explicit dimension rather than falling back to 384 (bge-small's dimension). A vec0 table is dimensioned at creation, so a silent 384 guess baked the wrong dimension into a fresh database and corrupted vector search for anyone using a model absent from the table (e.g. `mxbai-embed-large` via a custom endpoint). Dimension resolution is centralized in `embeddings._get_embedding_dim`; Beam delegates to it, removing a duplicate resolver that could drift. Embeddings-disabled invocations keep the 384 fallback (the dimension is unused there).
+
+  **Breaking:** pointing `MNEMOSYNE_EMBEDDING_API_URL` at a custom endpoint with a model not in the built-in table now requires `MNEMOSYNE_EMBEDDING_DIM=<N>`, otherwise the process exits at import with an actionable error. Blank/empty `MNEMOSYNE_EMBEDDING_DIM` and `MNEMOSYNE_EMBEDDING_MODEL` (common in Docker Compose and `.env` files) are normalized to unset/default rather than treated as explicit invalid values.
+
+### Fixed
+
+- `raise ValueError(...)` inside the dimension parser no longer chains a noisy "During handling of the above exception" preamble (Ruff B904); the unreachable `TypeError` branch was removed.
+
 ## [3.15.0] - 2026-07-20
 
 > Never published to PyPI. No `v3.15.0` tag was cut, so this section

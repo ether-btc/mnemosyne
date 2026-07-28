@@ -383,7 +383,7 @@ When used with Hermes Agent, Mnemosyne exposes provider tools for the memory lif
 
 | Profile | When to use | RAM | Key tradeoff |
 |---------|-------------|-----|-------------|
-| `mnemosyne-memory` (core) | Low-resource (Raspberry Pi, 1 GB VPS), or when using a remote embedding API | ~50 MB | No local embeddings. Point `MNEMOSYNE_EMBEDDING_API_URL` to an external endpoint. |
+| `mnemosyne-memory` (core) | Low-resource (Raspberry Pi, 1 GB VPS), or when using a remote embedding API | ~50 MB | No local embeddings. Point `MNEMOSYNE_EMBEDDING_API_URL` to an external endpoint, and set `MNEMOSYNE_EMBEDDING_DIM` for models not in the built-in table (else startup fails loud). |
 | `mnemosyne-memory[embeddings]` | Mid-range systems with local embedding support | ~800 MB | Adds `fastembed` for local vector generation. Best for single-user desktop agents. |
 | `mnemosyne-memory[all]` | Full-featured -- local embeddings + local LLM consolidation | ~1.5 GB | Adds `sentence-transformers` + local LLM deps (`ctransformers`). Maximum capability. |
 | `mnemosyne-hermes` | Hermes Agent users -- always pair with one of the above | Same as base | Wraps core library with plugin manifest + entry points. Run `hermes config set memory.provider mnemosyne` after install. |

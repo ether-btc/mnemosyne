@@ -90,6 +90,21 @@ def test_get_embedding_dim_unknown_model_disabled_falls_back(monkeypatch):
     assert embeddings._get_embedding_dim("some/unknown-model") == 384
 
 
+def test_get_embedding_dim_blank_env_treated_as_unset(monkeypatch):
+    """A set-but-empty MNEMOSYNE_EMBEDDING_DIM (routine in Docker Compose
+    `- VAR=${X}` with X unset, .env files, CI matrices) is normalized to unset,
+    not treated as an explicit value that raises: a known model still resolves
+    via the table, and an unknown model still fails loud (blank == unset)."""
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_DIM", "")
+    for k in ("MNEMOSYNE_NO_EMBEDDINGS", "MNEMOSYNE_SKIP_EMBEDDINGS", "MNEMOSYNE_EMBEDDINGS_OFF"):
+        monkeypatch.delenv(k, raising=False)
+    # Known model: blank override falls through to the table (no raise).
+    assert embeddings._get_embedding_dim("BAAI/bge-small-en-v1.5") == 384
+    # Unknown model: blank override == unset, so still fails loud.
+    with pytest.raises(ValueError):
+        embeddings._get_embedding_dim("some/unknown-model")
+
+
 def test_get_embedding_dim_invalid_explicit_raises(monkeypatch):
     """An explicit but non-integer MNEMOSYNE_EMBEDDING_DIM is a config error."""
     monkeypatch.setenv("MNEMOSYNE_EMBEDDING_DIM", "not-a-number")
