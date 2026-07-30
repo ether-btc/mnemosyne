@@ -351,6 +351,7 @@ When client-side encryption is enabled, the remote sync server sees **only metad
 | `MNEMOSYNE_EMBEDDING_API_URL` | `${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}` | Preferred name for custom embedding API endpoint (OpenAI-compatible). Falls back to `OPENROUTER_BASE_URL`. |
 | `MNEMOSYNE_EMBEDDING_API_KEY` | `${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}` | Preferred name for embedding API key. Falls back to `OPENROUTER_API_KEY`, then `OPENAI_API_KEY`. |
 | `MNEMOSYNE_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model. Low-resource multilingual: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`; larger options: `intfloat/multilingual-e5-base`, `BAAI/bge-m3`. |
+| `MNEMOSYNE_EMBEDDING_DIM` | *(unset)* | Embedding dimension override for models not in the built-in table. Must be a positive integer when set; blank/whitespace-only is treated as unset. |
 
 Full reference: [docs/configuration.md](docs/configuration.md)
 
