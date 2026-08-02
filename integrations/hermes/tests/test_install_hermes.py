@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
-
 from mnemosyne_hermes import install as install_mod
 from mnemosyne_hermes.install import install_plugin
 
@@ -16,7 +16,7 @@ def _skip_on_windows() -> None:
         pytest.skip("POSIX symlink test")
 
 
-def _source() -> "object":
+def _source() -> Path:
     return install_mod._resolve_package_dir()
 
 
@@ -121,6 +121,102 @@ def test_wrapper_profile_links_point_to_base_wrapper_and_uninstall_leaves_foreig
     assert not wrapper_link.is_symlink() and not wrapper_link.exists()
     assert foreign_link.is_symlink()
     assert foreign_link.resolve() == foreign.resolve()
+
+
+def test_force_symlink_install_refuses_to_replace_wrapper_without_migration_flag(tmp_path):
+    _skip_on_windows()
+    profile = _make_profile(tmp_path, "alice", "mnemosyne")
+    target = install_plugin(hermes_home_path=tmp_path, mode="wrapper", python=sys.executable)
+    profile_link = profile / "plugins" / "mnemosyne"
+    original_init = (target / "__init__.py").read_bytes()
+
+    with pytest.raises(RuntimeError, match="migrate-wrapper-to-symlink"):
+        install_plugin(hermes_home_path=tmp_path, force=True)
+
+    assert target.is_dir() and not target.is_symlink()
+    assert (target / "__init__.py").read_bytes() == original_init
+    assert profile_link.is_symlink()
+    assert profile_link.resolve() == target.resolve()
+
+
+def test_explicit_force_migration_replaces_wrapper_with_symlink_and_warns(tmp_path, capsys):
+    _skip_on_windows()
+    profile = _make_profile(tmp_path, "alice", "mnemosyne")
+    target = install_plugin(hermes_home_path=tmp_path, mode="wrapper", python=sys.executable)
+
+    migrated = install_plugin(
+        hermes_home_path=tmp_path,
+        force=True,
+        migrate_wrapper_to_symlink=True,
+    )
+
+    assert migrated == target
+    assert target.is_symlink()
+    assert target.resolve() == Path(_source()).resolve()
+    assert (profile / "plugins" / "mnemosyne").resolve() == Path(_source()).resolve()
+    assert "Migrating existing Mnemosyne wrapper to a symlink" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("failure", ("missing_python", "unavailable_package"))
+def test_forced_wrapper_refresh_preflights_before_preserving_existing_wrapper_links(
+    tmp_path, monkeypatch, failure
+):
+    _skip_on_windows()
+    selected = _make_profile(tmp_path, "alice", "mnemosyne")
+    unselected = _make_profile(tmp_path, "bob", "honcho")
+    foreign = tmp_path / "foreign-provider"
+    foreign.mkdir()
+    foreign_link = unselected / "plugins" / "mnemosyne"
+    foreign_link.parent.mkdir(parents=True)
+    os.symlink(str(foreign), str(foreign_link))
+    target = install_plugin(hermes_home_path=tmp_path, mode="wrapper", python=sys.executable)
+    selected_link = selected / "plugins" / "mnemosyne"
+    original_init = (target / "__init__.py").read_bytes()
+
+    if failure == "missing_python":
+        with pytest.raises(FileNotFoundError, match="Python interpreter not found"):
+            install_plugin(
+                hermes_home_path=tmp_path,
+                force=True,
+                mode="wrapper",
+                python=tmp_path / "missing-python",
+            )
+    else:
+        empty_site = tmp_path / "empty-site-packages"
+        empty_site.mkdir()
+        monkeypatch.setattr(install_mod, "_site_packages_for_python", lambda _python: empty_site)
+        with pytest.raises(RuntimeError, match="package missing from selected site-packages"):
+            install_plugin(
+                hermes_home_path=tmp_path,
+                force=True,
+                mode="wrapper",
+                python=sys.executable,
+            )
+
+    assert target.is_dir() and not target.is_symlink()
+    assert (target / "__init__.py").read_bytes() == original_init
+    assert selected_link.is_symlink() and selected_link.resolve() == target.resolve()
+    assert foreign_link.is_symlink() and foreign_link.resolve() == foreign.resolve()
+
+
+def test_force_wrapper_refresh_replaces_wrapper_and_keeps_selected_profile_link(tmp_path):
+    _skip_on_windows()
+    profile = _make_profile(tmp_path, "alice", "mnemosyne")
+    target = install_plugin(hermes_home_path=tmp_path, mode="wrapper", python=sys.executable)
+    old_inode = target.stat().st_ino
+
+    refreshed = install_plugin(
+        hermes_home_path=tmp_path,
+        force=True,
+        mode="wrapper",
+        python=sys.executable,
+    )
+
+    assert refreshed == target
+    assert target.is_dir() and not target.is_symlink()
+    assert target.stat().st_ino != old_inode
+    assert install_mod.plugin_state(hermes_home_path=tmp_path).mode == "wrapper"
+    assert (profile / "plugins" / "mnemosyne").resolve() == target.resolve()
 
 
 def test_link_profile_returns_none_on_symlink_error(tmp_path, monkeypatch):

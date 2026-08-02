@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from mnemosyne_hermes import install
 
 
@@ -359,3 +358,38 @@ def test_install_plugin_rejects_unknown_mode(tmp_path):
         assert "mode must be" in str(exc)
     else:
         raise AssertionError("install_plugin should reject unknown modes")
+
+
+def test_cli_requires_explicit_flag_to_migrate_wrapper_to_symlink(tmp_path, monkeypatch, capsys):
+    target = install.install_plugin(
+        hermes_home_path=tmp_path,
+        mode="wrapper",
+        python=sys.executable,
+    )
+    original_init = (target / "__init__.py").read_bytes()
+    monkeypatch.setattr(install, "check_mnemosyne_core", lambda: True)
+    monkeypatch.setattr(install, "_find_hermes_python", lambda: None)
+
+    rejected = install.main(
+        ["--hermes-home", str(tmp_path), "install", "--force", "--no-bootstrap"]
+    )
+
+    assert rejected == 1
+    assert target.is_dir() and not target.is_symlink()
+    assert (target / "__init__.py").read_bytes() == original_init
+    assert "migrate-wrapper-to-symlink" in capsys.readouterr().err
+
+    migrated = install.main(
+        [
+            "--hermes-home",
+            str(tmp_path),
+            "install",
+            "--force",
+            "--no-bootstrap",
+            "--migrate-wrapper-to-symlink",
+        ]
+    )
+
+    assert migrated == 0
+    assert target.is_symlink()
+    assert "Migrating existing Mnemosyne wrapper to a symlink" in capsys.readouterr().out
