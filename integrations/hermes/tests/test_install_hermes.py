@@ -217,6 +217,48 @@ def test_force_wrapper_refresh_replaces_wrapper_and_keeps_selected_profile_link(
     assert target.stat().st_ino != old_inode
     assert install_mod.plugin_state(hermes_home_path=tmp_path).mode == "wrapper"
     assert (profile / "plugins" / "mnemosyne").resolve() == target.resolve()
+    assert not list(target.parent.glob(".mnemosyne.previous-*"))
+
+
+def test_force_wrapper_refresh_replaces_existing_symlink_and_keeps_profile_link(tmp_path):
+    _skip_on_windows()
+    profile = _make_profile(tmp_path, "alice", "mnemosyne")
+    target = install_plugin(hermes_home_path=tmp_path)
+    assert target.is_symlink()
+
+    refreshed = install_plugin(
+        hermes_home_path=tmp_path,
+        force=True,
+        mode="wrapper",
+        python=sys.executable,
+    )
+
+    assert refreshed == target
+    assert target.is_dir() and not target.is_symlink()
+    assert (profile / "plugins" / "mnemosyne").resolve() == target.resolve()
+
+
+def test_wrapper_refresh_ignores_post_swap_backup_cleanup_error(tmp_path, monkeypatch):
+    _skip_on_windows()
+    target = install_plugin(hermes_home_path=tmp_path, mode="wrapper", python=sys.executable)
+    original_rmtree = install_mod.shutil.rmtree
+
+    def fail_backup_cleanup(path, *args, **kwargs):
+        if Path(path).parent.name.startswith(".mnemosyne.previous-"):
+            raise OSError("backup cleanup failed")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(install_mod.shutil, "rmtree", fail_backup_cleanup)
+
+    refreshed = install_plugin(
+        hermes_home_path=tmp_path,
+        force=True,
+        mode="wrapper",
+        python=sys.executable,
+    )
+
+    assert refreshed == target
+    assert target.is_dir() and not target.is_symlink()
 
 
 def test_failed_wrapper_swap_restores_wrapper_and_profile_link(tmp_path, monkeypatch):

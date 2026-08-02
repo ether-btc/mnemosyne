@@ -331,38 +331,21 @@ def _check_wrapper_import(
     if not os.access(runner, os.X_OK):
         return False, f"wrapper Python is not executable: {runner}", True
     package_init = site_packages / "mnemosyne_hermes" / "__init__.py"
-    origin_check = ""
-    if package_init.is_file():
-        origin_check = (
-            f"expected = Path({str(package_init)!r}).resolve(); "
-            "actual = Path(mnemosyne_hermes.__file__).resolve(); "
-            "assert actual == expected, f'package origin mismatch: {actual} != {expected}'; "
-        )
+    if not package_init.is_file():
+        return False, f"mnemosyne_hermes package missing from selected site-packages: {site_packages}", False
     code = (
-        "import importlib.metadata\n"
         "import sys\n"
         "from pathlib import Path\n"
         f"sys.path.insert(0, {str(site_packages)!r})\n"
-        f"expected_site = Path({str(site_packages)!r}).resolve()\n"
-        "try:\n"
-        "    dist = importlib.metadata.distribution('mnemosyne-hermes')\n"
-        "except importlib.metadata.PackageNotFoundError:\n"
-        "    sys.exit(\n"
-        "        f'mnemosyne_hermes package missing from selected site-packages: {expected_site}'\n"
-        "    )\n"
-        "dist_root = Path(dist.locate_file('')).resolve()\n"
-        "runtime_paths = {Path(path).resolve() for path in sys.path if path}\n"
-        "if dist_root not in runtime_paths:\n"
-        "    sys.exit(\n"
-        "        f'mnemosyne_hermes distribution is not on selected Python sys.path: {dist_root}'\n"
-        "    )\n"
+        f"expected = Path({str(package_init)!r}).resolve()\n"
         "import mnemosyne_hermes\n"
-        + origin_check
+        "actual = Path(mnemosyne_hermes.__file__).resolve()\n"
+        "assert actual == expected, f'package origin mismatch: {actual} != {expected}'\n"
         + "print(getattr(mnemosyne_hermes, '__version__', 'unknown'))\n"
     )
     try:
         result = subprocess.run(
-            [str(runner), "-c", code],
+            [str(runner), "-S", "-c", code],
             capture_output=True,
             text=True,
             timeout=10,
@@ -887,14 +870,20 @@ def _replace_plugin_target_with_staged(target: Path, staged: Path) -> None:
         raise
     else:
         if previous is not None:
-            if previous.is_symlink():
-                previous.unlink()
-            elif previous.is_dir():
-                shutil.rmtree(previous)
-            else:
-                previous.unlink()
+            try:
+                if previous.is_symlink():
+                    previous.unlink()
+                elif previous.is_dir():
+                    shutil.rmtree(previous)
+                else:
+                    previous.unlink()
+            except OSError:
+                pass
         if previous_parent is not None:
-            previous_parent.rmdir()
+            try:
+                previous_parent.rmdir()
+            except OSError:
+                pass
 
 
 def _write_wrapper_plugin(target: Path, *, python: Path, site_packages: Path) -> None:
@@ -1384,6 +1373,13 @@ def main(argv: list[str] | None = None) -> int:
             hermes_python = _find_hermes_python()
             target = plugin_target_dir(args.hermes_home)
             if getattr(args, "dry_run", False):
+                invalid_wrapper_migration_args = (
+                    getattr(args, "migrate_wrapper_to_symlink", False)
+                    and (
+                        getattr(args, "mode", "symlink") != "symlink"
+                        or not getattr(args, "force", False)
+                    )
+                )
                 refuses_wrapper_migration = (
                     getattr(args, "mode", "symlink") == "symlink"
                     and getattr(args, "force", False)
@@ -1411,6 +1407,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  Will force: {bool(getattr(args, 'force', False))}")
                 if getattr(args, "migrate_wrapper_to_symlink", False):
                     print("  Will allow wrapper-to-symlink migration: yes")
+                if invalid_wrapper_migration_args:
+                    print(
+                        "  Will refuse --migrate-wrapper-to-symlink unless "
+                        "--mode symlink and --force are both set."
+                    )
                 if refuses_wrapper_migration:
                     print(
                         "  Will refuse to replace the existing wrapper without "
@@ -1418,7 +1419,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 if hermes_python:
                     print(f"  Will bootstrap: {not getattr(args, 'no_bootstrap', False)}")
-                return 1 if refuses_wrapper_migration else 0
+                return 1 if invalid_wrapper_migration_args or refuses_wrapper_migration else 0
 
             return run_install(
                 force=getattr(args, "force", False),
