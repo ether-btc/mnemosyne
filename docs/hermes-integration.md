@@ -50,6 +50,7 @@ pip install -e "integrations/hermes[dev]"
 > "$VENV/bin/python" -m pip install --upgrade mnemosyne-hermes
 >
 > export HERMES_HOME=/opt/data
+> export MNEMOSYNE_DATA_DIR=/opt/data
 > "$VENV/bin/mnemosyne-hermes" install --mode wrapper --python "$VENV/bin/python"
 > "$VENV/bin/mnemosyne-hermes" status
 > hermes config set memory.provider mnemosyne
@@ -247,10 +248,12 @@ VENV=/path/to/venv             # The same side venv passed to the wrapper instal
 hermes memory off  # Disable the external provider; built-in memory remains active
 hermes gateway restart  # Run from a shell outside the gateway process
 "$VENV/bin/mnemosyne-hermes" uninstall
+# For every profile-local wrapper, repeat the uninstall first, with that profile's Hermes home.
+HERMES_HOME=/opt/data/profiles/work "$VENV/bin/mnemosyne-hermes" uninstall
 "$VENV/bin/python" -m pip uninstall mnemosyne-hermes
 ```
 
-`mnemosyne-hermes uninstall` removes the plugin registration at `$HERMES_HOME/plugins/mnemosyne`. For every profile-local wrapper, repeat the uninstall command with `HERMES_HOME` set to that profile before uninstalling the side-venv package.
+`mnemosyne-hermes uninstall` removes the plugin registration at `$HERMES_HOME/plugins/mnemosyne`. Remove every profile-local wrapper before uninstalling the side-venv package.
 
 ### Activated local environment
 
