@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import venv
 from pathlib import Path
@@ -185,7 +186,7 @@ def test_forced_wrapper_refresh_preflights_before_preserving_existing_wrapper_li
     else:
         environment = tmp_path / "unavailable-environment"
         venv.EnvBuilder(with_pip=False).create(environment)
-        with pytest.raises(RuntimeError, match="package missing from selected site-packages"):
+        with pytest.raises(RuntimeError, match="Selected Python environment cannot import"):
             install_plugin(
                 hermes_home_path=tmp_path,
                 force=True,
@@ -261,6 +262,36 @@ def test_wrapper_refresh_ignores_post_swap_backup_cleanup_error(tmp_path, monkey
     assert target.is_dir() and not target.is_symlink()
 
 
+def test_failed_wrapper_rollback_reports_retained_backup_path(tmp_path, monkeypatch, capsys):
+    _skip_on_windows()
+    target = install_plugin(hermes_home_path=tmp_path, mode="wrapper", python=sys.executable)
+    original_replace = Path.replace
+
+    def fail_swap_and_rollback(self, destination):
+        if self.parent.name.startswith(".mnemosyne.staging-"):
+            raise OSError("staged swap failed")
+        if self.parent.name.startswith(".mnemosyne.previous-"):
+            raise OSError("rollback failed")
+        return original_replace(self, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_swap_and_rollback)
+
+    with pytest.raises(OSError, match="staged swap failed"):
+        install_plugin(
+            hermes_home_path=tmp_path,
+            force=True,
+            mode="wrapper",
+            python=sys.executable,
+        )
+
+    error = capsys.readouterr().err
+    assert "Wrapper rollback failed; previous plugin retained at:" in error
+    backup = Path(error.rsplit(": ", 1)[1].strip())
+    assert backup.name == target.name
+    assert backup.parent.name.startswith(".mnemosyne.previous-")
+    assert backup.is_dir()
+
+
 def test_failed_wrapper_swap_restores_wrapper_and_profile_link(tmp_path, monkeypatch):
     _skip_on_windows()
     profile = _make_profile(tmp_path, "alice", "mnemosyne")
@@ -288,6 +319,53 @@ def test_failed_wrapper_swap_restores_wrapper_and_profile_link(tmp_path, monkeyp
     assert (target / "__init__.py").read_bytes() == original_init
     assert profile_link.is_symlink()
     assert profile_link.resolve() == target.resolve()
+
+
+def test_wrapper_preflight_and_bootstrap_support_real_pep660_editable_install(tmp_path):
+    _skip_on_windows()
+    environment = tmp_path / "editable-environment"
+    venv.EnvBuilder(with_pip=True).create(environment)
+    python = environment / "bin" / "python"
+    project = _source().parent.parent
+    install_result = subprocess.run(
+        [str(python), "-m", "pip", "install", "--no-deps", "-e", str(project)],
+        capture_output=True,
+        text=True,
+    )
+    assert install_result.returncode == 0, install_result.stderr
+
+    site_packages = install_mod._site_packages_for_python(python)
+    assert not (site_packages / "mnemosyne_hermes").exists()
+    assert install_mod._check_wrapper_import(site_packages, python) == (True, None, False)
+
+    wrapper = tmp_path / "hermes-home" / "plugins" / "mnemosyne"
+    install_mod._write_wrapper_plugin(wrapper, python=python, site_packages=site_packages)
+    expected_source = _source().resolve()
+    code = f"""
+import importlib.util
+import sys
+from pathlib import Path
+
+wrapper = Path({str(wrapper)!r})
+spec = importlib.util.spec_from_file_location(
+    'standalone_mnemosyne_bootstrap', wrapper / '_mnemosyne_bootstrap.py'
+)
+bootstrap = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bootstrap)
+bootstrap.activate()
+import mnemosyne_hermes
+assert Path(mnemosyne_hermes.__file__).resolve().parent == Path({str(expected_source)!r})
+assert sys.path[0] == {str(site_packages.resolve())!r}
+"""
+    result = subprocess.run(
+        [str(python), "-S", "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(

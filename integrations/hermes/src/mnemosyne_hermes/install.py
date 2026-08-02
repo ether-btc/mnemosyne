@@ -323,24 +323,26 @@ def _check_wrapper_import(
     site_packages: Path, python: Path | None = None
 ) -> tuple[bool, str | None, bool]:
     """Return import success, error text, and whether the runtime is invalid."""
-    if not site_packages.exists():
+    if not site_packages.is_dir():
         return False, f"site-packages target missing: {site_packages}", False
     runner = python or Path(sys.executable)
     if not runner.is_file():
         return False, f"wrapper Python missing: {runner}", True
     if not os.access(runner, os.X_OK):
         return False, f"wrapper Python is not executable: {runner}", True
-    package_init = site_packages / "mnemosyne_hermes" / "__init__.py"
-    if not package_init.is_file():
-        return False, f"mnemosyne_hermes package missing from selected site-packages: {site_packages}", False
     code = (
+        "import site\n"
         "import sys\n"
         "from pathlib import Path\n"
-        f"sys.path.insert(0, {str(site_packages)!r})\n"
-        f"expected = Path({str(package_init)!r}).resolve()\n"
+        f"selected_site = Path({str(site_packages)!r}).resolve()\n"
+        "site.addsitedir(str(selected_site))\n"
         "import mnemosyne_hermes\n"
-        "actual = Path(mnemosyne_hermes.__file__).resolve()\n"
-        "assert actual == expected, f'package origin mismatch: {actual} != {expected}'\n"
+        "origin = getattr(mnemosyne_hermes, '__file__', None)\n"
+        "if not origin:\n"
+        "    raise SystemExit('mnemosyne_hermes package has no file origin')\n"
+        "actual = Path(origin).resolve()\n"
+        "if not actual.is_file():\n"
+        "    raise SystemExit(f'mnemosyne_hermes package origin is not a file: {actual}')\n"
         + "print(getattr(mnemosyne_hermes, '__version__', 'unknown'))\n"
     )
     try:
@@ -349,7 +351,16 @@ def _check_wrapper_import(
             capture_output=True,
             text=True,
             timeout=10,
-            env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
+            # -S and a selected site directory isolate imports from the runner's
+            # ambient site/user directories. Filtering PYTHONPATH prevents a
+            # caller-controlled package shadowing that contract; filtering
+            # PYTHONOPTIMIZE keeps assertion elision from changing probe behavior.
+            env={
+                key: value
+                for key, value in os.environ.items()
+                if key not in {"PYTHONPATH", "PYTHONOPTIMIZE"}
+            },
+            cwd=site_packages,
         )
     except OSError as exc:
         return False, f"could not run wrapper Python {runner}: {exc}", True
@@ -859,7 +870,10 @@ def _replace_plugin_target_with_staged(target: Path, staged: Path) -> None:
             except OSError:
                 # Preserve the failed swap as the primary exception. Keeping the
                 # backup is safer than masking it with a rollback cleanup error.
-                pass
+                print(
+                    f"⚠ Wrapper rollback failed; previous plugin retained at: {previous}",
+                    file=sys.stderr,
+                )
             else:
                 restored_previous = True
         if restored_previous and previous_parent is not None:
@@ -906,6 +920,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import site as site_module
 import sys
 
 
@@ -938,6 +953,12 @@ def activate() -> dict[str, object]:
     package_init = package_root / "__init__.py"
     expected_root = package_root.resolve() if package_init.is_file() else None
     site = str(site_path)
+    while site in sys.path:
+        sys.path.remove(site)
+    # Process .pth files from the selected runtime as well as direct packages.
+    # Setuptools' PEP 660 editable installs use a .pth-installed finder, so a
+    # bare sys.path insertion would make a valid selected environment fail.
+    site_module.addsitedir(site)
     while site in sys.path:
         sys.path.remove(site)
     sys.path.insert(0, site)
@@ -1020,9 +1041,9 @@ def install_plugin(
     """Install the Mnemosyne provider into Hermes' user plugin directory.
 
     ``mode='symlink'`` keeps the historical behavior. ``mode='wrapper'``
-    creates a real persistent plugin directory containing a tiny shim that adds
-    the selected interpreter's site-packages path to ``sys.path`` and imports
-    ``mnemosyne_hermes`` from there.
+    creates a real persistent plugin directory containing a tiny shim that
+    activates the selected interpreter's site-packages (including editable
+    install ``.pth`` files) and imports ``mnemosyne_hermes`` from there.
     """
     if mode not in {"symlink", "wrapper"}:
         raise ValueError("mode must be 'symlink' or 'wrapper'")
@@ -1248,8 +1269,8 @@ def _parser() -> argparse.ArgumentParser:
         "--migrate-wrapper-to-symlink",
         action="store_true",
         help=(
-            "With --force, intentionally replace an existing wrapper with the "
-            "default symlink install."
+            "With --mode symlink and --force, intentionally replace an existing "
+            "wrapper with the default symlink install."
         ),
     )
     subparsers.add_parser(

@@ -317,6 +317,9 @@ def test_check_wrapper_import_returns_error_when_interpreter_cannot_launch(tmp_p
 def test_check_wrapper_import_isolates_selected_site_from_pythonpath(monkeypatch):
     site_packages = install._site_packages_for_python(Path(sys.executable))
     observed = {}
+    monkeypatch.setenv("PYTHONPATH", "/untrusted/pythonpath")
+    monkeypatch.setenv("PYTHONOPTIMIZE", "2")
+    monkeypatch.setenv("PYTHONNOUSERSITE", "1")
 
     def successful_probe(command, **kwargs):
         observed["command"] = command
@@ -331,9 +334,11 @@ def test_check_wrapper_import_isolates_selected_site_from_pythonpath(monkeypatch
     assert error is None
     assert invalid_runtime is False
     assert "PYTHONPATH" not in observed["env"]
-    assert "PYTHONNOUSERSITE" not in observed["env"]
+    assert "PYTHONOPTIMIZE" not in observed["env"]
+    assert observed["env"]["PYTHONNOUSERSITE"] == "1"
     assert observed["command"][1] == "-S"
-    assert "actual == expected" in observed["command"][3]
+    assert "site.addsitedir" in observed["command"][3]
+    assert "assert " not in observed["command"][3]
 
 
 def test_check_wrapper_import_accepts_direct_package_without_dist_metadata(tmp_path):
@@ -466,3 +471,11 @@ def test_dry_run_rejects_invalid_wrapper_migration_flag_combination(tmp_path, mo
 
     assert rc == 1
     assert "unless --mode symlink and --force are both set" in capsys.readouterr().out
+
+
+def test_install_help_describes_required_wrapper_migration_flags(capsys):
+    with pytest.raises(SystemExit, match="0"):
+        install.main(["install", "--help"])
+
+    help_text = capsys.readouterr().out
+    assert "With --mode symlink and --force" in help_text
