@@ -310,6 +310,29 @@ def test_check_wrapper_import_returns_error_when_interpreter_cannot_launch(tmp_p
     assert invalid_runtime is True
 
 
+def test_check_wrapper_import_uses_selected_runtime_paths_without_disabling_user_site(
+    monkeypatch,
+):
+    site_packages = install._site_packages_for_python(Path(sys.executable))
+    observed = {}
+
+    def successful_probe(command, **kwargs):
+        observed["command"] = command
+        observed["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(command, 0, "ok\n", "")
+
+    monkeypatch.setattr(install.subprocess, "run", successful_probe)
+
+    ok, error, invalid_runtime = install._check_wrapper_import(site_packages, Path(sys.executable))
+
+    assert ok is True
+    assert error is None
+    assert invalid_runtime is False
+    assert "PYTHONPATH" not in observed["env"]
+    assert "PYTHONNOUSERSITE" not in observed["env"]
+    assert "if dist_root not in runtime_paths" in observed["command"][2]
+
+
 def test_plugin_state_classifies_timed_out_wrapper_import_as_stale(tmp_path, monkeypatch):
     target = tmp_path / "plugins" / "mnemosyne"
     site_packages = install._site_packages_for_python(Path(sys.executable))
@@ -361,6 +384,8 @@ def test_install_plugin_rejects_unknown_mode(tmp_path):
 
 
 def test_cli_requires_explicit_flag_to_migrate_wrapper_to_symlink(tmp_path, monkeypatch, capsys):
+    if sys.platform.startswith("win32"):
+        pytest.skip("POSIX symlink test")
     target = install.install_plugin(
         hermes_home_path=tmp_path,
         mode="wrapper",
@@ -393,3 +418,24 @@ def test_cli_requires_explicit_flag_to_migrate_wrapper_to_symlink(tmp_path, monk
     assert migrated == 0
     assert target.is_symlink()
     assert "Migrating existing Mnemosyne wrapper to a symlink" in capsys.readouterr().out
+
+
+def test_dry_run_reports_refused_wrapper_migration(tmp_path, monkeypatch, capsys):
+    if sys.platform.startswith("win32"):
+        pytest.skip("POSIX symlink test")
+    target = install.install_plugin(
+        hermes_home_path=tmp_path,
+        mode="wrapper",
+        python=sys.executable,
+    )
+    original_init = (target / "__init__.py").read_bytes()
+    monkeypatch.setattr(install, "_find_hermes_python", lambda: None)
+
+    rc = install.main(
+        ["--hermes-home", str(tmp_path), "install", "--force", "--dry-run", "--no-bootstrap"]
+    )
+
+    assert rc == 1
+    assert "Will refuse to replace the existing wrapper" in capsys.readouterr().out
+    assert target.is_dir() and not target.is_symlink()
+    assert (target / "__init__.py").read_bytes() == original_init

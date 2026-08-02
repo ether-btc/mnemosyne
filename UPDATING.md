@@ -306,7 +306,7 @@ pip install --upgrade mnemosyne-memory==3.11.0
 
 No manual migration. Sync role default changed to `["user"]` — if you
 want assistant-turn autosave, set `memory.mnemosyne.sync_roles:
-`["user", "assistant"]` in `config.yaml`.
+["user", "assistant"]` in `config.yaml`.
 
 ### Updating a Hermes wrapper install
 

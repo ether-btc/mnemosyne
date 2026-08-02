@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import venv
 from pathlib import Path
 
 import pytest
@@ -159,7 +160,7 @@ def test_explicit_force_migration_replaces_wrapper_with_symlink_and_warns(tmp_pa
 
 @pytest.mark.parametrize("failure", ("missing_python", "unavailable_package"))
 def test_forced_wrapper_refresh_preflights_before_preserving_existing_wrapper_links(
-    tmp_path, monkeypatch, failure
+    tmp_path, failure
 ):
     _skip_on_windows()
     selected = _make_profile(tmp_path, "alice", "mnemosyne")
@@ -182,15 +183,14 @@ def test_forced_wrapper_refresh_preflights_before_preserving_existing_wrapper_li
                 python=tmp_path / "missing-python",
             )
     else:
-        empty_site = tmp_path / "empty-site-packages"
-        empty_site.mkdir()
-        monkeypatch.setattr(install_mod, "_site_packages_for_python", lambda _python: empty_site)
+        environment = tmp_path / "unavailable-environment"
+        venv.EnvBuilder(with_pip=False).create(environment)
         with pytest.raises(RuntimeError, match="package missing from selected site-packages"):
             install_plugin(
                 hermes_home_path=tmp_path,
                 force=True,
                 mode="wrapper",
-                python=sys.executable,
+                python=environment / "bin" / "python",
             )
 
     assert target.is_dir() and not target.is_symlink()
@@ -217,6 +217,52 @@ def test_force_wrapper_refresh_replaces_wrapper_and_keeps_selected_profile_link(
     assert target.stat().st_ino != old_inode
     assert install_mod.plugin_state(hermes_home_path=tmp_path).mode == "wrapper"
     assert (profile / "plugins" / "mnemosyne").resolve() == target.resolve()
+
+
+def test_failed_wrapper_swap_restores_wrapper_and_profile_link(tmp_path, monkeypatch):
+    _skip_on_windows()
+    profile = _make_profile(tmp_path, "alice", "mnemosyne")
+    target = install_plugin(hermes_home_path=tmp_path, mode="wrapper", python=sys.executable)
+    profile_link = profile / "plugins" / "mnemosyne"
+    original_init = (target / "__init__.py").read_bytes()
+    original_replace = Path.replace
+
+    def fail_staged_swap(self, destination):
+        if self.parent.name.startswith(".mnemosyne.staging-"):
+            raise OSError("staged swap failed")
+        return original_replace(self, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_staged_swap)
+
+    with pytest.raises(OSError, match="staged swap failed"):
+        install_plugin(
+            hermes_home_path=tmp_path,
+            force=True,
+            mode="wrapper",
+            python=sys.executable,
+        )
+
+    assert target.is_dir() and not target.is_symlink()
+    assert (target / "__init__.py").read_bytes() == original_init
+    assert profile_link.is_symlink()
+    assert profile_link.resolve() == target.resolve()
+
+
+@pytest.mark.parametrize(
+    ("force", "mode"),
+    [
+        (False, "symlink"),
+        (True, "wrapper"),
+    ],
+)
+def test_migrate_wrapper_to_symlink_rejects_invalid_flag_combinations(tmp_path, force, mode):
+    with pytest.raises(ValueError, match="migrate_wrapper_to_symlink requires"):
+        install_plugin(
+            hermes_home_path=tmp_path,
+            force=force,
+            mode=mode,
+            migrate_wrapper_to_symlink=True,
+        )
 
 
 def test_link_profile_returns_none_on_symlink_error(tmp_path, monkeypatch):

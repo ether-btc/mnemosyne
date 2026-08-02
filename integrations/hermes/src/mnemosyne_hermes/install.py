@@ -346,13 +346,16 @@ def _check_wrapper_import(
         f"expected_site = Path({str(site_packages)!r}).resolve()\n"
         "try:\n"
         "    dist = importlib.metadata.distribution('mnemosyne-hermes')\n"
-        "except importlib.metadata.PackageNotFoundError as exc:\n"
-        "    raise RuntimeError(\n"
+        "except importlib.metadata.PackageNotFoundError:\n"
+        "    sys.exit(\n"
         "        f'mnemosyne_hermes package missing from selected site-packages: {expected_site}'\n"
-        "    ) from exc\n"
-        "assert Path(dist.locate_file('')).resolve() == expected_site, (\n"
-        "    f'mnemosyne_hermes package missing from selected site-packages: {expected_site}'\n"
-        ")\n"
+        "    )\n"
+        "dist_root = Path(dist.locate_file('')).resolve()\n"
+        "runtime_paths = {Path(path).resolve() for path in sys.path if path}\n"
+        "if dist_root not in runtime_paths:\n"
+        "    sys.exit(\n"
+        "        f'mnemosyne_hermes distribution is not on selected Python sys.path: {dist_root}'\n"
+        "    )\n"
         "import mnemosyne_hermes\n"
         + origin_check
         + "print(getattr(mnemosyne_hermes, '__version__', 'unknown'))\n"
@@ -363,7 +366,7 @@ def _check_wrapper_import(
             capture_output=True,
             text=True,
             timeout=10,
-            env={**os.environ, "PYTHONPATH": "", "PYTHONNOUSERSITE": "1"},
+            env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
         )
     except OSError as exc:
         return False, f"could not run wrapper Python {runner}: {exc}", True
@@ -866,10 +869,21 @@ def _replace_plugin_target_with_staged(target: Path, staged: Path) -> None:
     try:
         staged.replace(target)
     except Exception:
+        restored_previous = False
         if previous is not None and not target.exists() and not target.is_symlink():
-            previous.replace(target)
-        if previous_parent is not None:
-            previous_parent.rmdir()
+            try:
+                previous.replace(target)
+            except OSError:
+                # Preserve the failed swap as the primary exception. Keeping the
+                # backup is safer than masking it with a rollback cleanup error.
+                pass
+            else:
+                restored_previous = True
+        if restored_previous and previous_parent is not None:
+            try:
+                previous_parent.rmdir()
+            except OSError:
+                pass
         raise
     else:
         if previous is not None:
@@ -1370,6 +1384,12 @@ def main(argv: list[str] | None = None) -> int:
             hermes_python = _find_hermes_python()
             target = plugin_target_dir(args.hermes_home)
             if getattr(args, "dry_run", False):
+                refuses_wrapper_migration = (
+                    getattr(args, "mode", "symlink") == "symlink"
+                    and getattr(args, "force", False)
+                    and _is_wrapper_plugin_target(target)
+                    and not getattr(args, "migrate_wrapper_to_symlink", False)
+                )
                 skill = skill_state(hermes_home_path=args.hermes_home)
                 skill_plan = install_bundled_skill(
                     hermes_home_path=args.hermes_home,
@@ -1391,9 +1411,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  Will force: {bool(getattr(args, 'force', False))}")
                 if getattr(args, "migrate_wrapper_to_symlink", False):
                     print("  Will allow wrapper-to-symlink migration: yes")
+                if refuses_wrapper_migration:
+                    print(
+                        "  Will refuse to replace the existing wrapper without "
+                        "--migrate-wrapper-to-symlink."
+                    )
                 if hermes_python:
                     print(f"  Will bootstrap: {not getattr(args, 'no_bootstrap', False)}")
-                return 0
+                return 1 if refuses_wrapper_migration else 0
 
             return run_install(
                 force=getattr(args, "force", False),
