@@ -37,7 +37,7 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 - **Enhanced Recall served invalidated rows until TTL expiry (#550, #554).** `BeamMemory.invalidate()` now clears the query cache after a successful update, including the persisted `query_cache.db` when the instance has no in-memory cache of its own. Missing or unauthorized IDs leave the cache untouched. Remaining gaps are tracked in #552 (live peer coherence) and #553 (`forget_working`).
 - **Catastrophic regex backtracking in version-string extraction (#544).** The pattern used by `extract_and_store_facts` could be driven into exponential backtracking by Title-Case input, hanging every `remember()` and import on attacker- or user-supplied content. The separator is now `\s+`, which makes each whitespace-delimited word consumable exactly one way. Behavioral equivalence was verified across a 200,000-string fuzz with zero differences.
 
-## [3.16.0] - 2026-07-28
+## [3.16.0] - 2026-08-03
 
 ### Changed
 
