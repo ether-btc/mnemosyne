@@ -312,6 +312,16 @@ mnemosyne doctor --bank default --format both
 mnemosyne repair --report mnemosyne-doctor.json --select working_memory:<ID> --dry-run
 ```
 
+### Preflight a direct JSON file import
+
+Before importing a JSON file directly through the Hermes provider, run:
+
+```bash
+hermes mnemosyne import --input <backup.json> --dry-run
+```
+
+This dry run validates the file and reports the import counts using a disposable database clone. It writes neither the active database nor provider audit data. Run the same command without `--dry-run` to perform the side-effecting import.
+
 ## Data Location
 
 By default, data is stored under:
