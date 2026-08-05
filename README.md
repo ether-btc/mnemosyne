@@ -351,7 +351,7 @@ When client-side encryption is enabled, the remote sync server sees **only metad
 | `MNEMOSYNE_EMBEDDING_API_URL` | `${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}` | Preferred name for custom embedding API endpoint (OpenAI-compatible). Falls back to `OPENROUTER_BASE_URL`. |
 | `MNEMOSYNE_EMBEDDING_API_KEY` | `${OPENROUTER_API_KEY:-${OPENAI_API_KEY:-}}` | Preferred name for embedding API key. Falls back to `OPENROUTER_API_KEY`, then `OPENAI_API_KEY`. |
 | `MNEMOSYNE_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Embedding model. Low-resource multilingual: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`; larger options: `intfloat/multilingual-e5-base`, `BAAI/bge-m3`. |
-| `MNEMOSYNE_EMBEDDING_DIM` | *(unset)* | Embedding dimension override for models not in the built-in table. Must be a positive integer when set; blank/whitespace-only is treated as unset. |
+| `MNEMOSYNE_EMBEDDING_DIM` | *(unset)* | Optional embedding dimension override (positive integer); takes precedence over the built-in model table. Blank/whitespace-only is treated as unset. |
 
 Full reference: [docs/configuration.md](docs/configuration.md)
 
@@ -384,7 +384,7 @@ When used with Hermes Agent, Mnemosyne exposes provider tools for the memory lif
 
 | Profile | When to use | RAM | Key tradeoff |
 |---------|-------------|-----|-------------|
-| `mnemosyne-memory` (core) | Low-resource (Raspberry Pi, 1 GB VPS), or when using a remote embedding API | ~50 MB | No local embeddings. Point `MNEMOSYNE_EMBEDDING_API_URL` to an external endpoint, and set `MNEMOSYNE_EMBEDDING_DIM` for models not in the built-in table (else direct startup fails loud). |
+| `mnemosyne-memory` (core) | Low-resource (Raspberry Pi, 1 GB VPS), or when using a remote embedding API | ~50 MB | No local embeddings. Point `MNEMOSYNE_EMBEDDING_API_URL` to an external endpoint, and set `MNEMOSYNE_EMBEDDING_DIM` for models not in the built-in table (else direct startup fails loudly). |
 | `mnemosyne-memory[embeddings]` | Mid-range systems with local embedding support | ~800 MB | Adds `fastembed` for local vector generation. Best for single-user desktop agents. |
 | `mnemosyne-memory[all]` | Full-featured -- local embeddings + local LLM consolidation | ~1.5 GB | Adds `sentence-transformers` + local LLM deps (`ctransformers`). Maximum capability. |
 | `mnemosyne-hermes` | Hermes Agent users -- always pair with one of the above | Same as base | Wraps core library with plugin manifest + entry points; degrades instead of exiting on core init errors. Run `hermes config set memory.provider mnemosyne` after install. |
