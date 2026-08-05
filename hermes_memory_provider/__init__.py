@@ -66,7 +66,53 @@ def _stage_pending_write(payload: Dict[str, Any]) -> str:
     }
     (pending_dir / f"{pid}.json").write_text(json.dumps(record, indent=2))
     return pid
+
+
+def _guard_selected_site_packages_python_compatibility(selected_site_packages: Path) -> None:
+    """Reject a selected virtualenv that targets another Python minor version."""
+    selected_site_packages = selected_site_packages.resolve()
+    # Standard POSIX layouts put pyvenv.cfg three levels above site-packages
+    # (/venv/lib/pythonX/site-packages); Windows needs only two. Do not let
+    # this early bootstrap probe inspect arbitrary filesystem ancestors.
+    for candidate in (selected_site_packages, *selected_site_packages.parents[:3]):
+        config_path = candidate / "pyvenv.cfg"
+        if not config_path.exists():
+            continue
+        selected_version: tuple[int, int] | None = None
+        try:
+            config_text = config_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            config_text = ""
+        for line in config_text.splitlines():
+            name, separator, value = line.partition("=")
+            if separator and name.strip().lower() in {"version_info", "version"}:
+                match = re.search(r"(?<!\d)(\d+)\.(\d+)(?!\d)", value)
+                if match:
+                    selected_version = (int(match.group(1)), int(match.group(2)))
+                    break
+        runtime_version = sys.version_info[:2]
+        if selected_version is None or selected_version != runtime_version:
+            selected_text = (
+                f"{selected_version[0]}.{selected_version[1]}"
+                if selected_version is not None
+                else "unknown"
+            )
+            raise RuntimeError(
+                "Mnemosyne runtime Python compatibility error: "
+                f"runtime Python {runtime_version[0]}.{runtime_version[1]}; "
+                f"selected Mnemosyne environment Python {selected_text}. "
+                "Recreate the Mnemosyne environment using Hermes' Python, "
+                "then reinstall mnemosyne-hermes."
+            )
+        return
+
+
 _mnemosyne_root = Path(__file__).resolve().parent.parent
+# Legacy source-checkout providers use the repository root here. Only a
+# provider resolved directly from a virtualenv site-packages directory selects
+# an external runtime whose Python version must be checked.
+if _mnemosyne_root.name == "site-packages":
+    _guard_selected_site_packages_python_compatibility(_mnemosyne_root)
 if str(_mnemosyne_root) not in sys.path:
     sys.path.insert(0, str(_mnemosyne_root))
 
