@@ -5666,11 +5666,11 @@ class BeamMemory:
 
         Configurable hybrid scoring (Phase 4):
             vec_weight: Weight for vector (dense) similarity in episodic scoring.
-                None = use env var MNEMOSYNE_VEC_WEIGHT or default 0.5.
+                None = resolve config.yaml, then MNEMOSYNE_VEC_WEIGHT, then default 0.5.
             fts_weight: Weight for FTS5 text relevance in episodic scoring.
-                None = use env var MNEMOSYNE_FTS_WEIGHT or default 0.3.
+                None = resolve config.yaml, then MNEMOSYNE_FTS_WEIGHT, then default 0.3.
             importance_weight: Weight for importance score in all scoring.
-                None = use env var MNEMOSYNE_IMPORTANCE_WEIGHT or default 0.2.
+                None = resolve config.yaml, then MNEMOSYNE_IMPORTANCE_WEIGHT, then default 0.2.
 
             The three episodic weights are automatically normalized to sum to 1.0.
             Working memory uses a derived split: keyword gets (1 - importance_weight) * 0.6,
