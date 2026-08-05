@@ -235,6 +235,8 @@ def test_reindex_success_rebuilds_exact_source_vectors_and_recalls_target(tmp_pa
         vector = [-1.0] * E.EMBEDDING_DIM
         vector[position] = 1.0
         source_vectors[text] = vector
+    target_id, target_content = next(iter(episodic_sources.items()))
+    probe = "unrelated recall probe"
 
     for memory_id, content in working_sources.items():
         conn.execute(
@@ -256,7 +258,11 @@ def test_reindex_success_rebuilds_exact_source_vectors_and_recalls_target(tmp_pa
 
     monkeypatch.setattr(E, "available", lambda: True)
     monkeypatch.setattr(E, "embed", lambda contents: [source_vectors[text] for text in contents])
-    monkeypatch.setattr(E, "embed_query", lambda text: np.asarray(source_vectors[text], dtype=np.float32))
+    monkeypatch.setattr(
+        E,
+        "embed_query",
+        lambda text: np.asarray(source_vectors[target_content if text == probe else text], dtype=np.float32),
+    )
 
     result = reindex_vectors(conn, batch_size=1)
 
@@ -294,9 +300,8 @@ def test_reindex_success_rebuilds_exact_source_vectors_and_recalls_target(tmp_pa
         for memory_id, content in episodic_sources.items()
     }
 
-    target_id, target_content = next(iter(episodic_sources.items()))
-    recalled = beam.recall(target_content, top_k=5)
-    assert any(row["id"] == target_id for row in recalled)
+    recalled = beam.recall(probe, top_k=5)
+    assert recalled[0]["id"] == target_id
 
 
 def test_reindex_rebuilds_all_vector_stores_at_active_dim():
