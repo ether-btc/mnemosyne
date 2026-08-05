@@ -154,7 +154,16 @@ def test_invalidate_reports_not_found_when_no_row_matched(tmp_path):
         ))
         assert result["status"] == "memory_not_found"
         assert result["memory_id"] == "missing-memory-id"
-        assert audit_events[0][0] == "invalidate"
-        assert audit_events[0][1]["metadata"] == {"invalidated": False}
+        assert audit_events == [
+            (
+                "invalidate",
+                {
+                    "memory_id": "missing-memory-id",
+                    "bank": "private",
+                    "source_tool": "mnemosyne_invalidate",
+                    "metadata": {"invalidated": False},
+                },
+            ),
+        ]
     finally:
         _close(provider)
