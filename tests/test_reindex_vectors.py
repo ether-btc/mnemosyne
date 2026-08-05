@@ -8,16 +8,205 @@ working. Also checks that --dry-run writes nothing.
 """
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from mnemosyne.core.beam import BeamMemory, reindex_vectors, _effective_vec_type
 import mnemosyne.core.embeddings as E
 
 
+class _Array:
+    def __init__(self, vector):
+        self.vector = vector
+
+    def tolist(self):
+        return self.vector
+
+
+class _NumpyStub:
+    float32 = object()
+    asarray = staticmethod(_Array)
+    array = staticmethod(lambda vector, dtype=None: _Array(vector))
+
+
 def _ddl(conn, table):
     row = conn.execute("SELECT sql FROM sqlite_master WHERE name = ?", (table,)).fetchone()
     return row[0] if row and row[0] else ""
+
+
+def _reindex_fixture_beam(tmp_path, *, working=0, episodic=0):
+    beam = BeamMemory(session_id="reindex-failure", db_path=str(tmp_path / "m.db"))
+    for index in range(working):
+        beam.conn.execute(
+            "INSERT INTO working_memory (id, content, source, timestamp, session_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (f"wm-{index}", f"working source {index}", "test", "2026-01-01T00:00:00", "reindex-failure"),
+        )
+    for index in range(episodic):
+        beam.conn.execute(
+            "INSERT INTO episodic_memory (id, content, source, timestamp, session_id, importance) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (f"ep-{index}", f"episodic source {index}", "test", "2026-01-01T00:00:00", "reindex-failure", 0.5),
+        )
+    beam.conn.commit()
+    return beam
+
+
+@pytest.mark.parametrize(
+    "batch_response",
+    [None, [[0.1] * 384], [[0.1] * 384, [0.1] * 384, [0.1] * 384]],
+)
+def test_reindex_rejects_failed_or_partial_embedding_batches(tmp_path, monkeypatch, batch_response):
+    """A failed or short embedding batch must never yield a reindexed result."""
+    beam = _reindex_fixture_beam(tmp_path, working=2)
+    monkeypatch.setattr(E, "available", lambda: True)
+    monkeypatch.setattr(E, "embed", lambda _contents: batch_response)
+
+    with pytest.raises(RuntimeError, match="working_memory embedding batch"):
+        reindex_vectors(beam.conn)
+
+
+@pytest.mark.parametrize(
+    ("invalid_vector_factory", "reason"),
+    [
+        (lambda: ["not-a-number"] * E.EMBEDDING_DIM, "convertible numeric"),
+        (lambda: [[0.1]] * E.EMBEDDING_DIM, "one-dimensional"),
+        (lambda: [float("nan")] * E.EMBEDDING_DIM, "finite values"),
+        (lambda: [0.1] * (E.EMBEDDING_DIM - 1), "expected"),
+    ],
+)
+def test_reindex_rejects_invalid_individual_embedding_vectors(
+    tmp_path, monkeypatch, invalid_vector_factory, reason
+):
+    """Each vector must be numeric, 1-D, finite, and at the active dimension."""
+    beam = _reindex_fixture_beam(tmp_path, working=1)
+    invalid_vector = invalid_vector_factory()
+    monkeypatch.setattr(E, "available", lambda: True)
+    monkeypatch.setattr(E, "embed", lambda _contents: [invalid_vector])
+
+    with pytest.raises(
+        RuntimeError, match=rf"working_memory embedding vector 0.*{reason}"
+    ):
+        reindex_vectors(beam.conn)
+
+
+def test_reindex_rejects_numeric_string_embedding_vector(tmp_path, monkeypatch):
+    """Numeric-looking strings must not be persisted as JSON string vectors."""
+    beam = _reindex_fixture_beam(tmp_path, working=1)
+    monkeypatch.setattr(E, "available", lambda: True)
+    monkeypatch.setattr(E, "embed", lambda _contents: [["0.1"] * E.EMBEDDING_DIM])
+
+    with pytest.raises(RuntimeError, match="working_memory embedding vector 0.*convertible numeric"):
+        reindex_vectors(beam.conn)
+
+
+def test_reindex_requires_episodic_vector_backend_before_writes(tmp_path, monkeypatch):
+    """Episodic rows cannot be counted as reindexed without a writable backend."""
+    beam = _reindex_fixture_beam(tmp_path, episodic=1)
+    embed_calls = []
+    monkeypatch.setattr(E, "available", lambda: True)
+    monkeypatch.setattr(E, "embed", lambda contents: embed_calls.append(contents))
+    monkeypatch.setattr("mnemosyne.core.beam._vec_available", lambda _conn: False)
+    monkeypatch.setattr("mnemosyne.core.beam._mib", None)
+
+    with pytest.raises(RuntimeError, match="episodic_memory vector backend unavailable"):
+        reindex_vectors(beam.conn)
+
+    assert embed_calls == []
+
+
+def test_reindex_rejects_invalid_later_episodic_batch(tmp_path, monkeypatch):
+    """A later invalid episodic batch must fail before it is counted as written."""
+    beam = _reindex_fixture_beam(tmp_path, episodic=2)
+    responses = iter([
+        [[0.1] * E.EMBEDDING_DIM],
+        [[float("nan")] * E.EMBEDDING_DIM],
+    ])
+    calls = []
+    monkeypatch.setattr(E, "available", lambda: True)
+
+    def embed(contents):
+        calls.append(contents)
+        return next(responses)
+
+    monkeypatch.setattr(E, "embed", embed)
+    monkeypatch.setattr("mnemosyne.core.beam.np", _NumpyStub())
+    monkeypatch.setattr("mnemosyne.core.beam._vec_available", lambda _conn: False)
+    monkeypatch.setattr("mnemosyne.core.beam._mib", lambda _array: b"vector")
+
+    with pytest.raises(RuntimeError, match="episodic_memory embedding vector 0.*finite values"):
+        reindex_vectors(beam.conn, batch_size=1)
+
+    assert len(calls) == 2
+
+
+def test_reindex_does_not_mask_episodic_binary_vector_write_failure(tmp_path, monkeypatch):
+    """A binary-vector update failure after a destructive rebuild must fail loudly."""
+    beam = _reindex_fixture_beam(tmp_path, episodic=1)
+    monkeypatch.setattr(E, "available", lambda: True)
+    monkeypatch.setattr(E, "embed", lambda contents: [[0.1] * E.EMBEDDING_DIM for _ in contents])
+    monkeypatch.setattr("mnemosyne.core.beam.np", _NumpyStub())
+    monkeypatch.setattr("mnemosyne.core.beam._mib", lambda _array: b"vector")
+    beam.conn.execute(
+        "CREATE TRIGGER fail_binary_vector BEFORE UPDATE OF binary_vector ON episodic_memory "
+        "BEGIN SELECT RAISE(ABORT, 'binary vector write failed'); END"
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="binary vector write failed"):
+        reindex_vectors(beam.conn)
+
+
+def test_reindex_does_not_mask_working_vec_write_failure(tmp_path, monkeypatch):
+    """A strict vec_working write failure during reindex must fail loudly."""
+    beam = _reindex_fixture_beam(tmp_path, working=1)
+    monkeypatch.setattr(E, "available", lambda: True)
+    monkeypatch.setattr(E, "embed", lambda contents: [[0.1] * E.EMBEDDING_DIM for _ in contents])
+    monkeypatch.setattr("mnemosyne.core.beam.np", _NumpyStub())
+    monkeypatch.setattr("mnemosyne.core.beam._vec_available", lambda _conn: False)
+    monkeypatch.setattr("mnemosyne.core.beam._wm_vec_available", lambda _conn: True)
+
+    def fail_vec_working(_conn, table, _rowid, _embedding, **_kwargs):
+        assert table == "vec_working"
+        raise sqlite3.IntegrityError("vec_working write failed")
+
+    monkeypatch.setattr("mnemosyne.core.beam._vec_table_insert", fail_vec_working)
+
+    with pytest.raises(sqlite3.IntegrityError, match="vec_working write failed"):
+        reindex_vectors(beam.conn)
+
+
+def test_reindex_real_commits_deferred_working_batches_before_next_embedding(tmp_path, monkeypatch):
+    """Deferred BEAM writes must be committed before the next embedding request."""
+    beam = _reindex_fixture_beam(tmp_path, working=2)
+    observed_transactions = []
+    real_commits = []
+    original_real_commit = type(beam.conn)._real_commit
+
+    def record_real_commit(conn):
+        real_commits.append(conn.in_transaction)
+        return original_real_commit(conn)
+
+    def embed(contents):
+        observed_transactions.append(beam.conn.in_transaction)
+        return [[0.1] * E.EMBEDDING_DIM for _ in contents]
+
+    monkeypatch.setattr(type(beam.conn), "_real_commit", record_real_commit)
+    monkeypatch.setattr(E, "available", lambda: True)
+    monkeypatch.setattr(E, "embed", embed)
+    monkeypatch.setattr("mnemosyne.core.beam.np", _NumpyStub())
+    monkeypatch.setattr("mnemosyne.core.beam._vec_available", lambda _conn: False)
+    monkeypatch.setattr("mnemosyne.core.beam._wm_vec_available", lambda _conn: False)
+    beam.conn._defer_commit = True
+
+    result = reindex_vectors(beam.conn, batch_size=1)
+
+    assert result["working_memory_reindexed"] == 2
+    assert observed_transactions == [False, False]
+    assert real_commits == [True, True]
+    assert not beam.conn.in_transaction
 
 
 def test_reindex_rebuilds_all_vector_stores_at_active_dim():
