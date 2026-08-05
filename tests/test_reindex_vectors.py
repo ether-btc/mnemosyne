@@ -209,6 +209,101 @@ def test_reindex_real_commits_deferred_working_batches_before_next_embedding(tmp
     assert not beam.conn.in_transaction
 
 
+def test_reindex_success_rebuilds_exact_source_vectors_and_recalls_target(tmp_path, monkeypatch):
+    """A deterministic core rebuild maps every derived vector back to its source row."""
+    import json
+    import numpy as np
+    import mnemosyne.core.beam as beam_module
+
+    beam = BeamMemory(session_id="reindex-success", db_path=str(tmp_path / "memory.db"))
+    conn = beam.conn
+    if not beam_module._vec_available(conn) or not beam_module._wm_vec_available(conn):
+        pytest.skip("sqlite-vec vec_episodes and vec_working tables unavailable in this build")
+    if beam_module._mib is None:
+        pytest.skip("binary episodic vector writer unavailable in this build")
+
+    working_sources = {
+        "wm-orchid": "working source orchid signal",
+        "wm-copper": "working source copper signal",
+    }
+    episodic_sources = {
+        "ep-harbor": "episodic source harbor signal",
+        "ep-forest": "episodic source forest signal",
+    }
+    source_vectors = {}
+    for position, text in enumerate((*working_sources.values(), *episodic_sources.values())):
+        vector = [-1.0] * E.EMBEDDING_DIM
+        vector[position] = 1.0
+        source_vectors[text] = vector
+    target_id, target_content = next(iter(episodic_sources.items()))
+    probe = "unrelated recall probe"
+
+    for memory_id, content in working_sources.items():
+        conn.execute(
+            "INSERT INTO working_memory (id, content, source, timestamp, session_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (memory_id, content, "test", "2026-01-01T00:00:00", "reindex-success"),
+        )
+        conn.execute(
+            "INSERT INTO memory_embeddings (memory_id, embedding_json, model) VALUES (?, ?, ?)",
+            (memory_id, "[99.0]", "stale-model"),
+        )
+    for memory_id, content in episodic_sources.items():
+        conn.execute(
+            "INSERT INTO episodic_memory (id, content, source, timestamp, session_id, importance) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (memory_id, content, "test", "2026-01-01T00:00:00", "reindex-success", 0.5),
+        )
+    conn.commit()
+
+    monkeypatch.setattr(E, "available", lambda: True)
+    monkeypatch.setattr(E, "embed", lambda contents: [source_vectors[text] for text in contents])
+    monkeypatch.setattr(
+        E,
+        "embed_query",
+        lambda text: np.asarray(source_vectors[target_content if text == probe else text], dtype=np.float32),
+    )
+
+    result = reindex_vectors(conn, batch_size=1)
+
+    assert result["status"] == "reindexed"
+    assert result["working_memory_reindexed"] == len(working_sources)
+    assert result["episodic_memory_reindexed"] == len(episodic_sources)
+
+    embedding_rows = {
+        row["memory_id"]: json.loads(row["embedding_json"])
+        for row in conn.execute(
+            "SELECT memory_id, embedding_json FROM memory_embeddings ORDER BY memory_id"
+        )
+    }
+    assert embedding_rows == {
+        memory_id: source_vectors[content] for memory_id, content in working_sources.items()
+    }
+
+    working_rowids = dict(conn.execute("SELECT id, rowid FROM working_memory"))
+    episodic_rowids = dict(conn.execute("SELECT id, rowid FROM episodic_memory"))
+    assert {row[0] for row in conn.execute("SELECT rowid FROM vec_working")} == set(working_rowids.values())
+    assert {row[0] for row in conn.execute("SELECT rowid FROM vec_episodes")} == set(episodic_rowids.values())
+
+    for memory_id, content in working_sources.items():
+        matches = beam_module._wm_vec_search_sqlite(
+            conn, np.asarray(source_vectors[content], dtype=np.float32), k=1, where_sql="1=1"
+        )
+        assert matches[0]["id"] == memory_id
+    for memory_id, content in episodic_sources.items():
+        matches = beam_module._vec_search(conn, source_vectors[content], k=1)
+        assert matches[0]["rowid"] == episodic_rowids[memory_id]
+
+    binary_rows = dict(conn.execute("SELECT id, binary_vector FROM episodic_memory"))
+    assert binary_rows == {
+        memory_id: beam_module._mib(np.asarray(source_vectors[content]))
+        for memory_id, content in episodic_sources.items()
+    }
+
+    recalled = beam.recall(probe, top_k=5)
+    assert recalled[0]["id"] == target_id
+
+
 def test_reindex_rebuilds_all_vector_stores_at_active_dim():
     if not E.available():
         import pytest  # type: ignore
