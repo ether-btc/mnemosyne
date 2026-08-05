@@ -165,5 +165,6 @@ def test_invalidate_reports_not_found_when_no_row_matched(tmp_path):
                 },
             ),
         ]
+        assert audit_events[0][1]["metadata"]["invalidated"] is False
     finally:
         _close(provider)
