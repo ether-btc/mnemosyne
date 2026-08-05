@@ -191,7 +191,7 @@ def _type_of(spec: dict) -> str:
         return "enum[" + ", ".join(str(v) for v in spec["enum"]) + "]"
     t = spec.get("type")
     if isinstance(t, list):
-        return " | ".join(str(x) for x in t)
+        return " \\| ".join(str(x) for x in t)
     if t == "array":
         item = spec.get("items") or {}
         inner = _type_of(item) if item else "any"
@@ -199,7 +199,7 @@ def _type_of(spec: dict) -> str:
     if t:
         return str(t)
     if "anyOf" in spec:
-        return " | ".join(_type_of(s) for s in spec["anyOf"])
+        return " \\| ".join(_type_of(s) for s in spec["anyOf"])
     return "any"
 
 
