@@ -13,6 +13,7 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
 ### Fixed
 
+- **Hermes wrapper runtime compatibility guard (#625).** The legacy provider and newly registered persistent wrappers reject selected Mnemosyne site-packages whose virtualenv targets a different Python major/minor, or has an unreadable version, before activation/import; the error directs operators to recreate the Mnemosyne environment using Hermes' Python. Existing persistent wrapper artifacts must be force-refreshed or re-registered from a compatible Hermes-Python venv to receive this guard.
 - **Vector rebuild failures are now reported explicitly (#603).** Reindexing fails on incomplete embedding batches or derived-vector write failures. `vec_working` repair also fails when its final coverage check remains incomplete. `mnemosyne diagnose --repair-vec-working` returns a non-zero exit code when a requested repair fails.
 - **Persona token-cap truncation (#621).** `render_persona_markdown` now skips oversized topic sections and continues evaluating later sections, so smaller persona sections that still fit within the approximate token cap are retained.
 - **`degrade_batch` now honors `config.yaml` at the BEAM consumer (#482).** Episodic degradation resolves `degrade_batch` as `config.yaml > MNEMOSYNE_DEGRADE_BATCH > 100` once per complete degradation pass. Reloaded YAML applies to the next pass without changing the candidate limits of a running pass.
