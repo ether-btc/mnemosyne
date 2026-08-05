@@ -144,6 +144,9 @@ def test_active_adapter_exposes_canonical_tool_schemas():
 def test_invalidate_reports_not_found_when_no_row_matched(tmp_path):
     provider = _provider(tmp_path, profile="profile_a")
     try:
+        audit_events = []
+        provider._audit_event = lambda action, **kwargs: audit_events.append((action, kwargs))
+
         assert provider._beam.invalidate("missing-memory-id") is False
         result = json.loads(provider.handle_tool_call(
             "mnemosyne_invalidate",
@@ -151,5 +154,7 @@ def test_invalidate_reports_not_found_when_no_row_matched(tmp_path):
         ))
         assert result["status"] == "memory_not_found"
         assert result["memory_id"] == "missing-memory-id"
+        assert audit_events[0][0] == "invalidate"
+        assert audit_events[0][1]["metadata"] == {"invalidated": False}
     finally:
         _close(provider)
