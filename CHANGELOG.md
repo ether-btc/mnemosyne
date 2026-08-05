@@ -13,6 +13,7 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
 ### Fixed
 
+- **Vector rebuild failures are now reported explicitly (#603).** Reindexing fails on incomplete embedding batches or derived-vector write failures. `vec_working` repair also fails when its final coverage check remains incomplete. `mnemosyne diagnose --repair-vec-working` returns a non-zero exit code when a requested repair fails.
 - **Persona token-cap truncation (#621).** `render_persona_markdown` now skips oversized topic sections and continues evaluating later sections, so smaller persona sections that still fit within the approximate token cap are retained.
 - **`degrade_batch` now honors `config.yaml` at the BEAM consumer (#482).** Episodic degradation resolves `degrade_batch` as `config.yaml > MNEMOSYNE_DEGRADE_BATCH > 100` once per complete degradation pass. Reloaded YAML applies to the next pass without changing the candidate limits of a running pass.
 - **BEAM recall weights now honor `config.yaml` at runtime (#482).** `vec_weight`, `fts_weight`, and `importance_weight` now resolve as `config.yaml > MNEMOSYNE_*_WEIGHT > defaults` in direct and Hermes-provider recall paths. Reloaded weights apply to the next request, and enhanced recall cache entries are isolated by the effective weight snapshot.
