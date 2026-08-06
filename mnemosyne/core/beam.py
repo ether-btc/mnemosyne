@@ -3484,34 +3484,36 @@ class BeamMemory:
                   trust_tier,
                   existing_id, self.session_id))
             self.conn.commit()
-            # Run the same entity/fact extraction the new-row path runs, so
-            # backfill calls -- `mem.remember(same_content, extract=True)` on
-            # an already-existing row -- actually populate the triples and
-            # facts tables. Without this the dedup early-return silently
-            # skips everything `extract=True` advertises, breaking the
-            # contract on duplicate-content writes (see C12.a /review note).
-            if extract_entities:
-                _extract_and_store_entities(self, existing_id, content)
-            if extract:
-                _extract_and_store_facts(self, existing_id, content, source)
-            # Phase 2: MEMORIA regex-based extraction (always-on, zero-LLM-cost).
-            # Populates memoria_facts, memoria_timelines, memoria_kg for the
-            # structured retrieval router. Runs silently on every remember()
-            # so the MEMORIA tables stay current regardless of extract=True.
+            # Cache failures must not turn a committed dedup update into a retry.
+            self._invalidate_query_cache_after_remember_commit()
             try:
-                self.extract_and_store_facts(content, message_idx=0, source_memory_id=existing_id)
-            except Exception:
-                pass  # regex extraction failures must not block memory storage
-            # Phase 3-4: Extract graph and consolidate veracity for dedup update
-            self._ingest_graph_and_veracity(existing_id, content, source, veracity)
-            self._emit_event("MEMORY_UPDATED", existing_id, content=content,
-                             source=source, importance=importance, metadata=metadata)
+                # Run the same entity/fact extraction the new-row path runs, so
+                # backfill calls -- `mem.remember(same_content, extract=True)` on
+                # an already-existing row -- actually populate the triples and
+                # facts tables. Without this the dedup early-return silently
+                # skips everything `extract=True` advertises, breaking the
+                # contract on duplicate-content writes (see C12.a /review note).
+                if extract_entities:
+                    _extract_and_store_entities(self, existing_id, content)
+                if extract:
+                    _extract_and_store_facts(self, existing_id, content, source)
+                # Phase 2: MEMORIA regex-based extraction (always-on, zero-LLM-cost).
+                # Populates memoria_facts, memoria_timelines, memoria_kg for the
+                # structured retrieval router. Runs silently on every remember()
+                # so the MEMORIA tables stay current regardless of extract=True.
+                try:
+                    self.extract_and_store_facts(content, message_idx=0, source_memory_id=existing_id)
+                except Exception:
+                    pass  # regex extraction failures must not block memory storage
+                # Phase 3-4: Extract graph and consolidate veracity for dedup update
+                self._ingest_graph_and_veracity(existing_id, content, source, veracity)
+                self._emit_event("MEMORY_UPDATED", existing_id, content=content,
+                                 source=source, importance=importance, metadata=metadata)
 
-            # Invalidate enhanced recall cache on memory update
-            if hasattr(self, "_query_cache") and self._query_cache is not None:
-                self._query_cache.invalidate()
-
-            return existing_id
+                return existing_id
+            finally:
+                # Enrichment can refill enhanced recall after the early post-commit eviction.
+                self._invalidate_query_cache_after_remember_commit()
 
         memory_id = memory_id or _generate_id(content)
         timestamp = datetime.now().isoformat()
@@ -3525,72 +3527,76 @@ class BeamMemory:
               json.dumps(metadata or {}), valid_until, scope,
               self.author_id, self.author_type, self.channel_id, veracity, memory_type, trust_tier))
         self.conn.commit()
-        self._trim_working_memory()
-
-        # --- Embedding storage for vector recall ---
-        # remember_batch() already does this; remember() was missing it,
-        # which meant the Hermes provider (which always calls remember())
-        # never populated memory_embeddings. This left _detect_conflicts
-        # with zero embeddings to compare, making Phase 1 conflict
-        # detection a no-op despite 3762+ working memories.
-        if _embeddings.available():
-            try:
-                vec = _embeddings.embed([content])
-                if vec is not None and len(vec) == 1:
-                    _store_working_embedding(self.conn, memory_id, vec[0])
-            except Exception as exc:
-                logger.warning(
-                    "remember: embedding storage failed for '%s' (%s): %s",
-                    memory_id, type(exc).__name__, exc,
-                )
-
-        # Auto-generate temporal triple
-        self._add_temporal_triple(memory_id, timestamp, source, content)
-
-        # --- Temporal extraction ---
-        if extract_temporal is not None:
-            try:
-                temporal_info = extract_temporal(content)
-                if temporal_info and temporal_info.get("event_date"):
-                    import json as _json_tmp
-                    cursor.execute(
-                        "UPDATE working_memory SET event_date=?, event_date_precision=?, temporal_tags=? WHERE id=?",
-                        (temporal_info["event_date"],
-                         temporal_info["event_date_precision"],
-                         _json_tmp.dumps(temporal_info["temporal_tags"]),
-                         memory_id)
-                    )
-                    self.conn.commit()
-            except Exception:
-                pass  # Temporal extraction is best-effort
-
-        # --- Entity extraction ---
-        if extract_entities:
-            _extract_and_store_entities(self, memory_id, content)
-
-        # --- Structured fact extraction ---
-        if extract:
-            _extract_and_store_facts(self, memory_id, content, source)
-
-        # Phase 2: MEMORIA regex-based extraction (always-on, zero-LLM-cost).
-        # Populates memoria_facts, memoria_timelines, memoria_kg for the
-        # structured retrieval router. Runs on every remember() call.
         try:
-            self.extract_and_store_facts(content, message_idx=0, source_memory_id=memory_id)
-        except Exception:
-            pass  # regex extraction failures must not block memory storage
+            self._trim_working_memory()
+        finally:
+            # Cache failures must not turn a committed new-memory write into a retry.
+            self._invalidate_query_cache_after_remember_commit()
 
-        # Phase 3-4: Extract graph and consolidate veracity for new memory
-        self._ingest_graph_and_veracity(memory_id, content, source, veracity)
+        try:
+            # --- Embedding storage for vector recall ---
+            # remember_batch() already does this; remember() was missing it,
+            # which meant the Hermes provider (which always calls remember())
+            # never populated memory_embeddings. This left _detect_conflicts
+            # with zero embeddings to compare, making Phase 1 conflict
+            # detection a no-op despite 3762+ working memories.
+            if _embeddings.available():
+                try:
+                    vec = _embeddings.embed([content])
+                    if vec is not None and len(vec) == 1:
+                        _store_working_embedding(self.conn, memory_id, vec[0])
+                except Exception as exc:
+                    logger.warning(
+                        "remember: embedding storage failed for '%s' (%s): %s",
+                        memory_id, type(exc).__name__, exc,
+                    )
 
-        self._emit_event("MEMORY_ADDED", memory_id, content=content,
-                         source=source, importance=importance, metadata=metadata)
+            # Auto-generate temporal triple
+            self._add_temporal_triple(memory_id, timestamp, source, content)
 
-        # Invalidate enhanced recall cache on new memory
-        if hasattr(self, "_query_cache") and self._query_cache is not None:
-            self._query_cache.invalidate()
+            # --- Temporal extraction ---
+            if extract_temporal is not None:
+                try:
+                    temporal_info = extract_temporal(content)
+                    if temporal_info and temporal_info.get("event_date"):
+                        import json as _json_tmp
+                        cursor.execute(
+                            "UPDATE working_memory SET event_date=?, event_date_precision=?, temporal_tags=? WHERE id=?",
+                            (temporal_info["event_date"],
+                             temporal_info["event_date_precision"],
+                             _json_tmp.dumps(temporal_info["temporal_tags"]),
+                             memory_id)
+                        )
+                        self.conn.commit()
+                except Exception:
+                    pass  # Temporal extraction is best-effort
 
-        return memory_id
+            # --- Entity extraction ---
+            if extract_entities:
+                _extract_and_store_entities(self, memory_id, content)
+
+            # --- Structured fact extraction ---
+            if extract:
+                _extract_and_store_facts(self, memory_id, content, source)
+
+            # Phase 2: MEMORIA regex-based extraction (always-on, zero-LLM-cost).
+            # Populates memoria_facts, memoria_timelines, memoria_kg for the
+            # structured retrieval router. Runs on every remember() call.
+            try:
+                self.extract_and_store_facts(content, message_idx=0, source_memory_id=memory_id)
+            except Exception:
+                pass  # regex extraction failures must not block memory storage
+
+            # Phase 3-4: Extract graph and consolidate veracity for new memory
+            self._ingest_graph_and_veracity(memory_id, content, source, veracity)
+
+            self._emit_event("MEMORY_ADDED", memory_id, content=content,
+                             source=source, importance=importance, metadata=metadata)
+
+            return memory_id
+        finally:
+            # Enrichment can refill enhanced recall after the early post-commit eviction.
+            self._invalidate_query_cache_after_remember_commit()
 
     def remember_batch(self, items: List[Dict],
                        *,
@@ -4182,6 +4188,17 @@ class BeamMemory:
             cache.invalidate()
         finally:
             cache.close()
+
+    def _invalidate_query_cache_after_remember_commit(self) -> None:
+        """Best-effort cache invalidation after ``remember()`` has committed."""
+        try:
+            self._invalidate_query_cache()
+        except Exception as exc:
+            logger.warning(
+                "remember: query-cache invalidation failed after commit (%s): %s",
+                type(exc).__name__,
+                exc,
+            )
 
     def invalidate(self, memory_id: str, replacement_id: str = None) -> bool:
         """
