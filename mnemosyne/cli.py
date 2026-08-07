@@ -1215,6 +1215,7 @@ def cmd_hygiene(args):
         clean_noise,
         hygiene_status,
         restore_archived,
+        validate_hygiene_candidate,
     )
     from mnemosyne.doctor import open_readonly_doctor_db
 
@@ -1371,8 +1372,22 @@ def cmd_hygiene(args):
         except json.JSONDecodeError as e:
             _fail(f"Invalid JSON in candidates file: {e}")
 
+        # audit --json emits an envelope {"total_scanned": N, "candidates": [...]};
+        # clean expects the candidates array.
+        if isinstance(raw, dict):
+            if "candidates" not in raw:
+                _fail("Candidates envelope is missing the 'candidates' field")
+            raw = raw["candidates"]
+
+        if not isinstance(raw, list):
+            _fail("Candidates file must contain a JSON array or an audit envelope with a 'candidates' array")
+
         candidates = []
         for idx, c in enumerate(raw):
+            try:
+                validate_hygiene_candidate(c)
+            except ValueError as e:
+                _fail(f"Candidate #{idx}: {e}")
             try:
                 candidates.append(NoiseCandidate(
                     memory_id=c["memory_id"],
