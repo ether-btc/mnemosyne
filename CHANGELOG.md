@@ -12,6 +12,14 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 - **CLI version reporting (#642).** `mnemosyne --version` / `mnemosyne version` and `mnemosyne-hermes --version` / `mnemosyne-hermes version` report installed distribution versions without initializing Mnemosyne data. `hermes mnemosyne version` now reports both core and Hermes-provider versions.
 - **Embedding dimension in doctor diagnostics.** `collect_runtime_diagnostics` (surfaced by `mnemosyne doctor`) now reports the resolved `embeddings_dim` alongside `embeddings_model`, so operators can confirm their `MNEMOSYNE_EMBEDDING_DIM` / model-table resolution without inspecting a traceback. Complements the fail-loud unknown-model resolver (#521); the version bump is deferred to that PR to avoid a duplicate bump.
 
+### Changed
+
+- **Unknown embedding models now fail loud at startup instead of silently assuming 384 dimensions (#518, #521).** `_get_embedding_dim` resolves an explicit `MNEMOSYNE_EMBEDDING_DIM` first (must be a positive integer), then the built-in model table, and raises `ValueError` for an unknown model with no explicit dimension rather than falling back to 384 (bge-small's dimension). A vec0 table is dimensioned at creation, so a silent 384 guess baked the wrong dimension into a fresh database and corrupted vector search for anyone using a model absent from the table (e.g. `mxbai-embed-large` via a custom endpoint). Dimension resolution is centralized in `embeddings._get_embedding_dim`; Beam delegates to it, removing a duplicate resolver that could drift. Embeddings-disabled invocations keep the 384 fallback (the dimension is unused there).
+
+  **Breaking:** pointing `MNEMOSYNE_EMBEDDING_API_URL` at a custom endpoint with a model not in the built-in table now requires `MNEMOSYNE_EMBEDDING_DIM=<N>`, otherwise direct core/MCP-provider startup exits at import with an actionable error (the `mnemosyne-hermes` wrapper catches this and reports the provider unavailable instead of exiting). Blank/empty `MNEMOSYNE_EMBEDDING_DIM` and `MNEMOSYNE_EMBEDDING_MODEL` (common in Docker Compose and `.env` files) are normalized to unset/default rather than treated as explicit invalid values.
+
+  **Upgrade note for stores created under the old silent-384 fallback:** setting the model's true dimension can trigger the existing dimension-mismatch guard. Use the documented reindex/recovery path rather than treating the override as a one-step fix.
+
 ### Fixed
 
 - **Persisted Enhanced Recall cache was stale after fresh `remember()` writes (#556).** `BeamMemory.remember()` now uses the established persisted-cache invalidation helper after successful new-memory and dedup-update writes, so a fresh writer evicts results warmed by another instance before the next fresh enhanced-recall request. Live peer in-memory coherence remains tracked separately in #552.
@@ -27,19 +35,7 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 - **File-import dry run.** File-import `--dry-run` now passes through the core, MCP, both Hermes providers, and CLI surfaces to clone-based validation without changing the active database or audit data. Dry-run responses report `"status": "dry_run"` so clients cannot mistake simulated import statistics for a completed import.
 - **Repaired `hygiene audit --json` → `hygiene clean` workflow (#606).** `hygiene clean` now unwraps the audit envelope produced by `hygiene audit --json` and validates each candidate before cleanup. Raw candidate arrays remain supported, and candidates with persisted `importance` values outside `[0, 1]` are accepted so the audit-to-clean pipeline completes without manual editing.
 - **Model-refresh confidence: NaN cleared every gate and legacy text crashed sleep mid-batch.** JSON round-trips NaN and Infinity, and `parse_model_update_proposals` clamped NaN to 1.0 (`min` and `max` keep their first argument when a NaN comparison is False), so a NaN-confidence proposal became a top-importance memory; the auto-apply gate's `confidence < minimum` check is also False for NaN, so the same proposal reached the canonical store regardless of threshold. Separately, `apply_model_refresh_proposal` and sleep()'s proposal-remember call site converted stored confidence with a bare `float()`, so a legacy bank's text value (for example `"high"`) raised ValueError. The sleep call site runs after the claim commit, so that raise stranded the group's `consolidation_claimed_at` and orphaned every later group's claimed rows. Non-numeric and non-finite confidence now degrades per site: skipped at parse, 0.0 at the auto-apply gate, 0.5 at apply and at proposal importance. Finite values outside [0.0, 1.0] clamp to the domain bound on every path before auto-apply threshold checks and canonical storage, so a persisted 2.0 cannot remain unbounded. Hardening split out of #546 per review.
-
-## [3.16.0] - 2026-08-03
-
-### Changed
-
-- **Unknown embedding models now fail loud at startup instead of silently assuming 384 dimensions (#518, #521).** `_get_embedding_dim` resolves an explicit `MNEMOSYNE_EMBEDDING_DIM` first (must be a positive integer), then the built-in model table, and raises `ValueError` for an unknown model with no explicit dimension rather than falling back to 384 (bge-small's dimension). A vec0 table is dimensioned at creation, so a silent 384 guess baked the wrong dimension into a fresh database and corrupted vector search for anyone using a model absent from the table (e.g. `mxbai-embed-large` via a custom endpoint). Dimension resolution is centralized in `embeddings._get_embedding_dim`; Beam delegates to it, removing a duplicate resolver that could drift. Embeddings-disabled invocations keep the 384 fallback (the dimension is unused there).
-
-  **Breaking:** pointing `MNEMOSYNE_EMBEDDING_API_URL` at a custom endpoint with a model not in the built-in table now requires `MNEMOSYNE_EMBEDDING_DIM=<N>`, otherwise direct core/MCP-provider startup exits at import with an actionable error (the `mnemosyne-hermes` wrapper catches this and reports the provider unavailable instead of exiting). Blank/empty `MNEMOSYNE_EMBEDDING_DIM` and `MNEMOSYNE_EMBEDDING_MODEL` (common in Docker Compose and `.env` files) are normalized to unset/default rather than treated as explicit invalid values.
-
-### Fixed
-
-- `raise ValueError(...)` inside the dimension parser no longer chains a noisy "During handling of the above exception" preamble (Ruff B904); the unreachable `TypeError` branch was removed.
-
+- - `raise ValueError(...)` inside the dimension parser no longer chains a noisy "During handling of the above exception" preamble (Ruff B904); the unreachable `TypeError` branch was removed.
 ## [3.15.1] - 2026-07-30
 
 ### Fixed

@@ -86,7 +86,9 @@ MNEMOSYNE_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L
 MNEMOSYNE_EMBEDDING_MODEL=intfloat/multilingual-e5-base
 ```
 
-The embedding dimension is **auto-detected** from the model name. Supported models with known dimensions:
+The embedding dimension resolves in this order: an explicit `MNEMOSYNE_EMBEDDING_DIM` (positive integer) takes precedence for every model; otherwise the built-in table below provides known dimensions; an unknown model with no explicit dimension **fails loudly at startup** rather than silently assuming 384. Blank/whitespace-only `MNEMOSYNE_EMBEDDING_DIM` is treated as unset (common in Docker Compose and `.env` files).
+
+Supported models with known dimensions:
 
 | Model | Dims | Language |
 |---|---|---|
@@ -106,13 +108,13 @@ The embedding dimension is **auto-detected** from the model name. Supported mode
 | `openai/text-embedding-3-small` | 1,536 | API |
 | `openai/text-embedding-3-large` | 3,072 | API |
 
-For unsupported models, set the dimension explicitly:
+For models not in the table (e.g. `mxbai-embed-large` via a custom endpoint), set the dimension explicitly:
 
 ```bash
 MNEMOSYNE_EMBEDDING_DIM=768
 ```
 
-> **Warning:** Changing the embedding model after data has been stored will cause a dimension mismatch. The vec0 virtual table is locked to the dimension it was created with. To switch models, delete and re-create the database, or run the migration tool.
+> **Warning:** Changing the embedding model after data has been stored will cause a dimension mismatch. The vec0 virtual table is locked to the dimension it was created with. **Stores created under the old silent-384 fallback**: setting the model's true dimension can trigger the existing dimension-mismatch guard, so operators may need the documented reindex/recovery path rather than treating the override as a one-step fix.
 
 ## LLM Consolidation
 
