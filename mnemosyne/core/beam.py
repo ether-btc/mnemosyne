@@ -260,18 +260,11 @@ def _default_db_path() -> Path:
     """Return the current default DB path, honoring runtime env changes."""
     return _default_data_dir() / "mnemosyne.db"
 
-# Config
-# Priority: 1) MNEMOSYNE_EMBEDDING_DIM env var (explicit override)
-#           2) Auto-derive from embedding model via _embeddings module
-#           3) 384 (bge-small-en-v1.5 default)
-_emb_dim_env = os.environ.get("MNEMOSYNE_EMBEDDING_DIM")
-if _emb_dim_env is not None:
-    try:
-        EMBEDDING_DIM = int(_emb_dim_env)
-    except (ValueError, TypeError):
-        EMBEDDING_DIM = 384
-else:
-    EMBEDDING_DIM = _embeddings.EMBEDDING_DIM
+# Re-export the constant resolved at embeddings module load. The unknown-model
+# ValueError already fires there (binary_vectors imports EMBEDDING_DIM from
+# embeddings, at the import above), not at this line; this just re-exposes the
+# value so Beam cannot drift from embeddings.
+EMBEDDING_DIM = _embeddings.EMBEDDING_DIM
 WORKING_MEMORY_MAX_ITEMS = int(os.environ.get("MNEMOSYNE_WM_MAX_ITEMS", "10000"))
 WORKING_MEMORY_TTL_HOURS = int(os.environ.get("MNEMOSYNE_WM_TTL_HOURS", "168"))
 WM_BUMP_CAP_HOURS = int(os.environ.get("MNEMOSYNE_WM_BUMP_CAP_HOURS", "24"))

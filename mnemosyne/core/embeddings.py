@@ -67,7 +67,13 @@ _OPENAI_API_KEY = os.environ.get("MNEMOSYNE_EMBEDDING_API_KEY", os.environ.get("
 _OPENAI_BASE_URL = os.environ.get("MNEMOSYNE_EMBEDDING_API_URL", "https://openrouter.ai/api/v1")
 
 # --- Model selection ---
-_DEFAULT_MODEL = os.environ.get("MNEMOSYNE_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+# Normalize a blank (empty or whitespace-only) env var to the default. Such
+# values are routine in Docker Compose (`- MNEMOSYNE_EMBEDDING_MODEL=${X}` with
+# X unset) and .env files; without this, "" would be treated as a model named
+# empty-string, which is unknown and would raise at import under the fail-loud
+# rule even though the user set nothing meaningful. Uses .strip() to mirror the
+# blank handling for MNEMOSYNE_EMBEDDING_DIM in _get_embedding_dim.
+_DEFAULT_MODEL = (os.environ.get("MNEMOSYNE_EMBEDDING_MODEL") or "").strip() or "BAAI/bge-small-en-v1.5"
 _embedding_model = None
 _API_CALL_COUNT = 0
 
@@ -135,9 +141,13 @@ def _is_api_model(model_name: str) -> bool:
 def _get_embedding_dim(model_name: str) -> int:
     """Return the embedding dimension for a given model.
 
-    Supports English, Chinese, and multilingual embedding models.
-    Falls back to 384 (bge-small dimension) for unknown models.
-    Override with MNEMOSYNE_EMBEDDING_DIM env var for unsupported models.
+    Resolution order: an explicit MNEMOSYNE_EMBEDDING_DIM wins (and must be a
+    valid integer); otherwise a known model resolves via the table below; an
+    unknown model with no explicit dimension raises ValueError rather than
+    silently assuming 384 -- a vec0 table is dimensioned at creation, so a wrong
+    guess bakes the wrong dimension into a fresh database and corrupts vector
+    search. Embeddings-disabled invocations keep the 384 fallback (the dimension
+    is unused there).
     """
     dims = {
         # --- English BGE ---
@@ -176,14 +186,44 @@ def _get_embedding_dim(model_name: str) -> int:
         "jinaai/jina-embeddings-v2-base-zh": 768,
         "jinaai/jina-embeddings-v2-base-code": 768,
     }
-    # Check env override first
+    # Explicit override wins. An explicit-but-invalid value is a configuration
+    # error -- raise rather than silently fall through to a guess. A set-but-
+    # empty value (routine in Docker Compose / .env / CI matrices) is normalized
+    # to unset so it does not raise for a known model or with embeddings off.
     env_dim = os.environ.get("MNEMOSYNE_EMBEDDING_DIM")
-    if env_dim is not None:
+    if env_dim is not None and env_dim.strip():
         try:
-            return int(env_dim)
-        except (ValueError, TypeError):
-            pass
-    return dims.get(model_name, 384)
+            value = int(env_dim)
+        except ValueError:
+            raise ValueError(
+                f"MNEMOSYNE_EMBEDDING_DIM={env_dim!r} is not a valid integer; "
+                f"set it to the embedding model's output dimension."
+            ) from None
+        if value <= 0:
+            raise ValueError(
+                f"MNEMOSYNE_EMBEDDING_DIM={value} must be a positive integer; "
+                f"vector dimensions are >= 1."
+            )
+        return value
+    if model_name in dims:
+        return dims[model_name]
+    # Unknown model with no explicit dimension. Silently assuming 384 (bge-small's
+    # dimension) bakes the wrong dimension into a fresh vec0 table and corrupts
+    # every insert/recall when the model's true dimension differs -- the root
+    # cause behind the recurring per-model additions to this table. Refuse to
+    # guess and point at the override.
+    if _is_disabled():
+        # Embeddings turned off (CI / opt-out): the dimension is unused, so keep
+        # the 384 fallback rather than failing an unused code path.
+        return 384
+    raise ValueError(
+        f"Unknown embedding model {model_name!r}: not in the built-in dimension "
+        f"table and MNEMOSYNE_EMBEDDING_DIM is unset. A vec0 table is dimensioned "
+        f"at creation, so silently assuming 384 would bake in the wrong dimension "
+        f"and corrupt vector search. Set MNEMOSYNE_EMBEDDING_DIM=<N> to the "
+        f"model's output dimension (e.g. 1024 for mxbai-embed-large), or add the "
+        f"model to the table in _get_embedding_dim()."
+    )
 
 
 def _embedding_threads() -> int:
