@@ -7,8 +7,10 @@ import importlib.metadata
 import hashlib
 import importlib
 import json
+import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -22,6 +24,9 @@ PLUGIN_NAME = "mnemosyne"
 SKILL_NAME = "mnemosyne-memory-override"
 SKILL_CATEGORY = "memory"
 BUNDLED_SKILL_RESOURCE = ("skills", SKILL_NAME, "SKILL.md")
+
+_MAX_HERMES_BIN_DEPTH = 10
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -500,6 +505,185 @@ def plugin_state(*, hermes_home_path: str | Path | None = None) -> PluginState:
         message="Plugin is installed and discoverable.",
     )
 
+_MAX_WRAPPER_READ_BYTES = 4096
+
+
+def _is_env_assignment(token: str) -> bool:
+    """True if the token is a plain ``NAME=value`` shell assignment."""
+    name, sep, value = token.partition("=")
+    if not sep or not name:
+        return False
+    if not (name[0].isalpha() or name[0] == "_"):
+        return False
+    if not all(char.isalnum() or char == "_" for char in name):
+        return False
+    # Reject command/parameter substitution we cannot evaluate.
+    return not value.startswith(("$", "`"))
+
+
+def _strip_env_prefix(tokens: list[str]) -> list[str] | None:
+    """Consume ``env`` assignments and no-arg flags, returning the command.
+
+    Returns None for any option that takes an argument (``-u NAME``, ``-C DIR``,
+    ``-S ...``) or is otherwise unrecognized, so an unfamiliar layout is rejected
+    rather than misread.
+    """
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in ("-", "-i", "--ignore-environment"):
+            index += 1
+            continue
+        if token.startswith("-"):
+            return None
+        if _is_env_assignment(token):
+            index += 1
+            continue
+        break
+    return tokens[index:]
+
+
+def _wrapper_exec_target(path: Path) -> tuple[bool, str | None]:
+    """Inspect a launcher for an ``exec`` handoff to another program.
+
+    Returns ``(is_wrapper, target)``:
+      * ``(False, None)`` - no ``exec`` handoff; treat ``path`` as the binary.
+      * ``(True, target)`` - wrapper execs ``target`` (a path or command name).
+      * ``(True, None)``   - wrapper uses a form we will not resolve; callers
+                             must not fall back to the wrapper itself.
+
+    Supported forms (trailing ``"$@"`` and arguments ignored)::
+
+        exec /path/to/hermes "$@"
+        exec "./hermes" "$@"
+        VAR=val exec /path/to/hermes "$@"
+        exec env [VAR=val ...] /path/to/hermes "$@"
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            source = fh.read(_MAX_WRAPPER_READ_BYTES)
+    except (OSError, UnicodeDecodeError):
+        return False, None
+
+    for raw_line in source.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            tokens = shlex.split(line, comments=True)
+        except ValueError:
+            continue
+
+        index = 0
+        while index < len(tokens) and _is_env_assignment(tokens[index]):
+            index += 1
+        tokens = tokens[index:]
+        if not tokens or tokens[0] != "exec":
+            continue
+
+        # This line hands off with exec, so the wrapper is never the target.
+        rest = tokens[1:]
+        if not rest or rest[0].startswith("-"):
+            return True, None
+        if rest[0] == "env":
+            rest = _strip_env_prefix(rest[1:])
+            if not rest:
+                return True, None
+        return True, rest[0]
+
+    return False, None
+
+
+def _resolve_exec_target(raw_target: str, wrapper: Path) -> Path | None:
+    """Turn an ``exec`` target into a concrete executable path.
+
+    Absolute paths are used as-is, explicit relative paths (``./hermes``,
+    ``../bin/hermes``, ``bin/hermes``) resolve against the wrapper's own
+    directory, and bare command names go through PATH. The raw target is
+    classified before ``Path`` drops a leading ``./``, so a relative launcher is
+    never shadowed by a same-named file in the process working directory.
+    """
+    expanded = os.path.expanduser(raw_target)
+
+    if os.path.isabs(expanded):
+        candidate = Path(expanded)
+    elif os.sep in expanded or (os.altsep and os.altsep in expanded):
+        candidate = wrapper.parent / expanded
+    else:
+        found = shutil.which(expanded)
+        if not found:
+            return None
+        candidate = Path(found)
+
+    return candidate if candidate.is_file() else None
+
+
+def _resolve_hermes_bin(hermes_bin: str) -> Path | None:
+    """Resolve the real Hermes executable from a launcher on PATH.
+
+    Follows symlinks and shell wrappers that `exec` another binary (common for
+    PATH shims), tracking visited paths to avoid symlink loops. A direct
+    executable that is not a wrapper is returned as well, preserving discovery
+    for pipx / package entry points.
+
+    Returns None when resolution fails or the target is not executable.
+    """
+    path = Path(hermes_bin)
+    seen: set[Path] = set()
+
+    for _ in range(_MAX_HERMES_BIN_DEPTH):
+        try:
+            canonical = path.resolve()
+        except (OSError, RuntimeError) as exc:
+            LOGGER.debug(
+                "Failed to resolve Hermes launcher %r: %s", hermes_bin, exc
+            )
+            return None
+
+        if canonical in seen:
+            LOGGER.debug("Hermes launcher %r has a symlink loop", hermes_bin)
+            return None
+        seen.add(canonical)
+
+        if not canonical.is_file() or not os.access(canonical, os.X_OK):
+            LOGGER.debug(
+                "Hermes launcher %r resolves to non-executable %r",
+                hermes_bin,
+                canonical,
+            )
+            return None
+
+        is_wrapper, exec_target = _wrapper_exec_target(canonical)
+        if not is_wrapper:
+            return canonical
+        if exec_target is None:
+            LOGGER.debug(
+                "Hermes wrapper %r uses an unsupported exec form", hermes_bin
+            )
+            return None
+
+        next_path = _resolve_exec_target(exec_target, canonical)
+        if next_path is None:
+            LOGGER.debug(
+                "Hermes wrapper %r execs an invalid target %r",
+                hermes_bin,
+                exec_target,
+            )
+            return None
+
+        path = next_path
+
+    LOGGER.debug(
+        "Hermes launcher %r exceeded maximum resolution depth (%d)",
+        hermes_bin,
+        _MAX_HERMES_BIN_DEPTH,
+    )
+    return None
+
+
 def _find_hermes_python() -> Optional[Path]:
     """Try to find Hermes' python executable for dep validation.
 
@@ -516,17 +700,19 @@ def _find_hermes_python() -> Optional[Path]:
     #    actual venv and produced "loaded but no provider instance found").
     hermes_bin = shutil.which("hermes")
     if hermes_bin:
-        # NOTE: resolve the *launcher* symlink (hermes -> venv/bin/hermes) to
-        # find the venv bin dir, but do NOT resolve the python symlink itself.
-        # A venv's bin/python is a symlink to the base interpreter; running the
-        # venv path activates the venv site-packages, running the resolved base
-        # path does NOT. Returning the resolved base interpreter would silently
-        # drop the provider deps again.
-        bin_dir = Path(hermes_bin).resolve().parent
-        for py_name in ("python", "python3"):
-            candidate = bin_dir / py_name
-            if candidate.is_file():
-                return candidate
+        resolved = _resolve_hermes_bin(hermes_bin)
+        if resolved:
+            # NOTE: resolve the *launcher* symlink (hermes -> venv/bin/hermes)
+            # to find the venv bin dir, but do NOT resolve the python symlink
+            # itself. A venv's bin/python is a symlink to the base interpreter;
+            # running the venv path activates the venv site-packages, while
+            # running the resolved base path does NOT. Returning the resolved
+            # base interpreter would silently drop the provider deps again.
+            bin_dir = resolved.parent
+            for py_name in ("python", "python3"):
+                candidate = bin_dir / py_name
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return candidate
 
     # 2. Check known hermes-agent checkout / install roots with a venv.
     for root in [
