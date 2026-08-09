@@ -78,6 +78,24 @@ Returned context can include prior decisions, constraints, failure modes, projec
 
 `mnemosyne_sleep` compresses old working memories into episodic summaries. Think of it as a nightly cleanup that knows what to keep and what to summarize. The working set stays small. Recall stays sharp. Long-running agents don't drown in their own history.
 
+### Session lifecycle
+
+The provider follows Hermes session changes without requiring a provider restart. After
+`/new`, `/resume`, `/branch`, undo, or context compression, the active `BeamMemory`
+session is rebound before the next memory operation, keeping writes and tool calls
+attributed to the current conversation.
+
+Non-empty session IDs supplied to per-turn prefetch and sync calls scope that
+individual operation; empty values preserve the active session. A configured
+`gateway_session_key` remains the stable scope across both paths and across
+session changes, so a branch or compression switch does not adopt the child
+session ID.
+
+Provider lifecycle hooks are fail-soft. Database or disk failures during
+prefetch, turn sync, session-end or automatic consolidation, and wrapper or
+audit cleanup are logged and suppressed so Hermes can continue without a
+lifecycle exception surfacing to the user.
+
 ---
 
 ## Quickstart
