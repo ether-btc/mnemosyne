@@ -596,14 +596,30 @@ def _strip_env_prefix(tokens: list[str]) -> list[str] | None:
     return tokens[index:]
 
 
+def _mentions_exec(tokens: list[str]) -> bool:
+    """True if any token is an ``exec`` we did not parse as the leading form.
+
+    Matches a bare ``exec`` token (``if true; then exec /x; fi``) and one nested
+    inside a quoted argument (``sh -c "exec /x"``), which arrives as a single
+    token. Deliberately exact on the first word rather than a substring search:
+    a Python console script containing ``os.execv(...)`` or ``exec(code)`` is a
+    direct launcher, and treating it as an unresolvable wrapper would break the
+    pipx layout the launcher branch exists to serve.
+    """
+    return any(token.split(maxsplit=1)[:1] == ["exec"] for token in tokens if token)
+
+
 def _wrapper_exec_target(path: Path) -> tuple[bool, str | None]:
     """Inspect a launcher for an ``exec`` handoff to another program.
 
     Returns ``(is_wrapper, target)``:
-      * ``(False, None)`` - no ``exec`` handoff; treat ``path`` as the binary.
+      * ``(False, None)`` - read the launcher and it has no ``exec`` handoff;
+                             treat ``path`` as the binary.
       * ``(True, target)`` - wrapper execs ``target`` (a path or command name).
-      * ``(True, None)``   - wrapper uses a form we will not resolve; callers
-                             must not fall back to the wrapper itself.
+      * ``(True, None)``   - the handoff is unresolvable *or* undeterminable
+                             (unreadable, larger than the read bound, or
+                             unparseable); callers must not fall back to the
+                             wrapper itself.
 
     Supported forms (trailing ``"$@"`` and arguments ignored)::
 
@@ -612,11 +628,30 @@ def _wrapper_exec_target(path: Path) -> tuple[bool, str | None]:
         VAR=val exec /path/to/hermes "$@"
         exec env [VAR=val ...] /path/to/hermes "$@"
     """
+    # Every uncertain answer below is (True, None): "this may hand off, and we
+    # cannot say where". (False, None) is a positive finding -- we read the
+    # launcher and it is a binary -- because it licenses the caller to trust the
+    # interpreter sitting beside it. Confusing the two is how an unrelated
+    # sibling python gets bootstrapped (#618).
     try:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            source = fh.read(_MAX_WRAPPER_READ_BYTES)
-    except (OSError, UnicodeDecodeError):
+        with path.open("rb") as fh:
+            raw = fh.read(_MAX_WRAPPER_READ_BYTES + 1)
+    except OSError:
+        return True, None
+
+    if not raw.startswith(b"#!"):
+        # A compiled console script has no exec line to read, and reading it is
+        # how we know that. Binary mode keeps this decision independent of the
+        # bytes decoding cleanly.
         return False, None
+
+    if len(raw) > _MAX_WRAPPER_READ_BYTES:
+        # A shebang script larger than the bound. Its handoff may sit past the
+        # part we read, so calling it a direct executable would trust whatever
+        # python happens to sit beside it.
+        return True, None
+
+    source = raw.decode("utf-8", errors="replace")
 
     for raw_line in source.splitlines():
         line = raw_line.strip()
@@ -625,6 +660,10 @@ def _wrapper_exec_target(path: Path) -> tuple[bool, str | None]:
         try:
             tokens = shlex.split(line, comments=True)
         except ValueError:
+            # Unbalanced quoting. If the line could be the handoff, skipping it
+            # would let the file reach the "not a wrapper" return below.
+            if "exec" in line:
+                return True, None
             continue
 
         index = 0
@@ -632,6 +671,12 @@ def _wrapper_exec_target(path: Path) -> tuple[bool, str | None]:
             index += 1
         tokens = tokens[index:]
         if not tokens or tokens[0] != "exec":
+            # A handoff we cannot read as the supported leading form, such as
+            # `if true; then exec /opt/hermes/bin/hermes "$@"; fi`. Skipping the
+            # line lets the file reach the "no handoff" return and licenses the
+            # caller to trust the launcher's sibling interpreter.
+            if _mentions_exec(tokens):
+                return True, None
             continue
 
         # This line hands off with exec, so the wrapper is never the target.
@@ -734,37 +779,112 @@ def _resolve_hermes_bin(hermes_bin: str) -> Path | None:
     return None
 
 
-def _find_hermes_python() -> Optional[Path]:
+def _is_venv_bin_dir(bin_dir: Path) -> bool:
+    """Return whether ``bin_dir`` is the ``bin/`` of a real virtual environment.
+
+    ``pyvenv.cfg`` is what separates a venv from a directory that merely holds
+    executables. It is the only cheap signal that discriminates the #618 case:
+    ``~/.local/bin`` holds both a ``hermes`` launcher and an unrelated
+    ``python``, so "the launcher sits next to a python" proves nothing on its
+    own.
+    """
+    return (bin_dir.parent / "pyvenv.cfg").is_file()
+
+
+def _is_validated_venv_python(candidate: Path) -> bool:
+    """Return whether ``candidate`` is usable as Hermes' runtime.
+
+    The single predicate every *implicitly discovered* candidate must satisfy,
+    so the launcher, the known install roots, ``sys.prefix`` and ``VIRTUAL_ENV``
+    cannot drift apart. Only ``--python`` bypasses it, deliberately: an
+    explicitly named interpreter is reported against by the caller rather than
+    silently swapped for another.
+
+    The candidate must exist as a file, be executable (everything downstream
+    runs it as ``<python> -m pip install ...``, so a file that cannot be
+    executed is not a runtime), and live in a real virtualenv.
+    """
+    return (
+        candidate.is_file()
+        and os.access(candidate, os.X_OK)
+        and _is_venv_bin_dir(candidate.parent)
+    )
+
+
+def _find_hermes_python(explicit_python: str | Path | None = None) -> Optional[Path]:
     """Try to find Hermes' python executable for dep validation.
 
-    Returns None when we can't find it (user runs manually).
+    Returns None when no *validated* Hermes runtime is found. A candidate is
+    never returned on the strength of sitting next to the launcher alone: the
+    caller bootstraps into whatever this returns, and an unvalidated sibling is
+    typically the user's Homebrew or system interpreter (#618). The caller is
+    expected to stop and point at ``--python`` rather than guess.
+
+    NOTE: none of the branches below resolve the python symlink they return. A
+    venv's bin/python is a symlink to the base interpreter; running the venv
+    path activates the venv site-packages, running the resolved base path does
+    NOT. Returning the resolved base interpreter silently drops the provider
+    deps into the wrong environment.
     """
+    # 0. An explicitly selected interpreter is authoritative. Return it as
+    #    given, including when it looks wrong: the caller validates it and
+    #    reports against the interpreter the user actually named, which beats
+    #    silently probing for a different one.
+    #
+    #    None is the only "not supplied" signal. An empty or blank --python is a
+    #    supplied value that names nothing, and falling through to discovery
+    #    would answer with a different interpreter than the one the user asked
+    #    for -- exactly the silent substitution this branch exists to prevent.
+    if explicit_python is not None:
+        selected = str(explicit_python)
+        # Strip only to decide whether anything was named. A POSIX path may
+        # legitimately begin or end with whitespace, so stripping the value we
+        # return would select a different interpreter than the one requested,
+        # or fail to find it at all.
+        if not selected.strip():
+            raise ValueError(
+                "--python was given an empty value. Pass the path to Hermes' "
+                "interpreter, or omit --python to let the installer find it."
+            )
+        return Path(selected).expanduser()
+
     hermes_home_path = hermes_home()
 
     # 1. Resolve the `hermes` launcher on PATH back to its venv Python.
-    #    This is the most reliable probe: a pip/pipx-installed Hermes puts its
-    #    console script next to the interpreter that runs it, so the Python is
-    #    always a sibling of the resolved binary. Covers the common
-    #    /usr/local/lib/hermes-agent/venv layout that the hardcoded roots below
-    #    miss entirely (the silent-no-op that left provider deps out of Hermes'
-    #    actual venv and produced "loaded but no provider instance found").
+    #    A pip/pipx-installed Hermes puts its console script next to the
+    #    interpreter that runs it, so the Python is a sibling of the resolved
+    #    binary. Covers the common /usr/local/lib/hermes-agent/venv layout that
+    #    the hardcoded roots below miss entirely (the silent-no-op that left
+    #    provider deps out of Hermes' actual venv and produced "loaded but no
+    #    provider instance found").
+    #
+    #    The sibling is only trusted when the directory it lives in is a real
+    #    venv. `_resolve_hermes_bin` follows symlinks and wrapper `exec` hops,
+    #    but a launcher that is neither -- a script that calls the real binary
+    #    as a subprocess, or a compiled shim with no `exec` line to read --
+    #    resolves to itself and leaves `bin_dir` as the shim directory. Without
+    #    this check `~/.local/bin/python` (commonly a Homebrew or system
+    #    symlink) gets `mnemosyne-hermes[all]` installed into it while the
+    #    installer reports success (#618). An unvalidated sibling is discarded
+    #    outright rather than kept as a fallback: the only layout it uniquely
+    #    covers is a non-venv system install, which is exactly where
+    #    bootstrapping does the most damage.
     hermes_bin = shutil.which("hermes")
     if hermes_bin:
         resolved = _resolve_hermes_bin(hermes_bin)
         if resolved:
-            # NOTE: resolve the *launcher* symlink (hermes -> venv/bin/hermes)
-            # to find the venv bin dir, but do NOT resolve the python symlink
-            # itself. A venv's bin/python is a symlink to the base interpreter;
-            # running the venv path activates the venv site-packages, while
-            # running the resolved base path does NOT. Returning the resolved
-            # base interpreter would silently drop the provider deps again.
             bin_dir = resolved.parent
             for py_name in ("python", "python3"):
                 candidate = bin_dir / py_name
-                if candidate.is_file() and os.access(candidate, os.X_OK):
+                if _is_validated_venv_python(candidate):
                     return candidate
 
     # 2. Check known hermes-agent checkout / install roots with a venv.
+    #    Held to the same bar as the launcher sibling above: a directory named
+    #    `venv` is not evidence that it is one. A half-removed environment, or
+    #    one whose base interpreter is gone, leaves `bin/python` in place with
+    #    no pyvenv.cfg beside it, and bootstrapping into that is the failure
+    #    this function exists to prevent.
     for root in [
         hermes_home_path / "hermes-agent",
         Path.home() / "hermes-agent",
@@ -774,22 +894,31 @@ def _find_hermes_python() -> Optional[Path]:
     ]:
         for venv_name in ("venv", ".venv"):
             candidate = root / venv_name / "bin" / "python"
-            if candidate.is_file():
-                return candidate.resolve()
+            if _is_validated_venv_python(candidate):
+                return candidate
 
-    # 3. Check if we're running inside Hermes' venv ourselves
+    # 3. Check if we're running inside Hermes' venv ourselves.
+    #    `sys.prefix != sys.base_prefix` says the *running* interpreter is in a
+    #    venv; it says nothing about the bin/python being asked for here, which
+    #    can be absent or non-executable in a partially built environment.
     if sys.prefix != sys.base_prefix:
         venv_python = Path(sys.prefix) / "bin" / "python"
-        if venv_python.is_file():
-            return venv_python.resolve()
+        if _is_validated_venv_python(venv_python):
+            return venv_python
 
-    # 4. Check VIRTUAL_ENV env var (uv-managed or explicit)
+    # 4. Check VIRTUAL_ENV env var (uv-managed or explicit).
+    #    This is an ordinary environment variable, not an assertion that a venv
+    #    is live: a stale or hand-set `VIRTUAL_ENV=/usr` names `/usr/bin/python`
+    #    and would hand bootstrap the system interpreter, which is the outcome
+    #    this function exists to prevent.
     ve = os.environ.get("VIRTUAL_ENV")
     if ve:
         candidate = Path(ve) / "bin" / "python"
-        if candidate.is_file():
-            return candidate.resolve()
+        if _is_validated_venv_python(candidate):
+            return candidate
 
+    # Nothing validated. Better to stop and let the caller ask for --python
+    # than to bootstrap into an interpreter that only looked plausible.
     return None
 
 
@@ -1831,7 +1960,11 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument(
         "--python",
         dest="python",
-        help="Python interpreter whose site-packages the wrapper should import from.",
+        help=(
+            "Hermes' Python interpreter. Authoritative when given: skips launcher "
+            "and install-root discovery. Also selects the site-packages a wrapper "
+            "install imports from."
+        ),
     )
     install.add_argument(
         "--migrate-wrapper-to-symlink",
@@ -1906,8 +2039,33 @@ def run_install(
 
     # Symlink installs need Hermes' own Python to contain the package. Wrapper
     # installs validate the explicitly selected interpreter in install_plugin().
-    hermes_python = _find_hermes_python() if mode == "symlink" else None
-    if hermes_python and hermes_python.resolve() != Path(sys.executable).resolve():
+    hermes_python = _find_hermes_python(explicit_python=python) if mode == "symlink" else None
+    if mode == "symlink" and hermes_python is None:
+        # Discovery found no validated Hermes runtime, so there is nothing safe
+        # to bootstrap into. Before #618 this path guessed at the launcher's
+        # sibling, which is typically the user's Homebrew or system interpreter.
+        print(
+            "\n  ⚠ Could not identify Hermes' Python.\n"
+            "     No `hermes` launcher on PATH resolved into a virtual environment,\n"
+            "     and no Hermes install root contains one.\n\n"
+            "  Point the installer at it directly:\n"
+            "    mnemosyne-hermes install --python /path/to/hermes/venv/bin/python\n\n"
+            "  `mnemosyne-hermes install --dry-run` shows what discovery found.",
+            file=sys.stderr,
+        )
+        # --no-bootstrap already means "do not touch Hermes' venv", so there is
+        # no wrong-interpreter install to prevent and the run continues without
+        # dependency validation, as it did before. Failing here instead would
+        # also preempt the guard that refuses to replace an existing wrapper
+        # install, turning a data-safety message into a discovery message.
+        if not no_bootstrap:
+            return 1
+        print("     Continuing without dependency validation (--no-bootstrap).", file=sys.stderr)
+    # Compare the paths as selected, not resolved. A venv's bin/python resolves
+    # to its base interpreter, so resolving both sides reports a venv and the
+    # base install as the same runtime and skips the check that bootstraps
+    # Hermes' venv (#618).
+    if hermes_python and hermes_python != Path(sys.executable):
         hermes_core = check_mnemosyne_core_for_hermes_python(hermes_python)
         if hermes_core is None:
             print(f"\n  ⚠ Hermes' Python at {hermes_python} can't import mnemosyne core.")
@@ -1973,7 +2131,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if command == "install":
             # Dry-run: just show what would happen
-            hermes_python = _find_hermes_python()
+            hermes_python = _find_hermes_python(
+                explicit_python=getattr(args, "python", None)
+            )
             target = plugin_target_dir(args.hermes_home)
             if getattr(args, "dry_run", False):
                 invalid_wrapper_migration_args = (
@@ -2021,7 +2181,12 @@ def main(argv: list[str] | None = None) -> int:
                         "  Will refuse to replace the existing wrapper without "
                         "--migrate-wrapper-to-symlink."
                     )
-                if hermes_python:
+                # Only a symlink install bootstraps Hermes' environment;
+                # run_install() does not even look for an interpreter in wrapper
+                # mode. Reporting a bootstrap here described something that
+                # would never run, and `--python` made it print for wrapper
+                # installs specifically.
+                if hermes_python and getattr(args, "mode", "symlink") == "symlink":
                     print(f"  Will bootstrap: {not getattr(args, 'no_bootstrap', False)}")
                 return 1 if invalid_wrapper_migration_args or refuses_wrapper_migration else 0
 
