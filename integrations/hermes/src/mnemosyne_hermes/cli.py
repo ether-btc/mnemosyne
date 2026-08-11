@@ -204,6 +204,19 @@ def mnemosyne_command(args):
             print(f"Bank validation failed: {e}")
             return 1
 
+    if cmd == "export" and bank:
+        try:
+            from mnemosyne.core.banks import get_bank_db_path_read_only
+            get_bank_db_path_read_only(bank)
+        except (FileNotFoundError, ValueError):
+            # Named exports require an existing bank database before the beam
+            # or output path can be initialized.
+            print(f"Bank not found: {bank}")
+            return 1
+        except Exception as e:
+            print(f"Bank validation failed: {e}")
+            return 1
+
     try:
         if bank:
             # Bank-aware beam (Mnemosyne routes the bank to its own SQLite DB),
@@ -299,7 +312,7 @@ def mnemosyne_command(args):
             return 1
         try:
             from mnemosyne.core.memory import Mnemosyne
-            mem = Mnemosyne(session_id="hermes_default")
+            mem = Mnemosyne(session_id="hermes_default", bank=bank)
             result = mem.export_to_file(output_path)
             print(f"Exported {result['working_memory_count']} working, {result['episodic_memory_count']} episodic, {result['legacy_memories_count']} legacy, {result['triples_count']} triples to {output_path}")
         except Exception as e:

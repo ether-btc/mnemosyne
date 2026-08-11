@@ -11,11 +11,15 @@ silently, again falling back to the default bank.
 """
 
 import importlib.util
+import json
 import types
 from pathlib import Path
 
-from mnemosyne_hermes.cli import _resolve_cli_bank, _get_provider_class
+import pytest
+from mnemosyne.core.memory import Mnemosyne
+
 import mnemosyne_hermes as _mnh
+from mnemosyne_hermes.cli import _get_provider_class, _resolve_cli_bank, mnemosyne_command
 
 
 def _args(**kw):
@@ -27,6 +31,19 @@ def _write_config(home, isolation):
     (home / "config.yaml").write_text(
         f"memory:\n  mnemosyne:\n    profile_isolation: {isolation}\n"
     )
+
+
+def _export_args(output, bank=None):
+    return _args(mnemosyne_cmd="export", output=str(output), bank=bank)
+
+
+def _seed_bank(bank, content):
+    Mnemosyne(session_id="hermes_default", bank=bank).remember(content)
+
+
+def _exported_contents(path):
+    payload = json.loads(path.read_text())
+    return {memory["content"] for memory in payload["working_memory"]}
 
 
 def test_explicit_bank_takes_precedence_and_is_sanitized(monkeypatch):
@@ -114,3 +131,68 @@ def test_standalone_load_via_spec_resolves_profile_bank(tmp_path, monkeypatch):
         f"standalone load: expected 'work', got {result!r}. "
         "This indicates the absolute-import fallback failed."
     )
+
+
+def test_export_explicit_bank_uses_only_selected_existing_bank(tmp_path, monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    _seed_bank(None, "default-only")
+    _seed_bank("work", "work-only")
+
+    output = tmp_path / "work.json"
+    assert mnemosyne_command(_export_args(output, bank="work")) == 0
+    assert _exported_contents(output) == {"work-only"}
+
+
+def test_export_profile_isolation_uses_implicit_selected_bank(tmp_path, monkeypatch):
+    home = tmp_path / "profiles" / "work"
+    _write_config(home, "true")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
+    _seed_bank(None, "default-only")
+    _seed_bank("work", "profile-work-only")
+
+    output = tmp_path / "profile.json"
+    assert mnemosyne_command(_export_args(output)) == 0
+    assert _exported_contents(output) == {"profile-work-only"}
+
+
+def test_export_without_selected_bank_keeps_legacy_default_behavior(tmp_path, monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    _seed_bank(None, "default-only")
+    _seed_bank("work", "work-only")
+
+    output = tmp_path / "default.json"
+    assert mnemosyne_command(_export_args(output)) == 0
+    assert _exported_contents(output) == {"default-only"}
+
+
+@pytest.mark.parametrize("implicit,incomplete", [(False, False), (True, True)])
+def test_export_missing_or_incomplete_selected_bank_creates_no_artifacts(
+    tmp_path, monkeypatch, capsys, implicit, incomplete
+):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    output = tmp_path / "must-not-exist.json"
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
+    if implicit:
+        home = tmp_path / "profiles" / "work"
+        _write_config(home, "true")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        if incomplete:
+            (data_dir / "banks" / "work").mkdir(parents=True)
+        args = _export_args(output)
+    else:
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        args = _export_args(output, bank="missing")
+
+    before = sorted(path.relative_to(data_dir) for path in data_dir.rglob("*"))
+    assert mnemosyne_command(args) == 1
+    assert "Bank not found:" in capsys.readouterr().out
+    assert not output.exists()
+    assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before
