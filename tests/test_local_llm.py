@@ -17,16 +17,15 @@ REAL_LOAD_LLM = local_llm._load_llm
 
 
 class TestLocalModelDownloadNotice:
-    def test_uncached_default_model_logs_notice_before_download(self, monkeypatch, tmp_path, caplog):
-        """The default GGUF warning is emitted once before its network fetch."""
+    def test_uncached_default_model_logs_notice_before_download(self, monkeypatch, tmp_path, caplog, capsys):
+        """The default GGUF warning is logged before its network fetch, not printed."""
         cache_dir = tmp_path / "models"
         events = []
+        download_calls = []
 
         def fake_download(**kwargs):
             events.append("download")
-            assert kwargs["repo_id"] == "openbmb/MiniCPM5-1B-GGUF"
-            assert kwargs["filename"] == "MiniCPM5-1B-Q4_K_M.gguf"
-            assert kwargs["local_dir"] == str(cache_dir)
+            download_calls.append(kwargs)
             return str(cache_dir / kwargs["filename"])
 
         monkeypatch.setattr(local_llm, "MODEL_CACHE_DIR", cache_dir)
@@ -44,6 +43,13 @@ class TestLocalModelDownloadNotice:
         local_llm._download_model()
 
         assert events == ["warning", "download"]
+        assert download_calls == [{
+            "repo_id": "openbmb/MiniCPM5-1B-GGUF",
+            "filename": "MiniCPM5-1B-Q4_K_M.gguf",
+            "local_dir": str(cache_dir),
+            "local_dir_use_symlinks": False,
+        }]
+        assert capsys.readouterr().out == ""
         message = caplog.records[-1].getMessage()
         assert "MiniCPM5-1B-Q4_K_M.gguf" in message
         assert "openbmb/MiniCPM5-1B-GGUF" in message
