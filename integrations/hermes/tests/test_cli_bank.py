@@ -16,7 +16,10 @@ import types
 from pathlib import Path
 
 import pytest
+from mnemosyne.core.annotations import AnnotationStore
+from mnemosyne.core.canonical import CanonicalStore
 from mnemosyne.core.memory import Mnemosyne
+from mnemosyne.core.triples import TripleStore
 
 import mnemosyne_hermes as _mnh
 from mnemosyne_hermes.cli import _get_provider_class, _resolve_cli_bank, mnemosyne_command
@@ -37,13 +40,41 @@ def _export_args(output, bank=None):
     return _args(mnemosyne_cmd="export", output=str(output), bank=bank)
 
 
-def _seed_bank(bank, content):
-    Mnemosyne(session_id="hermes_default", bank=bank).remember(content)
+def _seed_export_sections(bank, label):
+    """Seed every export section with a supported synthetic writer."""
+    marker = f"bank-marker-{label}"
+    memory = Mnemosyne(session_id="hermes_default", bank=bank)
+    memory_id = memory.remember(f"working-{marker}")
+    memory.beam.consolidate_to_episodic(f"episodic-{marker}", [memory_id])
+    memory.scratchpad_write(f"scratchpad-{marker}")
+    TripleStore(db_path=memory.db_path).add(f"triple-{marker}", "has", "value")
+    AnnotationStore(db_path=memory.db_path).add(memory_id, "fact", f"annotation-{marker}")
+    CanonicalStore(db_path=memory.db_path).remember(
+        f"owner-{marker}", "profile", "name", f"canonical-{marker}"
+    )
 
 
-def _exported_contents(path):
-    payload = json.loads(path.read_text())
-    return {memory["content"] for memory in payload["working_memory"]}
+def _read_export(path):
+    return json.loads(path.read_text())
+
+
+def _assert_export_has_only_label(payload, selected, excluded):
+    """Assert each seedable, bank-scoped export section is isolated."""
+    marker = f"bank-marker-{selected}"
+    excluded_marker = f"bank-marker-{excluded}"
+    expected_sections = {
+        "working_memory": f"working-{marker}",
+        "episodic_memory": f"episodic-{marker}",
+        "scratchpad": f"scratchpad-{marker}",
+        "legacy_memories": f"working-{marker}",
+        "triples": f"triple-{marker}",
+        "annotations": f"annotation-{marker}",
+        "canonical_facts": f"canonical-{marker}",
+    }
+    for section, expected_marker in expected_sections.items():
+        serialized = json.dumps(payload[section])
+        assert expected_marker in serialized, f"{section} omitted selected-bank content"
+        assert excluded_marker not in serialized, f"{section} leaked other-bank content"
 
 
 def test_explicit_bank_takes_precedence_and_is_sanitized(monkeypatch):
@@ -133,66 +164,80 @@ def test_standalone_load_via_spec_resolves_profile_bank(tmp_path, monkeypatch):
     )
 
 
-def test_export_explicit_bank_uses_only_selected_existing_bank(tmp_path, monkeypatch):
+def test_export_explicit_bank_has_no_default_content_in_seedable_sections(tmp_path, monkeypatch):
     monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
     monkeypatch.delenv("HERMES_HOME", raising=False)
-    _seed_bank(None, "default-only")
-    _seed_bank("work", "work-only")
+    _seed_export_sections(None, "default")
+    _seed_export_sections("work", "work")
 
     output = tmp_path / "work.json"
     assert mnemosyne_command(_export_args(output, bank="work")) == 0
-    assert _exported_contents(output) == {"work-only"}
+    _assert_export_has_only_label(_read_export(output), "work", "default")
 
 
-def test_export_profile_isolation_uses_implicit_selected_bank(tmp_path, monkeypatch):
+def test_export_profile_isolation_has_no_default_content_in_seedable_sections(
+    tmp_path, monkeypatch
+):
     home = tmp_path / "profiles" / "work"
     _write_config(home, "true")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
-    _seed_bank(None, "default-only")
-    _seed_bank("work", "profile-work-only")
+    _seed_export_sections(None, "default")
+    _seed_export_sections("work", "work")
 
     output = tmp_path / "profile.json"
     assert mnemosyne_command(_export_args(output)) == 0
-    assert _exported_contents(output) == {"profile-work-only"}
+    _assert_export_has_only_label(_read_export(output), "work", "default")
 
 
 def test_export_without_selected_bank_keeps_legacy_default_behavior(tmp_path, monkeypatch):
     monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
     monkeypatch.delenv("HERMES_HOME", raising=False)
-    _seed_bank(None, "default-only")
-    _seed_bank("work", "work-only")
+    _seed_export_sections(None, "default")
+    _seed_export_sections("work", "work")
 
     output = tmp_path / "default.json"
     assert mnemosyne_command(_export_args(output)) == 0
-    assert _exported_contents(output) == {"default-only"}
+    _assert_export_has_only_label(_read_export(output), "default", "work")
 
 
-@pytest.mark.parametrize("implicit,incomplete", [(False, False), (True, True)])
-def test_export_missing_or_incomplete_selected_bank_creates_no_artifacts(
-    tmp_path, monkeypatch, capsys, implicit, incomplete
+@pytest.mark.parametrize(
+    "selection,bank",
+    [("explicit", "missing"), ("implicit", "work")],
+)
+@pytest.mark.parametrize("state", ["missing", "incomplete"])
+def test_export_selected_missing_or_incomplete_bank_has_no_artifacts(
+    tmp_path, monkeypatch, capsys, selection, bank, state
 ):
+    """A selected named bank needs its directory and SQLite DB before export.
+
+    ``get_bank_db_path_read_only`` defines an incomplete bank as a bank directory
+    without ``mnemosyne.db``; it deliberately accepts any existing SQLite file
+    and does not validate that file's schema.
+    """
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     output = tmp_path / "must-not-exist.json"
     monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(data_dir))
     monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
-    if implicit:
-        home = tmp_path / "profiles" / "work"
+    if selection == "implicit":
+        home = tmp_path / "profiles" / bank
         _write_config(home, "true")
         monkeypatch.setenv("HERMES_HOME", str(home))
-        if incomplete:
-            (data_dir / "banks" / "work").mkdir(parents=True)
         args = _export_args(output)
     else:
         monkeypatch.delenv("HERMES_HOME", raising=False)
-        args = _export_args(output, bank="missing")
+        args = _export_args(output, bank=bank)
+    if state == "incomplete":
+        (data_dir / "banks" / bank).mkdir(parents=True)
 
+    selected_path = data_dir / "banks" / bank
     before = sorted(path.relative_to(data_dir) for path in data_dir.rglob("*"))
     assert mnemosyne_command(args) == 1
     assert "Bank not found:" in capsys.readouterr().out
     assert not output.exists()
+    assert not (selected_path / "mnemosyne.db").exists()
     assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before
