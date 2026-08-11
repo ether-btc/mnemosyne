@@ -16,8 +16,13 @@ import sqlite3
 import types
 from pathlib import Path
 
-import mnemosyne_hermes as _mnh
 import pytest
+from mnemosyne.core.annotations import AnnotationStore
+from mnemosyne.core.canonical import CanonicalStore
+from mnemosyne.core.memory import Mnemosyne
+from mnemosyne.core.triples import TripleStore
+
+import mnemosyne_hermes as _mnh
 from mnemosyne_hermes.cli import (
     _EXPORT_REQUIRED_COLUMNS,
     _EXPORT_REQUIRED_TABLES,
@@ -26,11 +31,6 @@ from mnemosyne_hermes.cli import (
     _resolve_cli_bank,
     mnemosyne_command,
 )
-
-from mnemosyne.core.annotations import AnnotationStore
-from mnemosyne.core.canonical import CanonicalStore
-from mnemosyne.core.memory import Mnemosyne
-from mnemosyne.core.triples import TripleStore
 
 
 def _args(**kw):
@@ -302,18 +302,26 @@ def test_export_bank_validation_error_does_not_disclose_exception_details(
     tmp_path, monkeypatch, capsys
 ):
     """Unexpected preflight errors remain concise and do not expose DB paths."""
+    calls = []
+
     def raise_validation_error(bank):
+        calls.append(bank)
         raise RuntimeError(f"cannot inspect {tmp_path / 'private' / bank / 'mnemosyne.db'}")
 
     monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
     monkeypatch.setattr(
         "mnemosyne.core.banks.get_bank_db_path_read_only", raise_validation_error
     )
 
-    assert mnemosyne_command(_export_args(tmp_path / "export.json", bank="work")) == 1
+    output_path = tmp_path / "export.json"
+    assert mnemosyne_command(_export_args(output_path, bank="work")) == 1
     output = capsys.readouterr().out
     assert output == "Bank validation failed\n"
     assert str(tmp_path) not in output
+    assert calls == ["work"]
+    assert not output_path.exists()
 
 
 @pytest.mark.parametrize("raise_on_execute", [False, True])
@@ -369,10 +377,11 @@ def test_export_selected_bank_with_incomplete_sqlite_schema_is_untouched(
     else:
         monkeypatch.delenv("HERMES_HOME", raising=False)
         args = _export_args(tmp_path / "export.json", bank=bank)
+    output = Path(args.output)
 
     assert mnemosyne_command(args) == 1
     assert f"Bank schema incomplete: {bank}" in capsys.readouterr().out
-    assert not Path(args.output).exists()
+    assert not output.exists()
     assert db_path.read_bytes() == before_bytes
     assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before_paths
 
@@ -451,10 +460,11 @@ def test_export_selected_bank_rejects_each_missing_exporter_table_without_mutati
         conn.execute(f'DROP TABLE "{missing_table}"')
     before_bytes = db_path.read_bytes()
     before_paths = sorted(path.relative_to(data_dir) for path in data_dir.rglob("*"))
+    output = Path(args.output)
 
     assert mnemosyne_command(args) == 1
     assert f"Bank schema incomplete: {bank}" in capsys.readouterr().out
-    assert not Path(args.output).exists()
+    assert not output.exists()
     assert db_path.read_bytes() == before_bytes
     assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before_paths
 
@@ -474,10 +484,11 @@ def test_export_selected_bank_rejects_each_missing_exporter_column_without_mutat
         )
     before_bytes = db_path.read_bytes()
     before_paths = sorted(path.relative_to(data_dir) for path in data_dir.rglob("*"))
+    output = Path(args.output)
 
     assert mnemosyne_command(args) == 1
     assert f"Bank schema incomplete: {bank}" in capsys.readouterr().out
-    assert not Path(args.output).exists()
+    assert not output.exists()
     assert db_path.read_bytes() == before_bytes
     assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before_paths
 
