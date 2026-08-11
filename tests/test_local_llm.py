@@ -1,7 +1,9 @@
 import builtins
+import logging
 import os
 import subprocess
 import sys
+import types
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -10,6 +12,85 @@ from mnemosyne.core.llm_backends import (
     CallableLLMBackend,
     set_host_llm_backend,
 )
+
+REAL_LOAD_LLM = local_llm._load_llm
+
+
+class TestLocalModelDownloadNotice:
+    def test_uncached_default_model_logs_notice_before_download(self, monkeypatch, tmp_path, caplog):
+        """The default GGUF warning is emitted once before its network fetch."""
+        cache_dir = tmp_path / "models"
+        events = []
+
+        def fake_download(**kwargs):
+            events.append("download")
+            assert kwargs["repo_id"] == "openbmb/MiniCPM5-1B-GGUF"
+            assert kwargs["filename"] == "MiniCPM5-1B-Q4_K_M.gguf"
+            assert kwargs["local_dir"] == str(cache_dir)
+            return str(cache_dir / kwargs["filename"])
+
+        monkeypatch.setattr(local_llm, "MODEL_CACHE_DIR", cache_dir)
+        monkeypatch.setattr(local_llm, "DEFAULT_MODEL_REPO", "openbmb/MiniCPM5-1B-GGUF")
+        monkeypatch.setattr(local_llm, "DEFAULT_MODEL_FILE", "MiniCPM5-1B-Q4_K_M.gguf")
+        monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(hf_hub_download=fake_download))
+        caplog.set_level(logging.WARNING, logger=local_llm.__name__)
+        original_warning = local_llm.logger.warning
+
+        def record_warning(*args, **kwargs):
+            events.append("warning")
+            return original_warning(*args, **kwargs)
+
+        monkeypatch.setattr(local_llm.logger, "warning", record_warning)
+        local_llm._download_model()
+
+        assert events == ["warning", "download"]
+        message = caplog.records[-1].getMessage()
+        assert "MiniCPM5-1B-Q4_K_M.gguf" in message
+        assert "openbmb/MiniCPM5-1B-GGUF" in message
+        assert str(cache_dir) in message
+        assert "approximately 656 MB" in message
+        assert "MNEMOSYNE_LLM_ENABLED=false" in message
+        assert "pre-cache" in message
+
+    def test_cached_model_skips_notice_and_download(self, monkeypatch, tmp_path, caplog):
+        """An already cached GGUF does not produce download-related output."""
+        cache_dir = tmp_path / "models"
+        cache_dir.mkdir()
+        model_file = cache_dir / "cached.gguf"
+        model_file.touch()
+        monkeypatch.setattr(local_llm, "MODEL_CACHE_DIR", cache_dir)
+        monkeypatch.setattr(local_llm, "DEFAULT_MODEL_FILE", model_file.name)
+        caplog.set_level(logging.WARNING, logger=local_llm.__name__)
+
+        with patch.dict(sys.modules, {"huggingface_hub": None}):
+            assert local_llm._download_model() == model_file
+
+        assert not caplog.records
+
+    def test_overridden_model_omits_default_size_and_failed_download_falls_back(self, monkeypatch, tmp_path, caplog):
+        """Custom artifacts avoid a misleading size claim and retain AAAK fallback."""
+        cache_dir = tmp_path / "models"
+
+        def failed_download(**kwargs):
+            raise OSError("offline")
+
+        monkeypatch.setattr(local_llm, "MODEL_CACHE_DIR", cache_dir)
+        monkeypatch.setattr(local_llm, "DEFAULT_MODEL_REPO", "example/custom-gguf")
+        monkeypatch.setattr(local_llm, "DEFAULT_MODEL_FILE", "custom.gguf")
+        monkeypatch.setattr(local_llm, "LLM_ENABLED", True)
+        monkeypatch.setattr(local_llm, "_llm_instance", None)
+        monkeypatch.setattr(local_llm, "_llm_available", None)
+        monkeypatch.setattr(local_llm, "_load_llm", REAL_LOAD_LLM)
+        monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(hf_hub_download=failed_download))
+        caplog.set_level(logging.WARNING, logger=local_llm.__name__)
+
+        assert local_llm._load_llm() is None
+        assert local_llm._llm_available is False
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert "custom.gguf" in message
+        assert "example/custom-gguf" in message
+        assert "656 MB" not in message
 
 
 class TestRemoteLLM:
