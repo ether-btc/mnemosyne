@@ -12,6 +12,7 @@ silently, again falling back to the default bank.
 
 import importlib.util
 import json
+import sqlite3
 import types
 from pathlib import Path
 
@@ -241,3 +242,35 @@ def test_export_selected_missing_or_incomplete_bank_has_no_artifacts(
     assert not output.exists()
     assert not (selected_path / "mnemosyne.db").exists()
     assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before
+
+
+@pytest.mark.parametrize("selection,bank", [("explicit", "work"), ("implicit", "profile")])
+def test_export_selected_bank_with_incomplete_sqlite_schema_is_untouched(
+    tmp_path, monkeypatch, capsys, selection, bank
+):
+    """A selected SQLite file without Mnemosyne's export schema fails closed."""
+    data_dir = tmp_path / "data"
+    selected_dir = data_dir / "banks" / bank
+    selected_dir.mkdir(parents=True)
+    db_path = selected_dir / "mnemosyne.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+    before_bytes = db_path.read_bytes()
+    before_paths = sorted(path.relative_to(data_dir) for path in data_dir.rglob("*"))
+
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
+    if selection == "implicit":
+        home = tmp_path / "profiles" / bank
+        _write_config(home, "true")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        args = _export_args(tmp_path / "must-not-exist.json")
+    else:
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        args = _export_args(tmp_path / "must-not-exist.json", bank=bank)
+
+    assert mnemosyne_command(args) == 1
+    assert f"Bank schema incomplete: {bank}" in capsys.readouterr().out
+    assert not Path(args.output).exists()
+    assert db_path.read_bytes() == before_bytes
+    assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before_paths

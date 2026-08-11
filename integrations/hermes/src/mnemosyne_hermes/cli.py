@@ -8,12 +8,42 @@ from __future__ import annotations
 import json
 import importlib.metadata
 import os
+import sqlite3
 from pathlib import Path
 
 _BANK_HELP = (
     "Mnemosyne bank to operate on. Defaults to the active Hermes profile's bank "
     "when profile_isolation is enabled, otherwise the shared default bank."
 )
+
+# These are the persistent tables read unconditionally by Mnemosyne's JSON
+# exporter. Checking their names through SQLite's read-only URI gives selected
+# banks a fail-closed boundary before constructing Beam/Mnemosyne (whose schema
+# setup is intentionally write-capable).
+_EXPORT_REQUIRED_TABLES = frozenset({
+    "annotations",
+    "canonical_facts",
+    "consolidation_log",
+    "episodic_memory",
+    "memories",
+    "memory_embeddings",
+    "scratchpad",
+    "triples",
+    "working_memory",
+})
+
+
+def _export_schema_is_complete_read_only(db_path: Path) -> bool:
+    """Check the selected export DB's required tables without opening it writable."""
+    placeholders = ", ".join("?" for _ in _EXPORT_REQUIRED_TABLES)
+    db_uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    with sqlite3.connect(db_uri, uri=True) as conn:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name IN (" + placeholders + ")",
+            tuple(_EXPORT_REQUIRED_TABLES),
+        )
+        return {row[0] for row in rows} == _EXPORT_REQUIRED_TABLES
 
 
 def _distribution_version(distribution: str) -> str:
@@ -207,7 +237,10 @@ def mnemosyne_command(args):
     if cmd == "export" and bank:
         try:
             from mnemosyne.core.banks import get_bank_db_path_read_only
-            get_bank_db_path_read_only(bank)
+            db_path = get_bank_db_path_read_only(bank)
+            if not _export_schema_is_complete_read_only(db_path):
+                print(f"Bank schema incomplete: {bank}")
+                return 1
         except (FileNotFoundError, ValueError):
             # Named exports require an existing bank database before the beam
             # or output path can be initialized.
