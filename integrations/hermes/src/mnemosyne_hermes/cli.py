@@ -16,34 +16,58 @@ _BANK_HELP = (
     "when profile_isolation is enabled, otherwise the shared default bank."
 )
 
-# These are the persistent tables read unconditionally by Mnemosyne's JSON
-# exporter. Checking their names through SQLite's read-only URI gives selected
-# banks a fail-closed boundary before constructing Beam/Mnemosyne (whose schema
-# setup is intentionally write-capable).
-_EXPORT_REQUIRED_TABLES = frozenset({
-    "annotations",
-    "canonical_facts",
-    "consolidation_log",
-    "episodic_memory",
-    "memories",
-    "memory_embeddings",
-    "scratchpad",
-    "triples",
-    "working_memory",
-})
+# Persistent table columns read unconditionally by Mnemosyne's JSON exporter:
+# Mnemosyne.export_to_file(), BeamMemory.export_to_dict(), and the TripleStore,
+# AnnotationStore, and CanonicalStore export_all() methods. Checking this
+# contract through SQLite's read-only URI gives selected banks a fail-closed
+# boundary before constructing Beam/Mnemosyne (whose schema setup is intentionally
+# write-capable). It deliberately excludes optional sync and vector storage.
+_EXPORT_REQUIRED_COLUMNS = {
+    "working_memory": frozenset({
+        "id", "content", "source", "timestamp", "session_id", "importance",
+        "metadata_json", "valid_until", "superseded_by", "scope", "recall_count",
+        "last_recalled", "created_at", "veracity", "consolidated_at",
+        "consolidation_claimed_at",
+    }),
+    "episodic_memory": frozenset({
+        "id", "content", "source", "timestamp", "session_id", "importance",
+        "metadata_json", "summary_of", "valid_until", "superseded_by", "scope",
+        "recall_count", "last_recalled", "created_at",
+    }),
+    "scratchpad": frozenset({"id", "content", "session_id", "created_at", "updated_at"}),
+    "consolidation_log": frozenset({
+        "id", "session_id", "items_consolidated", "summary_preview", "created_at",
+    }),
+    "memories": frozenset({
+        "id", "content", "source", "timestamp", "session_id", "importance",
+        "metadata_json", "created_at",
+    }),
+    "memory_embeddings": frozenset({"memory_id", "embedding_json", "model", "created_at"}),
+    "triples": frozenset({
+        "id", "subject", "predicate", "object", "valid_from", "valid_until",
+        "source", "confidence", "created_at",
+    }),
+    "annotations": frozenset({
+        "id", "memory_id", "kind", "value", "source", "confidence", "created_at",
+    }),
+    "canonical_facts": frozenset({
+        "id", "owner_id", "category", "name", "body", "source", "confidence",
+        "version", "valid_from", "valid_until", "created_at",
+    }),
+}
+_EXPORT_REQUIRED_TABLES = frozenset(_EXPORT_REQUIRED_COLUMNS)
 
 
 def _export_schema_is_complete_read_only(db_path: Path) -> bool:
-    """Check the selected export DB's required tables without opening it writable."""
-    placeholders = ", ".join("?" for _ in _EXPORT_REQUIRED_TABLES)
+    """Check selected export tables and read columns without opening it writable."""
     db_uri = f"{db_path.resolve().as_uri()}?mode=ro"
     with sqlite3.connect(db_uri, uri=True) as conn:
-        rows = conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type = 'table' AND name IN (" + placeholders + ")",
-            tuple(_EXPORT_REQUIRED_TABLES),
-        )
-        return {row[0] for row in rows} == _EXPORT_REQUIRED_TABLES
+        for table, required_columns in _EXPORT_REQUIRED_COLUMNS.items():
+            # Table names are from the local fixed contract, not user input.
+            columns = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+            if not required_columns <= columns:
+                return False
+    return True
 
 
 def _distribution_version(distribution: str) -> str:

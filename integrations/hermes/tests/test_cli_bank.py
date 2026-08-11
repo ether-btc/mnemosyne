@@ -24,6 +24,7 @@ from mnemosyne.core.triples import TripleStore
 
 import mnemosyne_hermes as _mnh
 from mnemosyne_hermes.cli import (
+    _EXPORT_REQUIRED_COLUMNS,
     _EXPORT_REQUIRED_TABLES,
     _export_schema_is_complete_read_only,
     _get_provider_class,
@@ -329,18 +330,46 @@ def test_export_selected_bank_with_incomplete_sqlite_schema_is_untouched(
     assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before_paths
 
 
-_EXPORTER_TABLES = frozenset(
-    {
-        "working_memory",
-        "episodic_memory",
-        "scratchpad",
-        "consolidation_log",
-        "memories",
-        "memory_embeddings",
-        "triples",
-        "annotations",
-        "canonical_facts",
-    }
+# Mirror only the columns selected by the current unconditional JSON export
+# queries. This makes a contract change in an exporter fail this boundary test.
+_EXPORTER_REQUIRED_COLUMNS = {
+    "working_memory": frozenset({
+        "id", "content", "source", "timestamp", "session_id", "importance",
+        "metadata_json", "valid_until", "superseded_by", "scope", "recall_count",
+        "last_recalled", "created_at", "veracity", "consolidated_at",
+        "consolidation_claimed_at",
+    }),
+    "episodic_memory": frozenset({
+        "id", "content", "source", "timestamp", "session_id", "importance",
+        "metadata_json", "summary_of", "valid_until", "superseded_by", "scope",
+        "recall_count", "last_recalled", "created_at",
+    }),
+    "scratchpad": frozenset({"id", "content", "session_id", "created_at", "updated_at"}),
+    "consolidation_log": frozenset({
+        "id", "session_id", "items_consolidated", "summary_preview", "created_at",
+    }),
+    "memories": frozenset({
+        "id", "content", "source", "timestamp", "session_id", "importance",
+        "metadata_json", "created_at",
+    }),
+    "memory_embeddings": frozenset({"memory_id", "embedding_json", "model", "created_at"}),
+    "triples": frozenset({
+        "id", "subject", "predicate", "object", "valid_from", "valid_until",
+        "source", "confidence", "created_at",
+    }),
+    "annotations": frozenset({
+        "id", "memory_id", "kind", "value", "source", "confidence", "created_at",
+    }),
+    "canonical_facts": frozenset({
+        "id", "owner_id", "category", "name", "body", "source", "confidence",
+        "version", "valid_from", "valid_until", "created_at",
+    }),
+}
+_EXPORTER_TABLES = frozenset(_EXPORTER_REQUIRED_COLUMNS)
+_EXPORTER_REQUIRED_COLUMN_CASES = tuple(
+    (table, column)
+    for table, columns in sorted(_EXPORTER_REQUIRED_COLUMNS.items())
+    for column in sorted(columns)
 )
 
 
@@ -368,6 +397,7 @@ def test_export_selected_bank_rejects_each_missing_exporter_table_without_mutati
     tmp_path, monkeypatch, capsys, selection, bank, missing_table
 ):
     """Every table read unconditionally by the exporter is a probe dependency."""
+    assert _EXPORT_REQUIRED_COLUMNS == _EXPORTER_REQUIRED_COLUMNS
     assert _EXPORT_REQUIRED_TABLES == _EXPORTER_TABLES
     args, data_dir, db_path = _initialized_selected_export(tmp_path, monkeypatch, selection, bank)
     with sqlite3.connect(db_path) as conn:
@@ -381,6 +411,28 @@ def test_export_selected_bank_rejects_each_missing_exporter_table_without_mutati
     assert db_path.read_bytes() == before_bytes
     assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before_paths
 
+
+@pytest.mark.parametrize("selection,bank", [("explicit", "work"), ("implicit", "profile")])
+@pytest.mark.parametrize("table,column", _EXPORTER_REQUIRED_COLUMN_CASES)
+def test_export_selected_bank_rejects_each_missing_exporter_column_without_mutation(
+    tmp_path, monkeypatch, capsys, selection, bank, table, column
+):
+    """Every unconditional exporter column fails selected-bank preflight closed."""
+    assert _EXPORT_REQUIRED_COLUMNS == _EXPORTER_REQUIRED_COLUMNS
+    args, data_dir, db_path = _initialized_selected_export(tmp_path, monkeypatch, selection, bank)
+    renamed_column = f"missing_export_column_{column}"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            f'ALTER TABLE "{table}" RENAME COLUMN "{column}" TO "{renamed_column}"'
+        )
+    before_bytes = db_path.read_bytes()
+    before_paths = sorted(path.relative_to(data_dir) for path in data_dir.rglob("*"))
+
+    assert mnemosyne_command(args) == 1
+    assert f"Bank schema incomplete: {bank}" in capsys.readouterr().out
+    assert not Path(args.output).exists()
+    assert db_path.read_bytes() == before_bytes
+    assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before_paths
 
 @pytest.mark.parametrize("selection,bank", [("explicit", "work"), ("implicit", "profile")])
 def test_export_selected_bank_does_not_require_optional_sync_table(
