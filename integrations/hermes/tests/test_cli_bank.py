@@ -23,7 +23,13 @@ from mnemosyne.core.memory import Mnemosyne
 from mnemosyne.core.triples import TripleStore
 
 import mnemosyne_hermes as _mnh
-from mnemosyne_hermes.cli import _get_provider_class, _resolve_cli_bank, mnemosyne_command
+from mnemosyne_hermes.cli import (
+    _EXPORT_REQUIRED_TABLES,
+    _export_schema_is_complete_read_only,
+    _get_provider_class,
+    _resolve_cli_bank,
+    mnemosyne_command,
+)
 
 
 def _args(**kw):
@@ -41,8 +47,8 @@ def _export_args(output, bank=None):
     return _args(mnemosyne_cmd="export", output=str(output), bank=bank)
 
 
-def _seed_export_sections(bank, label):
-    """Seed every export section with a supported synthetic writer."""
+def _seed_export_sections(bank, label, *, include_episodic_embedding=False):
+    """Seed every non-optional export section with bank-specific content."""
     marker = f"bank-marker-{label}"
     memory = Mnemosyne(session_id="hermes_default", bank=bank)
     memory_id = memory.remember(f"working-{marker}")
@@ -53,6 +59,43 @@ def _seed_export_sections(bank, label):
     CanonicalStore(db_path=memory.db_path).remember(
         f"owner-{marker}", "profile", "name", f"canonical-{marker}"
     )
+    # The public writers above cover the normal memory sections. The exporter
+    # also reads these persistent rows directly, so use a disposable test DB to
+    # make their bank provenance observable without a vector backend or an
+    # actual consolidation run.
+    if include_episodic_embedding:
+        # Use Beam's connection so a real vec0 table, when present, can be
+        # replaced safely with this disposable, deterministic test table.
+        episode_rowid = memory.conn.execute(
+            "SELECT rowid FROM episodic_memory WHERE content = ?",
+            (f"episodic-{marker}",),
+        ).fetchone()[0]
+        memory.conn.execute("DROP TABLE IF EXISTS vec_episodes")
+        memory.conn.execute(
+            "CREATE TABLE vec_episodes (rowid INTEGER PRIMARY KEY, embedding TEXT NOT NULL)"
+        )
+        memory.conn.execute(
+            "INSERT INTO vec_episodes (rowid, embedding) VALUES (?, ?)",
+            (episode_rowid, json.dumps([f"episodic-embedding-{marker}"])),
+        )
+        memory.conn.commit()
+    with sqlite3.connect(memory.db_path) as conn:
+        conn.execute(
+            "INSERT INTO consolidation_log "
+            "(session_id, items_consolidated, summary_preview, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("hermes_default", 1, f"consolidation-{marker}", "2026-01-01T00:00:00"),
+        )
+        conn.execute(
+            "INSERT INTO memory_embeddings "
+            "(memory_id, embedding_json, model, created_at) VALUES (?, ?, ?, ?)",
+            (
+                f"legacy-embedding-{marker}",
+                json.dumps([f"legacy-embedding-{marker}"]),
+                "test",
+                "2026-01-01T00:00:00",
+            ),
+        )
 
 
 def _read_export(path):
@@ -60,14 +103,17 @@ def _read_export(path):
 
 
 def _assert_export_has_only_label(payload, selected, excluded):
-    """Assert each seedable, bank-scoped export section is isolated."""
+    """Assert every non-optional payload section is selected-bank-only."""
     marker = f"bank-marker-{selected}"
     excluded_marker = f"bank-marker-{excluded}"
     expected_sections = {
         "working_memory": f"working-{marker}",
         "episodic_memory": f"episodic-{marker}",
+        "episodic_embeddings": f"episodic-embedding-{marker}",
         "scratchpad": f"scratchpad-{marker}",
+        "consolidation_log": f"consolidation-{marker}",
         "legacy_memories": f"working-{marker}",
+        "legacy_embeddings": f"legacy-embedding-{marker}",
         "triples": f"triple-{marker}",
         "annotations": f"annotation-{marker}",
         "canonical_facts": f"canonical-{marker}",
@@ -76,6 +122,10 @@ def _assert_export_has_only_label(payload, selected, excluded):
         serialized = json.dumps(payload[section])
         assert expected_marker in serialized, f"{section} omitted selected-bank content"
         assert excluded_marker not in serialized, f"{section} leaked other-bank content"
+    # Section-specific presence above proves that all exporter sections were
+    # actually exercised; this whole-payload check catches a future section
+    # added to the exporter that accidentally binds to the default database.
+    assert excluded_marker not in json.dumps(payload)
 
 
 def test_explicit_bank_takes_precedence_and_is_sanitized(monkeypatch):
@@ -168,9 +218,10 @@ def test_standalone_load_via_spec_resolves_profile_bank(tmp_path, monkeypatch):
 def test_export_explicit_bank_has_no_default_content_in_seedable_sections(tmp_path, monkeypatch):
     monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
+    monkeypatch.setattr("mnemosyne.core.beam._vec_available", lambda conn: True)
     monkeypatch.delenv("HERMES_HOME", raising=False)
-    _seed_export_sections(None, "default")
-    _seed_export_sections("work", "work")
+    _seed_export_sections(None, "default", include_episodic_embedding=True)
+    _seed_export_sections("work", "work", include_episodic_embedding=True)
 
     output = tmp_path / "work.json"
     assert mnemosyne_command(_export_args(output, bank="work")) == 0
@@ -185,8 +236,9 @@ def test_export_profile_isolation_has_no_default_content_in_seedable_sections(
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
-    _seed_export_sections(None, "default")
-    _seed_export_sections("work", "work")
+    monkeypatch.setattr("mnemosyne.core.beam._vec_available", lambda conn: True)
+    _seed_export_sections(None, "default", include_episodic_embedding=True)
+    _seed_export_sections("work", "work", include_episodic_embedding=True)
 
     output = tmp_path / "profile.json"
     assert mnemosyne_command(_export_args(output)) == 0
@@ -196,9 +248,10 @@ def test_export_profile_isolation_has_no_default_content_in_seedable_sections(
 def test_export_without_selected_bank_keeps_legacy_default_behavior(tmp_path, monkeypatch):
     monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
+    monkeypatch.setattr("mnemosyne.core.beam._vec_available", lambda conn: True)
     monkeypatch.delenv("HERMES_HOME", raising=False)
-    _seed_export_sections(None, "default")
-    _seed_export_sections("work", "work")
+    _seed_export_sections(None, "default", include_episodic_embedding=True)
+    _seed_export_sections("work", "work", include_episodic_embedding=True)
 
     output = tmp_path / "default.json"
     assert mnemosyne_command(_export_args(output)) == 0
@@ -272,5 +325,79 @@ def test_export_selected_bank_with_incomplete_sqlite_schema_is_untouched(
     assert mnemosyne_command(args) == 1
     assert f"Bank schema incomplete: {bank}" in capsys.readouterr().out
     assert not Path(args.output).exists()
+    assert db_path.read_bytes() == before_bytes
+    assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before_paths
+
+
+_EXPORTER_TABLES = frozenset(
+    {
+        "working_memory",
+        "episodic_memory",
+        "scratchpad",
+        "consolidation_log",
+        "memories",
+        "memory_embeddings",
+        "triples",
+        "annotations",
+        "canonical_facts",
+    }
+)
+
+
+def _initialized_selected_export(tmp_path, monkeypatch, selection, bank):
+    """Create a complete selected bank and configure its CLI selection mode."""
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
+    _seed_export_sections(bank, "selected")
+    db_path = data_dir / "banks" / bank / "mnemosyne.db"
+    if selection == "implicit":
+        home = tmp_path / "profiles" / bank
+        _write_config(home, "true")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        args = _export_args(tmp_path / "must-not-exist.json")
+    else:
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        args = _export_args(tmp_path / "must-not-exist.json", bank=bank)
+    return args, data_dir, db_path
+
+
+@pytest.mark.parametrize("selection,bank", [("explicit", "work"), ("implicit", "profile")])
+@pytest.mark.parametrize("missing_table", sorted(_EXPORTER_TABLES))
+def test_export_selected_bank_rejects_each_missing_exporter_table_without_mutation(
+    tmp_path, monkeypatch, capsys, selection, bank, missing_table
+):
+    """Every table read unconditionally by the exporter is a probe dependency."""
+    assert _EXPORT_REQUIRED_TABLES == _EXPORTER_TABLES
+    args, data_dir, db_path = _initialized_selected_export(tmp_path, monkeypatch, selection, bank)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(f'DROP TABLE "{missing_table}"')
+    before_bytes = db_path.read_bytes()
+    before_paths = sorted(path.relative_to(data_dir) for path in data_dir.rglob("*"))
+
+    assert mnemosyne_command(args) == 1
+    assert f"Bank schema incomplete: {bank}" in capsys.readouterr().out
+    assert not Path(args.output).exists()
+    assert db_path.read_bytes() == before_bytes
+    assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before_paths
+
+
+@pytest.mark.parametrize("selection,bank", [("explicit", "work"), ("implicit", "profile")])
+def test_export_selected_bank_does_not_require_optional_sync_table(
+    tmp_path, monkeypatch, selection, bank
+):
+    """Optional sync storage is absent from the read-only probe and export path."""
+    args, data_dir, db_path = _initialized_selected_export(tmp_path, monkeypatch, selection, bank)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE IF EXISTS memory_events")
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert "memory_events" not in tables
+    assert _export_schema_is_complete_read_only(db_path)
+    before_bytes = db_path.read_bytes()
+    before_paths = sorted(path.relative_to(data_dir) for path in data_dir.rglob("*"))
+
+    assert mnemosyne_command(args) == 0
+    payload = _read_export(Path(args.output))
+    assert "working-bank-marker-selected" in json.dumps(payload["working_memory"])
     assert db_path.read_bytes() == before_bytes
     assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before_paths
