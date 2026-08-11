@@ -16,13 +16,8 @@ import sqlite3
 import types
 from pathlib import Path
 
-import pytest
-from mnemosyne.core.annotations import AnnotationStore
-from mnemosyne.core.canonical import CanonicalStore
-from mnemosyne.core.memory import Mnemosyne
-from mnemosyne.core.triples import TripleStore
-
 import mnemosyne_hermes as _mnh
+import pytest
 from mnemosyne_hermes.cli import (
     _EXPORT_REQUIRED_COLUMNS,
     _EXPORT_REQUIRED_TABLES,
@@ -31,6 +26,11 @@ from mnemosyne_hermes.cli import (
     _resolve_cli_bank,
     mnemosyne_command,
 )
+
+from mnemosyne.core.annotations import AnnotationStore
+from mnemosyne.core.canonical import CanonicalStore
+from mnemosyne.core.memory import Mnemosyne
+from mnemosyne.core.triples import TripleStore
 
 
 def _args(**kw):
@@ -275,7 +275,7 @@ def test_export_selected_missing_or_incomplete_bank_has_no_artifacts(
     """
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    output = tmp_path / "must-not-exist.json"
+    output = tmp_path / "export.json"
     monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(data_dir))
     monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
     if selection == "implicit":
@@ -298,6 +298,53 @@ def test_export_selected_missing_or_incomplete_bank_has_no_artifacts(
     assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before
 
 
+def test_export_bank_validation_error_does_not_disclose_exception_details(
+    tmp_path, monkeypatch, capsys
+):
+    """Unexpected preflight errors remain concise and do not expose DB paths."""
+    def raise_validation_error(bank):
+        raise RuntimeError(f"cannot inspect {tmp_path / 'private' / bank / 'mnemosyne.db'}")
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(
+        "mnemosyne.core.banks.get_bank_db_path_read_only", raise_validation_error
+    )
+
+    assert mnemosyne_command(_export_args(tmp_path / "export.json", bank="work")) == 1
+    output = capsys.readouterr().out
+    assert output == "Bank validation failed\n"
+    assert str(tmp_path) not in output
+
+
+@pytest.mark.parametrize("raise_on_execute", [False, True])
+def test_export_schema_probe_closes_connection_on_all_paths(
+    tmp_path, monkeypatch, raise_on_execute
+):
+    """The read-only preflight closes even on early return or query failure."""
+    class Connection:
+        closed = False
+
+        def execute(self, query):
+            if raise_on_execute:
+                raise sqlite3.DatabaseError("query failed")
+            return []
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    monkeypatch.setattr(
+        "mnemosyne_hermes.cli.sqlite3.connect", lambda *args, **kwargs: connection
+    )
+
+    if raise_on_execute:
+        with pytest.raises(sqlite3.DatabaseError, match="query failed"):
+            _export_schema_is_complete_read_only(tmp_path / "selected.db")
+    else:
+        assert not _export_schema_is_complete_read_only(tmp_path / "selected.db")
+    assert connection.closed
+
+
 @pytest.mark.parametrize("selection,bank", [("explicit", "work"), ("implicit", "profile")])
 def test_export_selected_bank_with_incomplete_sqlite_schema_is_untouched(
     tmp_path, monkeypatch, capsys, selection, bank
@@ -318,10 +365,10 @@ def test_export_selected_bank_with_incomplete_sqlite_schema_is_untouched(
         home = tmp_path / "profiles" / bank
         _write_config(home, "true")
         monkeypatch.setenv("HERMES_HOME", str(home))
-        args = _export_args(tmp_path / "must-not-exist.json")
+        args = _export_args(tmp_path / "export.json")
     else:
         monkeypatch.delenv("HERMES_HOME", raising=False)
-        args = _export_args(tmp_path / "must-not-exist.json", bank=bank)
+        args = _export_args(tmp_path / "export.json", bank=bank)
 
     assert mnemosyne_command(args) == 1
     assert f"Bank schema incomplete: {bank}" in capsys.readouterr().out
@@ -384,10 +431,10 @@ def _initialized_selected_export(tmp_path, monkeypatch, selection, bank):
         home = tmp_path / "profiles" / bank
         _write_config(home, "true")
         monkeypatch.setenv("HERMES_HOME", str(home))
-        args = _export_args(tmp_path / "must-not-exist.json")
+        args = _export_args(tmp_path / "export.json")
     else:
         monkeypatch.delenv("HERMES_HOME", raising=False)
-        args = _export_args(tmp_path / "must-not-exist.json", bank=bank)
+        args = _export_args(tmp_path / "export.json", bank=bank)
     return args, data_dir, db_path
 
 
@@ -433,6 +480,7 @@ def test_export_selected_bank_rejects_each_missing_exporter_column_without_mutat
     assert not Path(args.output).exists()
     assert db_path.read_bytes() == before_bytes
     assert sorted(path.relative_to(data_dir) for path in data_dir.rglob("*")) == before_paths
+
 
 @pytest.mark.parametrize("selection,bank", [("explicit", "work"), ("implicit", "profile")])
 def test_export_selected_bank_does_not_require_optional_sync_table(

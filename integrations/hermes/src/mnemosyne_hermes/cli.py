@@ -5,8 +5,8 @@ Available via: hermes mnemosyne <subcommand>
 
 from __future__ import annotations
 
-import json
 import importlib.metadata
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -61,12 +61,15 @@ _EXPORT_REQUIRED_TABLES = frozenset(_EXPORT_REQUIRED_COLUMNS)
 def _export_schema_is_complete_read_only(db_path: Path) -> bool:
     """Check selected export tables and read columns without opening it writable."""
     db_uri = f"{db_path.resolve().as_uri()}?mode=ro"
-    with sqlite3.connect(db_uri, uri=True) as conn:
+    conn = sqlite3.connect(db_uri, uri=True)
+    try:
         for table, required_columns in _EXPORT_REQUIRED_COLUMNS.items():
             # Table names are from the local fixed contract, not user input.
             columns = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
             if not required_columns <= columns:
                 return False
+    finally:
+        conn.close()
     return True
 
 
@@ -270,8 +273,8 @@ def mnemosyne_command(args):
             # or output path can be initialized.
             print(f"Bank not found: {bank}")
             return 1
-        except Exception as e:
-            print(f"Bank validation failed: {e}")
+        except Exception:
+            print("Bank validation failed")
             return 1
 
     try:
@@ -330,7 +333,7 @@ def mnemosyne_command(args):
         # Unknown-bank guard now runs before the beam is built (see top of
         # mnemosyne_command), so bank is guaranteed to exist here.
         try:
-            from mnemosyne.diagnose import run_diagnostics, auto_fix
+            from mnemosyne.diagnose import auto_fix, run_diagnostics
             result = run_diagnostics(bank=bank)
             resolved_bank = bank or "default"
             print("\nMnemosyne Diagnostics")
