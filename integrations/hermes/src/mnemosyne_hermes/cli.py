@@ -56,6 +56,8 @@ _EXPORT_REQUIRED_COLUMNS = {
     }),
 }
 _EXPORT_REQUIRED_TABLES = frozenset(_EXPORT_REQUIRED_COLUMNS)
+# Distinct from ``None``: ``None`` is the valid shared/default-bank selection.
+_BANK_RESOLUTION_FAILED = object()
 
 
 def _export_schema_is_complete_read_only(db_path: Path) -> bool:
@@ -184,7 +186,8 @@ def _resolve_cli_bank(args, cmd):
          (mirrors the provider's HERMES_HOME-basename fallback)
       3. ``None`` -> default/legacy bank (unchanged behavior)
 
-    Never raises: any failure falls back to ``None`` (the default bank).
+    Never raises: resolution failures use a private sentinel so named exports
+    can fail closed rather than silently selecting the default bank.
     """
     try:
         MnemosyneMemoryProvider = _get_provider_class()
@@ -194,6 +197,12 @@ def _resolve_cli_bank(args, cmd):
             explicit = getattr(args, "bank", None)
             if explicit:
                 bank = sanitize(explicit)
+                if (
+                    cmd == "export"
+                    and bank == "default"
+                    and str(explicit).strip().lower() != "default"
+                ):
+                    return _BANK_RESOLUTION_FAILED
                 return bank if bank != "default" else None
 
         hermes_home = os.environ.get("HERMES_HOME", "")
@@ -205,7 +214,7 @@ def _resolve_cli_bank(args, cmd):
         bank = sanitize(basename)
         return bank if bank != "default" else None
     except Exception:
-        return None
+        return _BANK_RESOLUTION_FAILED
 
 
 def mnemosyne_command(args):
@@ -221,6 +230,9 @@ def mnemosyne_command(args):
         return 0
 
     bank = _resolve_cli_bank(args, cmd)
+    if cmd == "export" and bank is _BANK_RESOLUTION_FAILED:
+        print("Bank resolution failed")
+        return 1
 
     # Reject unknown named banks BEFORE touching the filesystem. Mnemosyne(bank=)
     # would otherwise lazily create an empty bank directory + DB on first access

@@ -24,6 +24,7 @@ from mnemosyne.core.triples import TripleStore
 
 import mnemosyne_hermes as _mnh
 from mnemosyne_hermes.cli import (
+    _BANK_RESOLUTION_FAILED,
     _EXPORT_REQUIRED_COLUMNS,
     _EXPORT_REQUIRED_TABLES,
     _export_schema_is_complete_read_only,
@@ -340,6 +341,33 @@ def test_export_missing_selected_bank_fails_before_host_llm_registration(
     assert mnemosyne_command(_export_args(output_path, bank="work")) == 1
     assert "Bank not found: work" in capsys.readouterr().out
     assert registrations == []
+    assert not output_path.exists()
+
+
+def test_export_invalid_explicit_bank_does_not_fall_back_to_default_bank(
+    tmp_path, monkeypatch, capsys
+):
+    """An invalid explicit export bank never selects shared/default data."""
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    output_path = tmp_path / "export.json"
+
+    assert mnemosyne_command(_export_args(output_path, bank="***")) == 1
+    assert capsys.readouterr().out == "Bank resolution failed\n"
+    assert not output_path.exists()
+
+
+def test_export_resolution_failure_does_not_fall_back_to_default_bank(
+    tmp_path, monkeypatch, capsys
+):
+    """A resolver failure never exports the shared/default bank."""
+    monkeypatch.setattr(
+        "mnemosyne_hermes.cli._resolve_cli_bank", lambda *_args: _BANK_RESOLUTION_FAILED
+    )
+    output_path = tmp_path / "export.json"
+
+    assert mnemosyne_command(_export_args(output_path, bank="work")) == 1
+    assert capsys.readouterr().out == "Bank resolution failed\n"
     assert not output_path.exists()
 
 
