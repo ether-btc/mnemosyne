@@ -371,6 +371,23 @@ def test_export_resolution_failure_does_not_fall_back_to_default_bank(
     assert not output_path.exists()
 
 
+def test_explicit_default_export_requires_existing_default_bank(tmp_path, monkeypatch, capsys):
+    """An explicit default bank is preflighted instead of bypassing validation."""
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    output_path = tmp_path / "export.json"
+
+    assert mnemosyne_command(_export_args(output_path, bank="default")) == 1
+    assert capsys.readouterr().out == "Bank validation failed\n"
+    assert not output_path.exists()
+
+
+def test_non_export_resolution_failure_keeps_default_fallback(monkeypatch):
+    """Ordinary CLI commands retain legacy fail-soft resolver behavior."""
+    monkeypatch.setattr("mnemosyne_hermes.cli._get_provider_class", lambda: (_ for _ in ()).throw(RuntimeError()))
+    assert _resolve_cli_bank(_args(bank="work"), "stats") is None
+
+
 @pytest.mark.parametrize("raise_on_execute", [False, True])
 def test_export_schema_probe_closes_connection_on_all_paths(
     tmp_path, monkeypatch, raise_on_execute

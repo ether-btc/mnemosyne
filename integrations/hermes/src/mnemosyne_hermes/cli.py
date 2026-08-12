@@ -203,7 +203,9 @@ def _resolve_cli_bank(args, cmd):
                     and str(explicit).strip().lower() != "default"
                 ):
                     return _BANK_RESOLUTION_FAILED
-                return bank if bank != "default" else None
+                if bank == "default":
+                    return "default" if cmd == "export" else None
+                return bank
 
         hermes_home = os.environ.get("HERMES_HOME", "")
         if not hermes_home or not _profile_isolation_enabled(hermes_home):
@@ -214,7 +216,7 @@ def _resolve_cli_bank(args, cmd):
         bank = sanitize(basename)
         return bank if bank != "default" else None
     except Exception:
-        return _BANK_RESOLUTION_FAILED
+        return _BANK_RESOLUTION_FAILED if cmd == "export" else None
 
 
 def mnemosyne_command(args):
