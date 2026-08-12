@@ -324,6 +324,25 @@ def test_export_bank_validation_error_does_not_disclose_exception_details(
     assert not output_path.exists()
 
 
+def test_export_missing_selected_bank_fails_before_host_llm_registration(
+    tmp_path, monkeypatch, capsys
+):
+    """Rejected named exports leave the host LLM registry untouched."""
+    registrations = []
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(
+        "mnemosyne_hermes.hermes_llm_adapter.register_hermes_host_llm",
+        lambda: registrations.append("called"),
+    )
+
+    output_path = tmp_path / "export.json"
+    assert mnemosyne_command(_export_args(output_path, bank="work")) == 1
+    assert "Bank not found: work" in capsys.readouterr().out
+    assert registrations == []
+    assert not output_path.exists()
+
+
 @pytest.mark.parametrize("raise_on_execute", [False, True])
 def test_export_schema_probe_closes_connection_on_all_paths(
     tmp_path, monkeypatch, raise_on_execute

@@ -220,21 +220,6 @@ def mnemosyne_command(args):
         print(f"Mnemosyne Hermes {_distribution_version('mnemosyne-hermes')}")
         return 0
 
-    # Register Hermes host LLM backend so sleep uses Hermes' provider.
-    # Use a try/except fallback chain: the relative import works when loaded
-    # as part of the mnemosyne_hermes package; the absolute import is needed
-    # when this module is loaded standalone (e.g. Hermes user-plugin
-    # discovery via importlib.util.spec_from_file_location, which does not
-    # set up the parent package — breaking relative imports silently).
-    try:
-        try:
-            from .hermes_llm_adapter import register_hermes_host_llm
-        except ImportError:
-            from mnemosyne_hermes.hermes_llm_adapter import register_hermes_host_llm
-        register_hermes_host_llm()
-    except Exception:
-        pass
-
     bank = _resolve_cli_bank(args, cmd)
 
     # Reject unknown named banks BEFORE touching the filesystem. Mnemosyne(bank=)
@@ -276,6 +261,20 @@ def mnemosyne_command(args):
         except Exception:
             print("Bank validation failed")
             return 1
+
+    # Register Hermes host LLM only after export validation. A rejected named
+    # export must not alter host-level runtime state before it exits fail-closed.
+    # Use a try/except fallback chain: the relative import works when loaded
+    # as part of the mnemosyne_hermes package; the absolute import is needed
+    # when this module is loaded standalone via importlib discovery.
+    try:
+        try:
+            from .hermes_llm_adapter import register_hermes_host_llm
+        except ImportError:
+            from mnemosyne_hermes.hermes_llm_adapter import register_hermes_host_llm
+        register_hermes_host_llm()
+    except Exception:
+        pass
 
     try:
         if bank:
