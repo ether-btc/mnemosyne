@@ -260,6 +260,20 @@ def test_export_without_selected_bank_keeps_legacy_default_behavior(tmp_path, mo
     _assert_export_has_only_label(_read_export(output), "default", "work")
 
 
+def test_export_explicit_default_bank_keeps_legacy_default_behavior(tmp_path, monkeypatch):
+    """Explicit default selects and preflights the populated legacy default DB."""
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MNEMOSYNE_NO_EMBEDDINGS", "1")
+    monkeypatch.setattr("mnemosyne.core.beam._vec_available", lambda conn: True)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    _seed_export_sections(None, "default", include_episodic_embedding=True)
+    _seed_export_sections("work", "work", include_episodic_embedding=True)
+
+    output = tmp_path / "explicit-default.json"
+    assert mnemosyne_command(_export_args(output, bank="default")) == 0
+    _assert_export_has_only_label(_read_export(output), "default", "work")
+
+
 @pytest.mark.parametrize(
     "selection,bank",
     [("explicit", "missing"), ("implicit", "work")],
@@ -378,7 +392,7 @@ def test_explicit_default_export_requires_existing_default_bank(tmp_path, monkey
     output_path = tmp_path / "export.json"
 
     assert mnemosyne_command(_export_args(output_path, bank="default")) == 1
-    assert capsys.readouterr().out == "Bank validation failed\n"
+    assert capsys.readouterr().out == "Bank not found: default\n"
     assert not output_path.exists()
 
 

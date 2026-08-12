@@ -264,6 +264,9 @@ def mnemosyne_command(args):
         try:
             from mnemosyne.core.banks import get_bank_db_path_read_only
             db_path = get_bank_db_path_read_only(bank)
+            if not db_path.is_file():
+                print(f"Bank not found: {bank}")
+                return 1
             if not _export_schema_is_complete_read_only(db_path):
                 print(f"Bank schema incomplete: {bank}")
                 return 1
