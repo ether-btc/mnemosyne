@@ -124,6 +124,7 @@ def _download_model() -> Path:
     size_notice = " (approximately 656 MB)" if default_artifact else ""
     logger.warning(
         "Downloading local LLM model %s from %s%s to %s. "
+        "The current operation will block until the download completes. "
         "Set MNEMOSYNE_LLM_ENABLED=false for AAAK-only consolidation, "
         "or pre-cache the GGUF to avoid this download.",
         DEFAULT_MODEL_FILE,

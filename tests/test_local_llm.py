@@ -54,6 +54,7 @@ class TestLocalModelDownloadNotice:
         assert "openbmb/MiniCPM5-1B-GGUF" in message
         assert str(cache_dir) in message
         assert "approximately 656 MB" in message
+        assert "current operation will block until the download completes" in message
         assert "MNEMOSYNE_LLM_ENABLED=false" in message
         assert "pre-cache" in message
 
