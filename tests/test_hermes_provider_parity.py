@@ -77,6 +77,8 @@ def _config_schema(module):
 def _write_mnemosyne_config(hermes_home: Path, tools) -> None:
     if tools is None:
         body = "memory:\n  provider: mnemosyne\n  mnemosyne: {}\n"
+    elif not tools:
+        body = "memory:\n  provider: mnemosyne\n  mnemosyne:\n    tools: []\n"
     else:
         rendered_tools = "\n".join(f"      - {tool}" for tool in tools)
         body = (
@@ -327,13 +329,19 @@ def test_tool_whitelist_uses_hermes_home_before_initialize(tmp_path, monkeypatch
         assert provider.has_tool("mnemosyne_forget") is False
 
 
-def test_tool_whitelist_without_home_preserves_full_surface(tmp_path, monkeypatch, provider_modules):
+@pytest.mark.parametrize("hermes_home", [None, ""])
+def test_tool_whitelist_without_home_preserves_full_surface(
+    tmp_path, monkeypatch, provider_modules, hermes_home
+):
     default_home = tmp_path / "home"
     default_hermes_home = default_home / ".hermes"
     default_hermes_home.mkdir(parents=True)
     _write_mnemosyne_config(default_hermes_home, ["mnemosyne_remember"])
     monkeypatch.setenv("HOME", str(default_home))
-    monkeypatch.delenv("HERMES_HOME", raising=False)
+    if hermes_home is None:
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_HOME", hermes_home)
 
     expected = PROVIDER_TOOL_NAMES
     for module in provider_modules.values():
@@ -393,6 +401,81 @@ def test_tool_whitelist_null_without_yaml_exposes_all_tools(
         assert _json_stable(provider.get_tool_schemas()) == _json_stable(
             _filtered_schemas(module, PROVIDER_TOOL_NAMES)
         )
+        assert provider.has_tool("mnemosyne_remember") is True
+        assert json.loads(
+            provider.handle_tool_call("mnemosyne_remember", {"content": "x"})
+        ) == {
+            "status": "memory_unavailable",
+            "tool": "mnemosyne_remember",
+            "reason": "Mnemosyne not initialized",
+            "error": "Mnemosyne unavailable: Mnemosyne not initialized",
+        }
+
+
+@pytest.mark.parametrize(
+    ("tools", "expected", "unknown"),
+    [
+        (None, PROVIDER_TOOL_NAMES, False),
+        (["mnemosyne_remember", "mnemosyne_recall"], ["mnemosyne_remember", "mnemosyne_recall"], False),
+        ([], [], False),
+        (["mnemosyne_not_real"], None, True),
+    ],
+)
+def test_tool_whitelist_without_yaml_matches_pyyaml(
+    tmp_path, monkeypatch, provider_modules, tools, expected, unknown
+):
+    """The fallback parser must preserve PyYAML allowlist semantics."""
+    _write_mnemosyne_config(tmp_path, tools)
+
+    normal = {}
+    for name, module in provider_modules.items():
+        provider = _provider_for_config(module, tmp_path)
+        if unknown:
+            with pytest.raises(ValueError, match="Unknown Mnemosyne tool.*mnemosyne_not_real") as exc_info:
+                provider.get_tool_schemas()
+            normal[name] = {
+                "exception": str(exc_info.value),
+                "dispatch": json.loads(
+                    provider.handle_tool_call("mnemosyne_remember", {"content": "x"})
+                ),
+            }
+        else:
+            assert _schema_names(provider) == expected
+            if expected:
+                normal[name] = {
+                    "schemas": _json_stable(provider.get_tool_schemas()),
+                    "has_tool": {tool_name: provider.has_tool(tool_name) for tool_name in expected},
+                    "rejected": json.loads(
+                        provider.handle_tool_call("mnemosyne_forget", {"memory_id": "x"})
+                    ),
+                }
+            else:
+                assert provider.has_tool("mnemosyne_remember") is False
+                normal[name] = json.loads(
+                    provider.handle_tool_call("mnemosyne_remember", {"content": "x"})
+                )
+
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    for name, module in provider_modules.items():
+        provider = _provider_for_config(module, tmp_path)
+        if unknown:
+            with pytest.raises(ValueError, match="Unknown Mnemosyne tool.*mnemosyne_not_real") as exc_info:
+                provider.get_tool_schemas()
+            assert str(exc_info.value) == normal[name]["exception"]
+            assert json.loads(
+                provider.handle_tool_call("mnemosyne_remember", {"content": "x"})
+            ) == normal[name]["dispatch"]
+        else:
+            assert _schema_names(provider) == expected
+            if expected:
+                assert _json_stable(provider.get_tool_schemas()) == normal[name]["schemas"]
+                assert {tool_name: provider.has_tool(tool_name) for tool_name in expected} == normal[name]["has_tool"]
+                assert json.loads(
+                    provider.handle_tool_call("mnemosyne_forget", {"memory_id": "x"})
+                ) == normal[name]["rejected"]
+            else:
+                assert provider.has_tool("mnemosyne_remember") is False
+                assert json.loads(provider.handle_tool_call("mnemosyne_remember", {"content": "x"})) == normal[name]
 
 
 def test_tool_whitelist_re_resolves_after_initialize_home_changes(
