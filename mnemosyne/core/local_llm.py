@@ -427,13 +427,52 @@ def _try_host_llm(
     # so _parse_facts() can consume them. Just trim whitespace.
     text = raw.strip() if isinstance(raw, str) and raw.strip() else None
     if text:
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        text = _sanitize_reasoning_output(text)
     return (True, text)
 
 
-def _clean_output(text: str) -> str:
+class _InvalidReasoningOutput:
+    """Private marker for a model response that must never be persisted."""
+
+    def __bool__(self) -> bool:
+        return False
+
+
+_INVALID_REASONING_OUTPUT = _InvalidReasoningOutput()
+
+
+def _is_invalid_reasoning_output(value: object) -> bool:
+    """Return whether *value* is an unsafe, malformed reasoning response."""
+    return value is _INVALID_REASONING_OUTPUT
+
+
+def _sanitize_reasoning_output(text: str):
+    """Remove balanced think traces and reject malformed traces fail-closed."""
+    if not isinstance(text, str):
+        return _INVALID_REASONING_OUTPUT
+    tags = list(re.finditer(r"<(/?)think\b[^>]*>", text, flags=re.IGNORECASE))
+    depth = 0
+    for tag in tags:
+        if tag.group(1):
+            depth -= 1
+            if depth < 0:
+                return _INVALID_REASONING_OUTPUT
+        else:
+            depth += 1
+            if depth > 1:
+                return _INVALID_REASONING_OUTPUT
+    if depth:
+        return _INVALID_REASONING_OUTPUT
+    return re.sub(
+        r"<think\b[^>]*>.*?</think\b[^>]*>", "", text, flags=re.DOTALL | re.IGNORECASE
+    ).strip()
+
+
+def _clean_output(text: str):
     """Strip assistant tokens and extra whitespace from model output."""
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = _sanitize_reasoning_output(text)
+    if _is_invalid_reasoning_output(text):
+        return text
     text = text.replace("<|assistant|>", "").replace("<|user|>", "")
     text = text.replace("</s>", "").strip()
     text = re.sub(r"^(Summarize the following memories.*?[.!?:]\s*)", "", text, flags=re.IGNORECASE | re.DOTALL)
@@ -665,7 +704,9 @@ def _call_remote_llm(prompt: str, temperature: float = 0.3) -> Optional[str]:
     return None
 
 
-def summarize_memories(memories: List[str], source: str = "") -> Optional[str]:
+def _summarize_memories(
+    memories: List[str], source: str = ""
+):
     """Summarize a batch of working-memory items into a single episodic string.
 
     Fallback chain:
@@ -689,7 +730,7 @@ def summarize_memories(memories: List[str], source: str = "") -> Optional[str]:
     # chunk_memories_by_budget() respects LLM_N_CTX and safety margins.
     chunks = chunk_memories_by_budget(memories, source=source)
 
-    def _summarize_chunk(chunk_memories: List[str], chunk_source: str = "") -> Optional[str]:
+    def _summarize_chunk(chunk_memories: List[str], chunk_source: str = ""):
         """Summarize a single chunk of memories via the fallback chain."""
         host_prompt = _build_host_prompt(chunk_memories, source=chunk_source)
         prompt = _build_prompt(chunk_memories, source=chunk_source)
@@ -697,11 +738,15 @@ def summarize_memories(memories: List[str], source: str = "") -> Optional[str]:
         # 0. Host backend.
         attempted, text = _try_host_llm(host_prompt, max_tokens=LLM_MAX_TOKENS, temperature=0.3)
         if attempted:
+            if _is_invalid_reasoning_output(text):
+                return _INVALID_REASONING_OUTPUT
             if text:
                 return text
             raw = _call_local_llm(prompt)
             if raw:
                 cleaned = _clean_output(raw)
+                if _is_invalid_reasoning_output(cleaned):
+                    return _INVALID_REASONING_OUTPUT
                 return cleaned if cleaned else None
             return None
 
@@ -710,12 +755,16 @@ def summarize_memories(memories: List[str], source: str = "") -> Optional[str]:
             raw = _call_remote_llm(prompt)
             if raw:
                 cleaned = _clean_output(raw)
+                if _is_invalid_reasoning_output(cleaned):
+                    return _INVALID_REASONING_OUTPUT
                 return cleaned if cleaned else None
 
         # 2. Local LLM (llama-cpp-python or ctransformers fallback).
         raw = _call_local_llm(prompt)
         if raw:
             cleaned = _clean_output(raw)
+            if _is_invalid_reasoning_output(cleaned):
+                return _INVALID_REASONING_OUTPUT
             return cleaned if cleaned else None
         return None
 
@@ -723,6 +772,8 @@ def summarize_memories(memories: List[str], source: str = "") -> Optional[str]:
     chunk_summaries = []
     for chunk in chunks:
         summary = _summarize_chunk(chunk, chunk_source=source)
+        if _is_invalid_reasoning_output(summary):
+            return _INVALID_REASONING_OUTPUT
         if summary:
             chunk_summaries.append(summary)
 
@@ -732,6 +783,14 @@ def summarize_memories(memories: List[str], source: str = "") -> Optional[str]:
     # If multiple chunks, do a second-pass summary to consolidate chunk summaries.
     if len(chunk_summaries) > 1:
         final = _summarize_chunk(chunk_summaries, chunk_source=f"{source} [chunked {len(chunks)} parts]")
+        if _is_invalid_reasoning_output(final):
+            return _INVALID_REASONING_OUTPUT
         return final if final else chunk_summaries[0]
 
     return chunk_summaries[0]
+
+
+def summarize_memories(memories: List[str], source: str = "") -> Optional[str]:
+    """Public summary API; malformed reasoning degrades to no LLM output."""
+    summary = _summarize_memories(memories, source=source)
+    return summary if isinstance(summary, str) else None
