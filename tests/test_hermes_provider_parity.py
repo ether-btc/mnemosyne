@@ -93,6 +93,29 @@ def _schema_names(provider) -> list[str]:
     return [schema["name"] for schema in provider.get_tool_schemas()]
 
 
+def _filtered_schemas(module, names: list[str]):
+    schemas = _tool_schemas(module)
+    return [schemas[name] for name in names]
+
+
+PROVIDER_TOOL_NAMES = [
+    "mnemosyne_remember", "mnemosyne_recall", "mnemosyne_shared_remember",
+    "mnemosyne_shared_recall", "mnemosyne_shared_forget", "mnemosyne_shared_stats",
+    "mnemosyne_sleep", "mnemosyne_stats", "mnemosyne_invalidate", "mnemosyne_validate",
+    "mnemosyne_get", "mnemosyne_triple_add", "mnemosyne_triple_query",
+    "mnemosyne_triple_end", "mnemosyne_remember_canonical",
+    "mnemosyne_recall_canonical", "mnemosyne_forget_canonical",
+    "mnemosyne_apply_pending", "mnemosyne_model_card", "mnemosyne_model_refresh",
+    "mnemosyne_scratchpad_write", "mnemosyne_scratchpad_read",
+    "mnemosyne_scratchpad_clear", "mnemosyne_export", "mnemosyne_update",
+    "mnemosyne_forget", "mnemosyne_batch", "mnemosyne_import", "mnemosyne_diagnose",
+    "mnemosyne_recall_diagnostics", "mnemosyne_task_progress",
+    "mnemosyne_graph_query", "mnemosyne_graph_link", "mnemosyne_sync_push",
+    "mnemosyne_sync_pull", "mnemosyne_sync_status", "mnemosyne_persona_promote",
+    "mnemosyne_persona_demote", "mnemosyne_persona_list", "mnemosyne_persona_reinforce",
+]
+
+
 def _provider_for_config(module, hermes_home: Path):
     provider = module.MnemosyneMemoryProvider()
     provider._hermes_home = str(hermes_home)
@@ -287,6 +310,118 @@ def test_tool_whitelist_omitted_exposes_all_tools(tmp_path, provider_modules):
     all_tools = list(_tool_schemas(provider_modules["hermes_memory_provider"]))
     assert observed["hermes_memory_provider"] == all_tools
     assert observed["mnemosyne_hermes"] == all_tools
+
+
+def test_tool_whitelist_uses_hermes_home_before_initialize(tmp_path, monkeypatch, provider_modules):
+    allowed = ["mnemosyne_remember", "mnemosyne_recall"]
+    _write_mnemosyne_config(tmp_path, allowed)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    for module in provider_modules.values():
+        provider = module.MnemosyneMemoryProvider()
+        assert _schema_names(provider) == allowed
+        assert _json_stable(provider.get_tool_schemas()) == _json_stable(
+            _filtered_schemas(module, allowed)
+        )
+        assert provider.has_tool("mnemosyne_remember") is True
+        assert provider.has_tool("mnemosyne_forget") is False
+
+
+def test_tool_whitelist_without_home_preserves_full_surface(tmp_path, monkeypatch, provider_modules):
+    default_home = tmp_path / "home"
+    default_hermes_home = default_home / ".hermes"
+    default_hermes_home.mkdir(parents=True)
+    _write_mnemosyne_config(default_hermes_home, ["mnemosyne_remember"])
+    monkeypatch.setenv("HOME", str(default_home))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    expected = PROVIDER_TOOL_NAMES
+    for module in provider_modules.values():
+        assert _schema_names(module.MnemosyneMemoryProvider()) == expected
+
+
+def test_explicit_hermes_home_overrides_environment(tmp_path, monkeypatch):
+    from mnemosyne.hermes_config import read_hermes_config_key
+
+    explicit_home = tmp_path / "explicit"
+    env_home = tmp_path / "environment"
+    explicit_home.mkdir()
+    env_home.mkdir()
+    _write_mnemosyne_config(explicit_home, ["mnemosyne_remember"])
+    _write_mnemosyne_config(env_home, ["mnemosyne_recall"])
+    monkeypatch.setenv("HERMES_HOME", str(env_home))
+
+    assert read_hermes_config_key(str(explicit_home), "tools") == ["mnemosyne_remember"]
+    assert read_hermes_config_key(None, "tools") == ["mnemosyne_recall"]
+    assert read_hermes_config_key("", "tools") == ["mnemosyne_recall"]
+
+
+def test_tool_whitelist_null_exposes_all_tools(tmp_path, monkeypatch, provider_modules):
+    (tmp_path / "config.yaml").write_text(
+        "memory:\n"
+        "  provider: mnemosyne\n"
+        "  mnemosyne:\n"
+        "    tools: null\n"
+    )
+
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    expected = PROVIDER_TOOL_NAMES
+    for module in provider_modules.values():
+        provider = _provider_for_config(module, tmp_path)
+        assert _schema_names(provider) == expected
+        assert _json_stable(provider.get_tool_schemas()) == _json_stable(
+            _filtered_schemas(module, expected)
+        )
+
+
+@pytest.mark.parametrize("null_value", ["null", "Null", "NULL", "~", ""])
+def test_tool_whitelist_null_without_yaml_exposes_all_tools(
+    tmp_path, monkeypatch, provider_modules, null_value
+):
+    """The minimal config parser must preserve YAML null as no whitelist."""
+    (tmp_path / "config.yaml").write_text(
+        "memory:\n"
+        "  mnemosyne:\n"
+        f"    tools: {null_value}\n"
+    )
+    monkeypatch.setitem(sys.modules, "yaml", None)
+
+    for module in provider_modules.values():
+        provider = _provider_for_config(module, tmp_path)
+        assert _schema_names(provider) == PROVIDER_TOOL_NAMES
+        assert _json_stable(provider.get_tool_schemas()) == _json_stable(
+            _filtered_schemas(module, PROVIDER_TOOL_NAMES)
+        )
+
+
+def test_tool_whitelist_re_resolves_after_initialize_home_changes(
+    tmp_path, monkeypatch, provider_modules
+):
+    """initialize() must supersede pre-discovery HERMES_HOME tool selection."""
+    env_home = tmp_path / "environment"
+    initialized_home = tmp_path / "initialized"
+    env_home.mkdir()
+    initialized_home.mkdir()
+    _write_mnemosyne_config(env_home, ["mnemosyne_remember"])
+    _write_mnemosyne_config(initialized_home, ["mnemosyne_recall"])
+    monkeypatch.setenv("HERMES_HOME", str(env_home))
+
+    for module in provider_modules.values():
+        provider = module.MnemosyneMemoryProvider()
+        assert _schema_names(provider) == ["mnemosyne_remember"]
+        assert provider.has_tool("mnemosyne_remember") is True
+        assert provider.has_tool("mnemosyne_recall") is False
+
+        provider.initialize(
+            "allowlist-home-change",
+            hermes_home=str(initialized_home),
+            agent_context="subagent",
+        )
+
+        assert _schema_names(provider) == ["mnemosyne_recall"]
+        assert provider.has_tool("mnemosyne_remember") is False
+        assert provider.has_tool("mnemosyne_recall") is True
 
 
 def test_tool_whitelist_filters_schemas_before_routing(tmp_path, provider_modules):
