@@ -1518,6 +1518,48 @@ def _parse_iso_datetime_utc(value: str) -> datetime:
     return _normalize_datetime_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
 
 
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _normalize_valid_until(value: Optional[str]) -> Optional[str]:
+    """Canonicalize a caller-supplied ``valid_until`` to aware UTC ISO.
+
+    Offset-bearing ISO timestamps are converted to UTC so comparisons
+    against aware-UTC now stay chronologically correct (e.g.
+    ``2026-08-15T11:00:00-02:00`` is 13:00Z but sorts before
+    ``12:30:00+00:00`` lexically). Only an exact date-only value
+    (``YYYY-MM-DD``) keeps its documented pass-through API semantics;
+    everything else is parsed chronologically, so a lowercase ``t``
+    separator or ``Z`` suffix is normalized too. Unparseable values pass
+    through unchanged.
+    """
+    if not value:
+        return value
+    if _DATE_ONLY_RE.match(value):
+        return value
+    try:
+        return _parse_iso_datetime_utc(value).isoformat()
+    except (ValueError, TypeError):
+        return value
+
+
+def _valid_until_active(valid_until: str, now_iso: str) -> bool:
+    """True when ``valid_until`` is strictly in the future of ``now_iso``.
+
+    Both operands are parsed chronologically so offset-bearing stored
+    values (e.g. ``2026-08-15T11:00:00-02:00`` = 13:00Z) are not
+    misjudged by lexical ordering against aware-UTC now. Naive values
+    are treated as UTC, matching ``_normalize_datetime_utc``. An
+    unparseable value is treated as expired (False), matching the
+    julianday-based SQL predicate where it evaluates to NULL and is
+    excluded.
+    """
+    try:
+        return _parse_iso_datetime_utc(valid_until) > _parse_iso_datetime_utc(now_iso)
+    except (ValueError, TypeError):
+        return False
+
+
 def _recency_decay(timestamp_str: str, halflife_hours: float = RECENCY_HALFLIFE_HOURS) -> float:
     """Calculate recency decay factor. 1.0 = brand new, ~0.5 = one halflife old.
     
@@ -3041,8 +3083,8 @@ def _wm_vec_search(conn: sqlite3.Connection, query_embedding, k: int = 20,
     if np is None:
         return []
     if where_sql is None:
-        where_sql = "wm.superseded_by IS NULL AND (wm.valid_until IS NULL OR wm.valid_until > ?)"
-        where_params = (datetime.now().isoformat(),)
+        where_sql = "wm.superseded_by IS NULL AND (wm.valid_until IS NULL OR julianday(wm.valid_until) > julianday(?))"
+        where_params = (datetime.now(timezone.utc).isoformat(),)
 
     sqlite_results = _wm_vec_search_sqlite(conn, query_embedding, k=k,
                                            where_sql=where_sql,
@@ -3448,6 +3490,7 @@ class BeamMemory:
         # the new recall multiplier means non-canonical labels would
         # silently fall through to UNKNOWN_WEIGHT at scoring time.
         veracity = clamp_veracity(veracity, context="remember")
+        valid_until = _normalize_valid_until(valid_until)
 
     # --- Content sanitization: extract binary payloads to blob storage ---
         from mnemosyne.core.content_sanitizer import sanitize_content as _sanitize
@@ -4118,7 +4161,7 @@ class BeamMemory:
         while keeping hot items visible."""
 
         cursor = self.conn.cursor()
-        now = datetime.now().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         # Keep the original ordering contract (global memories first, then
         # session-local memories; each group by importance and recency) while
         # avoiding the previous ``session_id = ? OR scope = 'global'`` query.
@@ -4128,7 +4171,7 @@ class BeamMemory:
         select_cols = "id, content, source, timestamp, importance, scope, last_recalled"
         include_consolidated = _env_truthy("MNEMOSYNE_CONTEXT_INCLUDE_CONSOLIDATED")
         predicates = [
-            "(valid_until IS NULL OR valid_until > ?)",
+            "(valid_until IS NULL OR julianday(valid_until) > julianday(?))",
             "superseded_by IS NULL",
         ]
         if not include_consolidated:
@@ -4269,7 +4312,7 @@ class BeamMemory:
                 if not replacement_found:
                     return False
 
-                now = datetime.now().isoformat()
+                now = datetime.now(timezone.utc).isoformat()
                 cursor.execute("""
                     UPDATE working_memory
                     SET valid_until = ?, superseded_by = ?
@@ -4293,7 +4336,7 @@ class BeamMemory:
                 self._invalidate_query_cache()
             return invalidated
 
-        now = datetime.now().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         # Try working_memory first
         cursor.execute("""
             UPDATE working_memory
@@ -4683,6 +4726,7 @@ class BeamMemory:
         # An embed failure must not abort the insert: the summary row is the
         # payload, the vector is an index. Fall back to vec = None like the
         # other embed call sites (remember, remember_batch, update_working).
+        valid_until = _normalize_valid_until(valid_until)
         vec = None
         if _embeddings.available():
             try:
@@ -5972,10 +6016,10 @@ class BeamMemory:
         # so _wm_vec_search can push the same recall filters into SQL instead
         # of scanning broad memory_embeddings rows and filtering later.
         wm_where_clauses = [
-            "(valid_until IS NULL OR valid_until > ?)",
+            "(valid_until IS NULL OR julianday(valid_until) > julianday(?))",
             "superseded_by IS NULL"
         ]
-        wm_params = [datetime.now().isoformat()]
+        wm_params = [datetime.now(timezone.utc).isoformat()]
         
         # Session scope: channel filter only when explicitly specified.
         # Author-only searches have no session/channel restriction.
@@ -6243,13 +6287,13 @@ class BeamMemory:
             else:
                 em_entity_scope = _session_scope_filter(cross_session=cross_session)
                 em_entity_params = [*tuple(entity_memory_ids), *_session_scope_params(self.session_id, cross_session=cross_session)]
-            em_entity_params.extend([datetime.now().isoformat()])
+            em_entity_params.extend([datetime.now(timezone.utc).isoformat()])
             cursor.execute(f"""
                 SELECT id, content, source, timestamp, importance, recall_count, last_recalled, valid_until, superseded_by, scope, author_id, author_type, channel_id, veracity, memory_type
                 FROM episodic_memory
                 WHERE id IN ({em_placeholders})
                   AND {em_entity_scope}
-                  AND (valid_until IS NULL OR valid_until > ?)
+                  AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))
                   AND superseded_by IS NULL
             """, (*em_entity_params,))
             em_entity_rows = cursor.fetchall()
@@ -6365,13 +6409,13 @@ class BeamMemory:
             else:
                 fact_em_scope = _session_scope_filter(cross_session=cross_session)
                 fact_em_params = [*tuple(fact_memory_ids), *_session_scope_params(self.session_id, cross_session=cross_session)]
-            fact_em_params.extend([datetime.now().isoformat()])
+            fact_em_params.extend([datetime.now(timezone.utc).isoformat()])
             cursor.execute(f"""
                 SELECT id, content, source, timestamp, importance, recall_count, last_recalled, valid_until, superseded_by, scope, author_id, author_type, channel_id, veracity, memory_type
                 FROM episodic_memory
                 WHERE id IN ({placeholders})
                   AND {fact_em_scope}
-                  AND (valid_until IS NULL OR valid_until > ?)
+                  AND (valid_until IS NULL OR julianday(valid_until) > julianday(?))
                   AND superseded_by IS NULL
             """, (*fact_em_params,))
             em_fact_rows = cursor.fetchall()
@@ -6470,10 +6514,10 @@ class BeamMemory:
         
         # Build temporal filter for episodic memory
         em_where_clauses = [
-            "(valid_until IS NULL OR valid_until > ?)",
+            "(valid_until IS NULL OR julianday(valid_until) > julianday(?))",
             "superseded_by IS NULL"
         ]
-        em_params = [datetime.now().isoformat()]
+        em_params = [datetime.now(timezone.utc).isoformat()]
         
         # Session scope: channel filter only when explicitly specified.
         # Author-only searches have no session/channel restriction.
@@ -7653,7 +7697,7 @@ class BeamMemory:
 
         final = []
         cursor = self.conn.cursor()
-        now_iso = datetime.now().isoformat()
+        now_iso = datetime.now(timezone.utc).isoformat()
 
         for r in polyphonic_results:
             memory_id = r.memory_id
@@ -7826,7 +7870,7 @@ class BeamMemory:
 
         # Validity filters.
         valid_until = row_dict.get("valid_until")
-        if valid_until and valid_until <= now_iso:
+        if valid_until and not _valid_until_active(valid_until, now_iso):
             return False
         if row_dict.get("superseded_by"):
             return False
@@ -8740,7 +8784,9 @@ class BeamMemory:
                 if item.get("scope") == "global":
                     aggregated_scope = "global"
                 if item.get("valid_until"):
-                    if aggregated_valid_until is None or item["valid_until"] < aggregated_valid_until:
+                    if aggregated_valid_until is None or _valid_until_active(
+                        aggregated_valid_until, item["valid_until"]
+                    ):
                         aggregated_valid_until = item["valid_until"]
 
             # E4.a.1: aggregate per-row veracity into the summary's
@@ -9314,7 +9360,7 @@ class BeamMemory:
             """, (
                 mid, item.get("content"), item.get("source"), item.get("timestamp"),
                 item.get("session_id", "default"), item.get("importance", 0.5),
-                item.get("metadata_json", "{}"), item.get("valid_until"),
+                item.get("metadata_json", "{}"), _normalize_valid_until(item.get("valid_until")),
                 item.get("superseded_by"), item.get("scope", "session"),
                 item.get("recall_count", 0), item.get("last_recalled"), item.get("created_at"),
                 item.get("veracity"),
@@ -9398,7 +9444,7 @@ class BeamMemory:
                 mid, item.get("content"), item.get("source"), item.get("timestamp"),
                 item.get("session_id", "default"), item.get("importance", 0.5),
                 item.get("metadata_json", "{}"), item.get("summary_of", ""),
-                item.get("valid_until"), item.get("superseded_by"),
+                _normalize_valid_until(item.get("valid_until")), item.get("superseded_by"),
                 item.get("scope", "session"), item.get("recall_count", 0),
                 item.get("last_recalled"), item.get("created_at")
             ))
