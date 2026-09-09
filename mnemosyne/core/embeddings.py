@@ -333,6 +333,16 @@ def _embed_api(texts: List[str]) -> Optional[np.ndarray]:
     is_custom = "openrouter.ai" not in base_url
     if not is_custom and not _OPENAI_API_KEY:
         return None
+    if _OPENAI_API_KEY and not base_url.startswith("https://"):
+        # Fail loud before any request: sending Authorization (and the text
+        # being embedded) over cleartext http:// leaks both on the wire.
+        raise ValueError(
+            f"Refusing to send embedding credentials over non-HTTPS endpoint "
+            f"{base_url!r}: point MNEMOSYNE_EMBEDDING_API_URL at an https:// "
+            "URL, or unset MNEMOSYNE_EMBEDDING_API_KEY / OPENAI_API_KEY to "
+            "embed without credentials (for example a local endpoint that "
+            "needs no key)."
+        )
 
     url = f"{base_url.rstrip('/')}/embeddings"
     payload = json.dumps({

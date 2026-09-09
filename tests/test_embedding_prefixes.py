@@ -36,6 +36,11 @@ def embeddings_mod(monkeypatch):
     monkeypatch.setenv("MNEMOSYNE_EMBEDDING_DIM", "768")
     monkeypatch.setenv("MNEMOSYNE_EMBEDDING_QUERY_PREFIX", QUERY_PREFIX)
     monkeypatch.setenv("MNEMOSYNE_EMBEDDING_DOC_PREFIX", DOC_PREFIX)
+    # The fake endpoint is plain http: strip any shell-exported embedding key
+    # BEFORE the reload below, which re-reads it (the client refuses
+    # credentialed non-HTTPS endpoints).
+    monkeypatch.delenv("MNEMOSYNE_EMBEDDING_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     RECORDED.clear()
     from mnemosyne.core import embeddings
     # Reload ONLY because upstream reads the API URL/model at module import time.

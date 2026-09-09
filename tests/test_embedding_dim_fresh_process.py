@@ -190,6 +190,11 @@ def _fake_endpoint_code(dim: int) -> str:
 
         server = HTTPServer(("127.0.0.1", 0), _FakeEmbeddings)
         os.environ["MNEMOSYNE_EMBEDDING_API_URL"] = f"http://127.0.0.1:{{server.server_port}}/v1"
+        # The fake endpoint is plain http: keep it uncredentialed even under a
+        # developer shell that exports an embedding key (the client refuses
+        # credentialed non-HTTPS endpoints).
+        os.environ.pop("MNEMOSYNE_EMBEDDING_API_KEY", None)
+        os.environ.pop("OPENAI_API_KEY", None)
         threading.Thread(target=server.serve_forever, daemon=True).start()
 
         from mnemosyne.core import beam
@@ -200,7 +205,7 @@ def _fake_endpoint_code(dim: int) -> str:
         print("REQUESTS", REQUESTS["n"])  # before recall: survives a recall crash
         print("WRITE_MODEL", REQUESTS["log"][0]["model"])
         print("WRITE_INPUT", json.dumps(REQUESTS["log"][0]["input"]))
-        results = recall("dimension end to end document", top_k=3)
+        results = recall("end to end dimension check", top_k=3)
         print("REQUESTS_TOTAL", REQUESTS["n"])
         print("QUERY_MODEL", REQUESTS["log"][-1]["model"])
         print("QUERY_INPUT", REQUESTS["log"][-1]["input"][0])
@@ -264,6 +269,10 @@ def _fake_endpoint_recall_only_code(dim: int) -> str:
 
         server = HTTPServer(("127.0.0.1", 0), _FakeEmbeddings)
         os.environ["MNEMOSYNE_EMBEDDING_API_URL"] = f"http://127.0.0.1:{{server.server_port}}/v1"
+        # Plain-http fake endpoint: strip any inherited embedding key, same as
+        # the write-side child.
+        os.environ.pop("MNEMOSYNE_EMBEDDING_API_KEY", None)
+        os.environ.pop("OPENAI_API_KEY", None)
         threading.Thread(target=server.serve_forever, daemon=True).start()
 
         from mnemosyne.core import beam
@@ -307,21 +316,25 @@ def test_unknown_model_with_explicit_dim_boots_end_to_end(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     out = result.stdout
-    # Write-side and query-side vectorization both went through the endpoint
-    # (>=2 embedding calls total: one for the remembered content, one for the
-    # query; the write-side REQUESTS marker is also checked below).
-    assert int(re.search(r"REQUESTS_TOTAL (\d+)", out).group(1)) >= 2, out + result.stderr
-    assert int(re.search(r"REQUESTS (\d+)", out).group(1)) >= 1, out + result.stderr
+    # The query embedding is ONE ADDITIONAL endpoint request after the write
+    # side: exactly the write-side count plus one, asserted directly rather
+    # than as a >=2 total, so a regression that batches, skips, or duplicates
+    # the query call cannot hide.
+    requests_before = int(re.search(r"REQUESTS (\d+)", out).group(1))
+    assert requests_before >= 1, out + result.stderr
+    assert int(re.search(r"REQUESTS_TOTAL (\d+)", out).group(1)) == requests_before + 1, out + result.stderr
     # Both calls asked the endpoint for the configured model, and the write
     # side carried the remembered content while the query side carried the
-    # query (possibly prefixed by the model's query prefix).
+    # DISTINCT but semantically related query (possibly prefixed by the
+    # model's query prefix).
     assert re.search(r"^WRITE_MODEL mixedbread-ai/mxbai-embed-large-v1$", out, re.M), out
     assert re.search(r"^QUERY_MODEL mixedbread-ai/mxbai-embed-large-v1$", out, re.M), out
     write_input = re.search(r"^WRITE_INPUT (.+)$", out, re.M)
     assert write_input and "dimension end to end document" in write_input.group(1), out
     assert write_input and "grocery" not in write_input.group(1), out
     query_input = re.search(r"^QUERY_INPUT (.+)$", out, re.M)
-    assert query_input and "dimension end to end document" in query_input.group(1), out
+    assert query_input and "end to end dimension check" in query_input.group(1), out
+    assert query_input and "document" not in query_input.group(1), out
     # Recall returned the probe...
     assert re.search(r"RECALL [1-9]", out), out + result.stderr
     recall_content = re.search(r"^RECALL_CONTENT (.+)$", out, re.M)
@@ -454,3 +467,21 @@ def test_blank_embedding_model_env_falls_back_to_default(tmp_path, blank):
     # fallback dim with a different default model cannot pass (CodeRabbit, #521).
     # Resolved in the subprocess: the parent's env is not under test here.
     assert result.stdout.strip() == "BAAI/bge-small-en-v1.5 384", result.stdout
+
+
+def test_credentialed_http_endpoint_refused_before_any_request(monkeypatch):
+    """A key-bearing configuration pointing at an http:// endpoint must fail
+    loud BEFORE a request is built: sending Authorization (and the embedded
+    text) over cleartext leaks both on the wire. No HTTP call may happen."""
+    import mnemosyne.core.embeddings as embeddings
+
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_API_URL", "http://127.0.0.1:9/v1")
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDINGS_VIA_API", "1")
+    monkeypatch.setattr(embeddings, "_OPENAI_API_KEY", "secret-key")
+
+    def _no_request(*args, **kwargs):
+        raise AssertionError("an HTTP request was attempted for a credentialed non-HTTPS endpoint")
+
+    monkeypatch.setattr(embeddings.urllib.request, "urlopen", _no_request)
+    with pytest.raises(ValueError, match="non-HTTPS"):
+        embeddings._embed_api(["hello"])
