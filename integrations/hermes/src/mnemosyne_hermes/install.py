@@ -948,8 +948,14 @@ def _validate_explicit_python(explicit_python: str | Path | None) -> None:
         )
 
 
-def _find_hermes_python(explicit_python: str | Path | None = None) -> Optional[Path]:
-    """Try to find Hermes' python executable for dep validation.
+def _find_hermes_python(
+    explicit_python: str | Path | None = None,
+    hermes_home_path: str | Path | None = None,
+) -> Optional[Path]:
+    """Try to find Hermes' Python executable for dependency validation.
+
+    ``hermes_home_path`` scopes known-root discovery to an explicit CLI home;
+    otherwise the configured default Hermes home is used.
 
     Returns None when no *validated* Hermes runtime is found. A candidate is
     never returned on the strength of sitting next to the launcher alone: the
@@ -981,52 +987,48 @@ def _find_hermes_python(explicit_python: str | Path | None = None) -> Optional[P
         # or fail to find it at all.
         return Path(selected).expanduser()
 
-    hermes_home_path = hermes_home()
+    scoped_home = hermes_home_path is not None
+    hermes_home_path = (
+        Path(hermes_home_path).expanduser()
+        if scoped_home
+        else hermes_home()
+    )
 
-    # 1. Resolve the `hermes` launcher on PATH back to its venv Python.
-    #    A pip/pipx-installed Hermes puts its console script next to the
-    #    interpreter that runs it, so the Python is a sibling of the resolved
-    #    binary. Covers the common /usr/local/lib/hermes-agent/venv layout that
-    #    the hardcoded roots below miss entirely (the silent-no-op that left
-    #    provider deps out of Hermes' actual venv and produced "loaded but no
-    #    provider instance found").
-    #
-    #    The sibling is only trusted when the directory it lives in is a real
-    #    venv. `_resolve_hermes_bin` follows symlinks and wrapper `exec` hops,
-    #    but a launcher that is neither -- a script that calls the real binary
-    #    as a subprocess, or a compiled shim with no `exec` line to read --
-    #    resolves to itself and leaves `bin_dir` as the shim directory. Without
-    #    this check `~/.local/bin/python` (commonly a Homebrew or system
-    #    symlink) gets `mnemosyne-hermes[all]` installed into it while the
-    #    installer reports success (#618). An unvalidated sibling is discarded
-    #    outright rather than kept as a fallback: the only layout it uniquely
-    #    covers is a non-venv system install, which is exactly where
-    #    bootstrapping does the most damage.
-    hermes_bin = shutil.which("hermes")
-    if hermes_bin:
-        resolved = _resolve_hermes_bin(hermes_bin)
-        if resolved:
-            for candidate in _venv_python_candidates(resolved.parent.parent):
-                if _is_validated_venv_python(candidate):
-                    return candidate
+    # An explicit --hermes-home is a discovery boundary. It must never bind the
+    # selected plugin home to a launcher, active venv, or global install that
+    # belongs to another Hermes deployment.
+    if not scoped_home:
+        # 1. Resolve the `hermes` launcher on PATH back to its venv Python.
+        # A pip/pipx-installed Hermes puts its console script next to the
+        # interpreter that runs it, so the Python is a sibling of the resolved
+        # binary. Covers the common /usr/local/lib/hermes-agent/venv layout that
+        # the hardcoded roots below miss entirely.
+        hermes_bin = shutil.which("hermes")
+        if hermes_bin:
+            resolved = _resolve_hermes_bin(hermes_bin)
+            if resolved:
+                for candidate in _venv_python_candidates(resolved.parent.parent):
+                    if _is_validated_venv_python(candidate):
+                        return candidate
 
-    # 2. Check known hermes-agent checkout / install roots with a venv.
-    #    Held to the same bar as the launcher sibling above: a directory named
-    #    `venv` is not evidence that it is one. A half-removed environment, or
-    #    one whose base interpreter is gone, leaves `bin/python` in place with
-    #    no pyvenv.cfg beside it, and bootstrapping into that is the failure
-    #    this function exists to prevent.
-    for root in [
-        hermes_home_path / "hermes-agent",
-        Path.home() / "hermes-agent",
-        Path("/opt/hermes/hermes-agent"),
-        Path("/usr/local/lib/hermes-agent"),
-        Path("/usr/lib/hermes-agent"),
-    ]:
+    # Check the selected Hermes home first. With an explicit home it is the
+    # only permitted root; otherwise retain the established global fallbacks.
+    roots = [hermes_home_path / "hermes-agent"]
+    if not scoped_home:
+        roots.extend([
+            Path.home() / "hermes-agent",
+            Path("/opt/hermes/hermes-agent"),
+            Path("/usr/local/lib/hermes-agent"),
+            Path("/usr/lib/hermes-agent"),
+        ])
+    for root in roots:
         for venv_name in ("venv", ".venv"):
             for candidate in _venv_python_candidates(root / venv_name):
                 if _is_validated_venv_python(candidate):
                     return candidate
+
+    if scoped_home:
+        return None
 
     # 3. Check if we're running inside Hermes' venv ourselves.
     #    `sys.prefix != sys.base_prefix` says the *running* interpreter is in a
@@ -2095,6 +2097,80 @@ def _distribution_version(distribution: str) -> str:
         return "unavailable"
 
 
+def _runtime_python_json_error(message: str) -> int:
+    """Print a runtime Python error using the command's JSON contract."""
+    print(json.dumps({"ok": False, "error": message}))
+    return 1
+
+
+def _runtime_python_json(
+    explicit_python: str | Path | None = None,
+    hermes_home_path: str | Path | None = None,
+) -> int:
+    """Print the selected Hermes interpreter and version as JSON."""
+    try:
+        python = _find_hermes_python(
+            explicit_python=explicit_python,
+            hermes_home_path=hermes_home_path,
+        )
+    except ValueError as exc:
+        return _runtime_python_json_error(str(exc))
+
+    if python is None:
+        return _runtime_python_json_error(
+            "Could not identify Hermes' Python. Pass --python "
+            "/path/to/hermes/venv/bin/python."
+        )
+    if not python.is_file() or not os.access(python, os.X_OK):
+        return _runtime_python_json_error(
+            f"Selected Python is not an executable file: {python}"
+        )
+
+    try:
+        result = subprocess.run(
+            [
+                str(python),
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                (
+                    "import json, platform; "
+                    "print(json.dumps({'runtime': 'python', "
+                    "'version': platform.python_version()}))"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _runtime_python_json_error(f"Could not run selected Python at {python}: {exc}")
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        payload = None
+    version = payload.get("version") if isinstance(payload, dict) else None
+    if (
+        result.returncode != 0
+        or not isinstance(payload, dict)
+        or payload.get("runtime") != "python"
+        or not isinstance(version, str)
+        or not version
+    ):
+        detail = result.stderr.strip() or f"exit status {result.returncode}"
+        if result.returncode == 0 and not result.stderr.strip():
+            detail = "unexpected runtime probe response"
+        return _runtime_python_json_error(
+            f"Could not read Python version from {python}: {detail}"
+        )
+
+    print(json.dumps({"ok": True, "python": str(python), "version": version}))
+    return 0
+
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -2184,6 +2260,20 @@ def _parser() -> argparse.ArgumentParser:
         help="Show whether Mnemosyne is installed for Hermes memory discovery.",
     )
     subparsers.add_parser("version", help="Show installed package versions.")
+    runtime_python = subparsers.add_parser(
+        "runtime-python",
+        help="Report the Python interpreter selected for Hermes.",
+    )
+    runtime_python.add_argument(
+        "--json",
+        action="store_true",
+        required=True,
+        help="Emit the selected interpreter and version as JSON.",
+    )
+    runtime_python.add_argument(
+        "--python",
+        help="Explicit Hermes Python interpreter; bypasses automatic discovery.",
+    )
     cleanup = subparsers.add_parser(
         "cleanup",
         help="Remove all traces of Mnemosyne from Hermes plugin directory (safe, never touches database).",
@@ -2244,7 +2334,10 @@ def run_install(
     # Both install modes need a Hermes interpreter. Symlink installs bootstrap
     # it when needed; wrapper installs validate it and record its metadata. An
     # explicit --python remains authoritative through _find_hermes_python().
-    hermes_python = _find_hermes_python(explicit_python=python)
+    hermes_python = _find_hermes_python(
+        explicit_python=python,
+        hermes_home_path=hermes_home_path,
+    )
     if mode == "wrapper" and hermes_python is None:
         print(
             "\n  ⚠ Could not identify Hermes' Python for wrapper mode.\n"
@@ -2384,7 +2477,8 @@ def main(argv: list[str] | None = None) -> int:
 
             # Dry-run: just show what would happen
             hermes_python = _find_hermes_python(
-                explicit_python=getattr(args, "python", None)
+                explicit_python=getattr(args, "python", None),
+                hermes_home_path=args.hermes_home,
             )
             if args.mode == "wrapper" and hermes_python is None:
                 print(
@@ -2478,7 +2572,7 @@ def main(argv: list[str] | None = None) -> int:
             state = plugin_state(hermes_home_path=args.hermes_home)
             target = state.target
             installed = state.installed
-            hermes_python = _find_hermes_python()
+            hermes_python = _find_hermes_python(hermes_home_path=args.hermes_home)
             print("Status for mnemosyne-hermes plugin")
             print(f"  Plugin path: {target}")
             print(f"  State: {state.status}")
@@ -2532,6 +2626,12 @@ def main(argv: list[str] | None = None) -> int:
                 print("  → Hermes Python vs install Python mismatch means the symlink exists but Hermes")
                 print("     may not be able to import mnemosyne core. Run with --dry-run to diagnose.")
             return 0 if installed else 1
+
+        if command == "runtime-python":
+            return _runtime_python_json(
+                explicit_python=args.python,
+                hermes_home_path=args.hermes_home,
+            )
 
         if command == "cleanup":
             dry_run = getattr(args, "dry_run", False)
