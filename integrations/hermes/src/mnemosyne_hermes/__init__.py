@@ -2624,49 +2624,100 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 "bank": bank,
             })
 
+        if action == "delete":
+            # Align the destructive path with BeamMemory.forget_working: a caller
+            # may only delete a memory its own session can see, honouring the
+            # configured cross-session setting. Resolved before the cascade so a
+            # foreign private id is memory_not_found rather than a partially
+            # applied delete (#930).
+            from mnemosyne.core.beam import (
+                _cross_session_enabled,
+                _session_scope_filter,
+                _session_scope_params,
+            )
+            cross_session = _cross_session_enabled()
+            scope_sql = _session_scope_filter(cross_session=cross_session)
+            scope_params = _session_scope_params(
+                target_beam.session_id, cross_session=cross_session
+            )
+            visible = conn.execute(
+                f"SELECT 1 FROM working_memory WHERE id = ? AND {scope_sql}",
+                (memory_id, *scope_params),
+            ).fetchone()
+            if visible is None:
+                return json.dumps({
+                    "error": "memory_not_found",
+                    "memory_id": memory_id,
+                    "bank": bank,
+                })
+
         author_id = existing[1]
         prev_content = existing[2]
 
         # Apply the action atomically
         try:
-            if action == "delete":
-                conn.execute("DELETE FROM working_memory WHERE id = ?", (memory_id,))
-            elif action == "update":
-                conn.execute(
-                    "UPDATE working_memory SET content = ?, validator = ?, "
-                    "validated_at = CURRENT_TIMESTAMP, "
-                    "validation_count = COALESCE(validation_count, 0) + 1 "
-                    "WHERE id = ?",
-                    (new_content, validator, memory_id),
-                )
-            elif action == "invalidate":
-                conn.execute(
-                    "UPDATE working_memory SET valid_until = CURRENT_TIMESTAMP, "
-                    "validator = ?, validated_at = CURRENT_TIMESTAMP, "
-                    "validation_count = COALESCE(validation_count, 0) + 1 "
-                    "WHERE id = ?",
-                    (validator, memory_id),
-                )
-            else:  # attest
-                conn.execute(
-                    "UPDATE working_memory SET validator = ?, "
-                    "validated_at = CURRENT_TIMESTAMP, "
-                    "validation_count = COALESCE(validation_count, 0) + 1 "
-                    "WHERE id = ?",
-                    (validator, memory_id),
-                )
+            # Roll the whole cascade back on any failure, including the
+            # validation-log insert below. Without the guard the deletes stayed
+            # pending on this long-lived connection after a failed call, and a
+            # later unrelated commit made them permanent (#904).
+            from mnemosyne.core.beam import _guarded_transaction, _wm_vec_available
+            with _guarded_transaction(conn):
+                if action == "delete":
+                    # Cascade the memory's support rows before the parent row, so a
+                    # delete cannot leave orphaned annotations, embeddings, vector
+                    # rows or gists behind (#904).
+                    conn.execute("DELETE FROM memory_embeddings WHERE memory_id = ?", (memory_id,))
+                    conn.execute("DELETE FROM annotations WHERE memory_id = ?", (memory_id,))
+                    row = conn.execute(
+                        "SELECT rowid FROM working_memory WHERE id = ?", (memory_id,)
+                    ).fetchone()
+                    if row is not None and _wm_vec_available(conn):
+                        conn.execute("DELETE FROM vec_working WHERE rowid = ?", (row[0],))
+                    gists_table = conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gists'"
+                    ).fetchone()
+                    if gists_table is not None:
+                        conn.execute("DELETE FROM gists WHERE memory_id = ?", (memory_id,))
+                    conn.execute("DELETE FROM working_memory WHERE id = ?", (memory_id,))
+                elif action == "update":
+                    conn.execute(
+                        "UPDATE working_memory SET content = ?, validator = ?, "
+                        "validated_at = CURRENT_TIMESTAMP, "
+                        "validation_count = COALESCE(validation_count, 0) + 1 "
+                        "WHERE id = ?",
+                        (new_content, validator, memory_id),
+                    )
+                elif action == "invalidate":
+                    conn.execute(
+                        "UPDATE working_memory SET valid_until = CURRENT_TIMESTAMP, "
+                        "validator = ?, validated_at = CURRENT_TIMESTAMP, "
+                        "validation_count = COALESCE(validation_count, 0) + 1 "
+                        "WHERE id = ?",
+                        (validator, memory_id),
+                    )
+                else:  # attest
+                    conn.execute(
+                        "UPDATE working_memory SET validator = ?, "
+                        "validated_at = CURRENT_TIMESTAMP, "
+                        "validation_count = COALESCE(validation_count, 0) + 1 "
+                        "WHERE id = ?",
+                        (validator, memory_id),
+                    )
 
-            # Append to ring buffer (trigger trims to last 3 per memory_id)
-            conn.execute(
-                "INSERT INTO memory_validations "
-                "(memory_id, validator, action, new_content, note) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (memory_id, validator, action,
-                 new_content if action == "update" else None,
-                 note or None),
-            )
-            conn.commit()
+                # Append to ring buffer (trigger trims to last 3 per memory_id)
+                conn.execute(
+                    "INSERT INTO memory_validations "
+                    "(memory_id, validator, action, new_content, note) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (memory_id, validator, action,
+                     new_content if action == "update" else None,
+                     note or None),
+                )
         except Exception as exc:
+            # The guard above has already rolled the mutation back; log before
+            # failing soft so a schema or database fault in the cascade leaves a
+            # Hermes-side trace rather than only a JSON error string.
+            logger.exception("Mnemosyne: validate %s failed for %s", action, memory_id)
             return json.dumps({
                 "error": "validation_failed",
                 "reason": str(exc),
