@@ -51,9 +51,14 @@ def embeddings_mod(monkeypatch):
     # The PREFIXES are read at call time by the patch, so no reload is ever
     # needed for prefix changes (see test_unset_prefixes_unchanged).
     _orig_default_model = embeddings._DEFAULT_MODEL
+    _orig_api_key = embeddings._OPENAI_API_KEY
     importlib.reload(embeddings)
     yield embeddings
+    # The reload re-reads both module globals from the (patched, key-stripped)
+    # env; restore the originals so later tests in the session see the true
+    # default model and the real credential state, not this fixture's.
     embeddings._DEFAULT_MODEL = _orig_default_model
+    embeddings._OPENAI_API_KEY = _orig_api_key
     server.shutdown()
 
 def test_query_prefix_byte_exact(embeddings_mod):
