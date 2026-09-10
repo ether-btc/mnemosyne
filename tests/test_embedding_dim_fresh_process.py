@@ -485,3 +485,58 @@ def test_credentialed_http_endpoint_refused_before_any_request(monkeypatch):
     monkeypatch.setattr(embeddings.urllib.request, "urlopen", _no_request)
     with pytest.raises(ValueError, match="non-HTTPS"):
         embeddings._embed_api(["hello"])
+
+
+def test_credentialed_redirect_refused_for_both_targets(monkeypatch):
+    """urllib forwards Authorization verbatim to redirect targets (verified
+    against a local 302 hop: the header reaches the destination), so a
+    credentialed embedding request must refuse EVERY redirect, whether the
+    target is cleartext http:// or a different https:// authority."""
+    import urllib.request
+
+    import mnemosyne.core.embeddings as embeddings
+
+    handler = embeddings._CredentialedNoRedirect()
+    request = urllib.request.Request(
+        "https://configured.example/v1/embeddings",
+        headers={"Authorization": "Bearer secret"},
+    )
+    for newurl in ("http://attacker.example/embedding", "https://other-authority.example/embedding"):
+        with pytest.raises(ValueError, match="redirect"):
+            handler.redirect_request(request, None, 302, "Found", {"Location": newurl}, newurl)
+
+
+def test_credentialed_requests_use_the_no_redirect_opener(monkeypatch):
+    """Wiring: with a key present, _embed_api must send through an opener
+    that carries _CredentialedNoRedirect; uncredentialed calls keep plain
+    urlopen. No real request is made: the opener stub fails the test on use,
+    and build_opener records the handler classes it was given."""
+    import mnemosyne.core.embeddings as embeddings
+
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDING_API_URL", "https://api.example.test/v1")
+    monkeypatch.setenv("MNEMOSYNE_EMBEDDINGS_VIA_API", "1")
+    monkeypatch.setattr(embeddings, "_OPENAI_API_KEY", "secret-key")
+
+    built = {}
+
+    def _fake_build_opener(*handlers):
+        built["handlers"] = handlers
+
+        class _NeverOpens:
+            def open(self, *a, **k):
+                raise embeddings._EmbeddingPolicyError(
+                    "no real request expected in this wiring test"
+                )
+
+        return _NeverOpens()
+
+    monkeypatch.setattr(embeddings.urllib.request, "build_opener", _fake_build_opener)
+    # The policy error must propagate out of the retry loop (a generic handler
+    # would otherwise swallow it into keyword-only degradation).
+    with pytest.raises(ValueError, match="no real request"):
+        embeddings._embed_api(["hello"])
+    assert any(
+        h is embeddings._CredentialedNoRedirect
+        or isinstance(h, embeddings._CredentialedNoRedirect)
+        for h in built["handlers"]
+    ), built

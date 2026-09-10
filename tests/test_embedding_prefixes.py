@@ -41,13 +41,19 @@ def embeddings_mod(monkeypatch):
     # credentialed non-HTTPS endpoints).
     monkeypatch.delenv("MNEMOSYNE_EMBEDDING_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # The reload below re-reads _DEFAULT_MODEL from the patched env (model
+    # "embeddinggemma-300m-q4"); restore the original afterward so later
+    # tests in the same session see the true default instead of this
+    # fixture's model.
     RECORDED.clear()
     from mnemosyne.core import embeddings
     # Reload ONLY because upstream reads the API URL/model at module import time.
     # The PREFIXES are read at call time by the patch, so no reload is ever
     # needed for prefix changes (see test_unset_prefixes_unchanged).
+    _orig_default_model = embeddings._DEFAULT_MODEL
     importlib.reload(embeddings)
     yield embeddings
+    embeddings._DEFAULT_MODEL = _orig_default_model
     server.shutdown()
 
 def test_query_prefix_byte_exact(embeddings_mod):
