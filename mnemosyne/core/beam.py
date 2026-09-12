@@ -1970,6 +1970,16 @@ def _vec_table_available(conn: sqlite3.Connection, table: str) -> bool:
         return False
 
 
+def _vec_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    """Return whether a persistent sqlite-vec table is present in the schema."""
+    if table not in {"vec_episodes", "vec_working", "vec_facts"}:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone() is not None
+
+
 def _wm_vec_available(conn: sqlite3.Connection) -> bool:
     return _vec_table_available(conn, "vec_working")
 
@@ -9599,13 +9609,24 @@ class BeamMemory:
 
         - If embeddings provider is available: regenerate using the new
           content and overwrite the existing vector store entries.
-        - If unavailable: invalidate (DELETE / NULL) the stale entries so
-          dense recall stops returning semantically misleading hits. The
-          row remains discoverable via FTS.
+        - If unavailable and no vec table exists: invalidate the JSON/binary
+          fallback entries so dense recall stops returning misleading hits.
+        - If a vec table exists but is unusable: abort so the caller rolls
+          back the row rather than leaving its ANN entry stale.
         """
         cursor = self.conn.cursor()
 
         vec_available_now = _vec_available(self.conn)
+        if not vec_available_now and _vec_table_exists(self.conn, "vec_episodes"):
+            logger.warning(
+                "Cannot refresh embedding for memory_id=%s: persisted vec_episodes "
+                "is unavailable; caller must roll back",
+                memory_id,
+            )
+            raise RuntimeError(
+                "vec_episodes exists but is unavailable; refusing partial "
+                "embedding refresh"
+            )
 
         if _embeddings.available():
             try:
@@ -9641,11 +9662,10 @@ class BeamMemory:
         # Provider unavailable (or embed() returned None). Invalidate the
         # stale entries so dense recall doesn't lie. The row keeps its
         # FTS-searchable content and remains otherwise intact. Each DELETE
-        # is gated on the matching store's availability -- vec_episodes is
-        # a sqlite-vec virtual table that doesn't exist when the extension
-        # isn't loaded, so an unconditional DELETE there raises
-        # OperationalError and the caller's broad except would silently
-        # skip the memory_embeddings cleanup too.
+        # is gated on the matching store's availability. A persisted but
+        # unusable vec_episodes table was rejected above; when no vec table
+        # exists, an unconditional DELETE would raise OperationalError and
+        # the caller's broad except would skip the fallback cleanup too.
         if vec_available_now:
             cursor.execute("DELETE FROM vec_episodes WHERE rowid = ?", (rowid,))
         cursor.execute("DELETE FROM memory_embeddings WHERE memory_id = ?", (memory_id,))
