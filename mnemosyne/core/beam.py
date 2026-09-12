@@ -6073,16 +6073,41 @@ class BeamMemory:
                 else:
                     # Fallback: store in memory_embeddings table for in-memory
                     # search (still inside the guarded transaction)
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO memory_embeddings
-                        (memory_id, embedding_json, model)
-                        VALUES (?, ?, ?)
-                    """, (
-                        memory_id,
-                        _embeddings.serialize(embedding),
-                        _embeddings._DEFAULT_MODEL,
-                    ))
-                    dense_write_succeeded = True
+                    try:
+                        cursor.execute("""
+                            INSERT OR REPLACE INTO memory_embeddings
+                            (memory_id, embedding_json, model)
+                            VALUES (?, ?, ?)
+                        """, (
+                            memory_id,
+                            _embeddings.serialize(embedding),
+                            _embeddings._DEFAULT_MODEL,
+                        ))
+                    except Exception as _fallback_exc:
+                        # Match the ANN-failure fallback contract: degrade only
+                        # while this exact row and transaction still survive.
+                        transaction_valid = self.conn.in_transaction
+                        if transaction_valid:
+                            try:
+                                transaction_valid = cursor.execute(
+                                    "SELECT 1 FROM episodic_memory "
+                                    "WHERE rowid = ? AND id = ?",
+                                    (rowid, memory_id),
+                                ).fetchone() is not None
+                            except sqlite3.Error:
+                                transaction_valid = False
+                        if not transaction_valid:
+                            raise
+
+                        logger.warning(
+                            "consolidate_to_episodic: memory_embeddings fallback "
+                            "failed; summary stored FTS-only (rowid=%s, "
+                            "fallback_error=%s)",
+                            rowid,
+                            type(_fallback_exc).__name__,
+                        )
+                    else:
+                        dense_write_succeeded = True
 
             # Binary vector compression (Phase 2 -- 32x reduction)
             if dense_write_succeeded and embedding is not None and _mib is not None:

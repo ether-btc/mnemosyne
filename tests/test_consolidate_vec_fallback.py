@@ -17,6 +17,20 @@ def _embedding() -> np.ndarray:
 
 
 @pytest.fixture
+def direct_json_embeddings(monkeypatch):
+    """Use a deterministic embedding with sqlite-vec unavailable."""
+    vector = _embedding()
+    monkeypatch.setattr(beam_module._embeddings, "available", lambda: True)
+    monkeypatch.setattr(
+        beam_module._embeddings,
+        "embed",
+        lambda texts: np.stack([vector for _ in texts]),
+    )
+    monkeypatch.setattr(beam_module, "_vec_available", lambda conn: False)
+    return vector
+
+
+@pytest.fixture
 def real_vec_embeddings(monkeypatch):
     """Use real sqlite-vec tables with a deterministic provider result."""
     pytest.importorskip("sqlite_vec")
@@ -70,6 +84,18 @@ def _install_fallback_rollback_failure(beam, monkeypatch):
         raise RuntimeError("controlled ANN failure")
 
     monkeypatch.setattr(beam_module, "_vec_insert", fail_vec_insert)
+
+
+def _install_direct_fallback_rollback_failure(beam):
+    """Make the direct JSON fallback roll back SQLite."""
+    beam.conn.execute("""
+        CREATE TRIGGER rollback_direct_episodic_json_fallback
+        BEFORE INSERT ON memory_embeddings
+        BEGIN
+            SELECT RAISE(ROLLBACK, 'forced direct fallback transaction rollback');
+        END
+    """)
+    beam.conn.commit()
 
 
 def test_vec_insert_failure_commits_json_fallback_for_later_lookup(
@@ -132,6 +158,134 @@ def test_provider_unavailable_keeps_fts_only_summary(tmp_path, monkeypatch):
         "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", (memory_id,)
     ).fetchone()[0] == 0
     assert not beam.conn.in_transaction
+
+
+def test_direct_json_fallback_success_remains_json_and_binary_backed(
+    tmp_path, direct_json_embeddings
+):
+    beam = BeamMemory(db_path=tmp_path / "direct-json.db", session_id="direct-json")
+
+    memory_id = beam.consolidate_to_episodic("Stored in the direct fallback.", [])
+    row = beam.conn.execute(
+        "SELECT binary_vector FROM episodic_memory WHERE id = ?", (memory_id,)
+    ).fetchone()
+    stored = beam.conn.execute(
+        "SELECT embedding_json FROM memory_embeddings WHERE memory_id = ?",
+        (memory_id,),
+    ).fetchone()
+
+    np.testing.assert_allclose(json.loads(stored[0]), direct_json_embeddings)
+    assert row["binary_vector"] is not None
+    assert not beam.conn.in_transaction
+
+
+def test_direct_json_fallback_abort_commits_fts_only_with_precise_warning(
+    tmp_path, direct_json_embeddings, caplog
+):
+    beam = BeamMemory(db_path=tmp_path / "direct-abort.db", session_id="direct-abort")
+    beam.conn.execute("""
+        CREATE TRIGGER reject_direct_episodic_json_fallback
+        BEFORE INSERT ON memory_embeddings
+        BEGIN
+            SELECT RAISE(ABORT, 'private direct json failure detail');
+        END
+    """)
+    beam.conn.commit()
+
+    memory_id = beam.consolidate_to_episodic("Direct fallback becomes FTS-only.", [])
+    row = beam.conn.execute(
+        "SELECT rowid, content, binary_vector FROM episodic_memory WHERE id = ?",
+        (memory_id,),
+    ).fetchone()
+
+    assert row["content"] == "Direct fallback becomes FTS-only."
+    assert row["binary_vector"] is None
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", (memory_id,)
+    ).fetchone()[0] == 0
+    assert not beam.conn.in_transaction
+    assert (
+        "consolidate_to_episodic: memory_embeddings fallback failed; summary "
+        "stored FTS-only (rowid=1, fallback_error=IntegrityError)"
+    ) in caplog.text
+    assert "private direct json failure detail" not in caplog.text
+
+
+def test_direct_json_fallback_rollback_preserves_owned_transaction_failure(
+    tmp_path, direct_json_embeddings, caplog
+):
+    beam = BeamMemory(
+        db_path=tmp_path / "direct-owned-rollback.db",
+        session_id="direct-owned-rollback",
+    )
+    _install_direct_fallback_rollback_failure(beam)
+
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="forced direct fallback transaction rollback",
+    ):
+        beam.consolidate_to_episodic("Direct fallback rolled back its transaction.", [])
+
+    assert not beam.conn.in_transaction
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM episodic_memory WHERE content = ?",
+        ("Direct fallback rolled back its transaction.",),
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM memory_embeddings"
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM episodic_memory WHERE binary_vector IS NOT NULL"
+    ).fetchone()[0] == 0
+    assert "stored FTS-only" not in caplog.text
+
+
+def test_direct_json_fallback_rollback_preserves_caller_transaction_failure(
+    tmp_path, direct_json_embeddings, caplog
+):
+    beam = BeamMemory(
+        db_path=tmp_path / "direct-caller-rollback.db",
+        session_id="direct-caller-rollback",
+    )
+    _install_direct_fallback_rollback_failure(beam)
+    beam.conn.execute(
+        "INSERT INTO working_memory "
+        "(id, content, source, timestamp, session_id) VALUES (?, ?, ?, ?, ?)",
+        (
+            "direct-rollback-marker",
+            "caller marker",
+            "test",
+            "2026-01-01T00:00:00",
+            "direct-caller-rollback",
+        ),
+    )
+    assert beam.conn.in_transaction
+
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="forced direct fallback transaction rollback",
+    ):
+        beam.consolidate_to_episodic(
+            "Direct fallback rolled back its caller transaction.",
+            [],
+            emit_event=False,
+        )
+
+    assert not beam.conn.in_transaction
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM working_memory WHERE id = 'direct-rollback-marker'"
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM episodic_memory WHERE content = ?",
+        ("Direct fallback rolled back its caller transaction.",),
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM memory_embeddings"
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM episodic_memory WHERE binary_vector IS NOT NULL"
+    ).fetchone()[0] == 0
+    assert "stored FTS-only" not in caplog.text
 
 
 def test_vec_and_json_fallback_failures_commit_fts_only_with_precise_warning(
