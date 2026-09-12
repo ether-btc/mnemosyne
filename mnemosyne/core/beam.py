@@ -6033,6 +6033,23 @@ class BeamMemory:
                                 _embeddings._DEFAULT_MODEL,
                             ))
                         except Exception as _fallback_exc:
+                            # The fallback can itself abort the transaction
+                            # (for example, a trigger using RAISE(ROLLBACK)).
+                            # Only claim FTS-only storage when the transaction
+                            # and this exact episodic row still exist.
+                            transaction_valid = self.conn.in_transaction
+                            if transaction_valid:
+                                try:
+                                    transaction_valid = cursor.execute(
+                                        "SELECT 1 FROM episodic_memory "
+                                        "WHERE rowid = ? AND id = ?",
+                                        (rowid, memory_id),
+                                    ).fetchone() is not None
+                                except sqlite3.Error:
+                                    transaction_valid = False
+                            if not transaction_valid:
+                                raise
+
                             logger.warning(
                                 "consolidate_to_episodic: vec_episodes insert "
                                 "and memory_embeddings fallback failed; summary "

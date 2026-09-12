@@ -55,6 +55,23 @@ def _install_vec_rollback_failure(beam, monkeypatch):
     monkeypatch.setattr(beam_module, "_vec_insert", fail_vec_insert)
 
 
+def _install_fallback_rollback_failure(beam, monkeypatch):
+    """Fail ANN first, then make the JSON fallback roll back SQLite."""
+    beam.conn.execute("""
+        CREATE TRIGGER rollback_episodic_json_fallback
+        BEFORE INSERT ON memory_embeddings
+        BEGIN
+            SELECT RAISE(ROLLBACK, 'forced fallback transaction rollback');
+        END
+    """)
+    beam.conn.commit()
+
+    def fail_vec_insert(*args, **kwargs):
+        raise RuntimeError("controlled ANN failure")
+
+    monkeypatch.setattr(beam_module, "_vec_insert", fail_vec_insert)
+
+
 def test_vec_insert_failure_commits_json_fallback_for_later_lookup(
     tmp_path, monkeypatch, real_vec_embeddings
 ):
@@ -237,6 +254,78 @@ def test_vec_sqlite_rollback_preserves_caller_transaction_failure(
     assert beam.conn.execute(
         "SELECT COUNT(*) FROM memory_embeddings"
     ).fetchone()[0] == 0
+
+
+def test_fallback_sqlite_rollback_preserves_owned_transaction_failure(
+    tmp_path, monkeypatch, real_vec_embeddings, caplog
+):
+    beam = _new_vec_beam(
+        tmp_path, real_vec_embeddings, session_id="owned-fallback-rollback"
+    )
+    _install_fallback_rollback_failure(beam, monkeypatch)
+
+    with pytest.raises(
+        sqlite3.IntegrityError, match="forced fallback transaction rollback"
+    ):
+        beam.consolidate_to_episodic("Fallback rolled back its owned transaction.", [])
+
+    assert not beam.conn.in_transaction
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM episodic_memory WHERE content = ?",
+        ("Fallback rolled back its owned transaction.",),
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM memory_embeddings"
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM episodic_memory WHERE binary_vector IS NOT NULL"
+    ).fetchone()[0] == 0
+    assert "stored FTS-only" not in caplog.text
+
+
+def test_fallback_sqlite_rollback_preserves_caller_transaction_failure(
+    tmp_path, monkeypatch, real_vec_embeddings, caplog
+):
+    beam = _new_vec_beam(
+        tmp_path, real_vec_embeddings, session_id="caller-fallback-rollback"
+    )
+    _install_fallback_rollback_failure(beam, monkeypatch)
+    beam.conn.execute(
+        "INSERT INTO working_memory "
+        "(id, content, source, timestamp, session_id) VALUES (?, ?, ?, ?, ?)",
+        (
+            "fallback-rollback-marker",
+            "caller marker",
+            "test",
+            "2026-01-01T00:00:00",
+            "caller-fallback-rollback",
+        ),
+    )
+    assert beam.conn.in_transaction
+
+    with pytest.raises(
+        sqlite3.IntegrityError, match="forced fallback transaction rollback"
+    ):
+        beam.consolidate_to_episodic(
+            "Fallback rolled back its caller transaction.", [], emit_event=False
+        )
+
+    assert not beam.conn.in_transaction
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM working_memory "
+        "WHERE id = 'fallback-rollback-marker'"
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM episodic_memory WHERE content = ?",
+        ("Fallback rolled back its caller transaction.",),
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM memory_embeddings"
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM episodic_memory WHERE binary_vector IS NOT NULL"
+    ).fetchone()[0] == 0
+    assert "stored FTS-only" not in caplog.text
 
 
 def test_vec_failure_fallback_does_not_commit_caller_transaction(
