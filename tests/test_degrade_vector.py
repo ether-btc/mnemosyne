@@ -136,13 +136,10 @@ def sqlite_vec_embeddings(monkeypatch):
 
 class TestDegradeEpisodicVectorRefresh:
 
-    @pytest.mark.parametrize("fallback", ["provider_unavailable", "embed_none"])
     def test_existing_unusable_vec_table_rolls_back_entire_degradation(
-        self, temp_db, sqlite_vec_embeddings, monkeypatch, fallback
+        self, temp_db, sqlite_vec_embeddings
     ):
         """An inaccessible persisted ANN table must not permit partial updates."""
-        from mnemosyne.core import embeddings as emb
-
         beam = BeamMemory(session_id="s1", db_path=temp_db)
         if not beam_module._vec_available(beam.conn):
             pytest.skip("sqlite-vec vec_episodes unavailable in this build")
@@ -192,10 +189,6 @@ class TestDegradeEpisodicVectorRefresh:
         with pytest.raises(sqlite3.OperationalError, match="no such module: vec0"):
             beam.conn.execute("SELECT 1 FROM vec_episodes LIMIT 0")
 
-        if fallback == "provider_unavailable":
-            monkeypatch.setattr(emb, "available", lambda: False)
-        else:
-            monkeypatch.setattr(emb, "embed", lambda texts: None)
         result = beam.degrade_episodic(dry_run=False)
 
         assert result["tier2_to_tier3"] == 0

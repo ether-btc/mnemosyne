@@ -9618,6 +9618,11 @@ class BeamMemory:
 
         vec_available_now = _vec_available(self.conn)
         if not vec_available_now and _vec_table_exists(self.conn, "vec_episodes"):
+            logger.warning(
+                "Cannot refresh embedding for memory_id=%s: persisted vec_episodes "
+                "is unavailable; caller must roll back",
+                memory_id,
+            )
             raise RuntimeError(
                 "vec_episodes exists but is unavailable; refusing partial "
                 "embedding refresh"
