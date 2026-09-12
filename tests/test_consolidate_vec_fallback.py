@@ -37,6 +37,24 @@ def _new_vec_beam(tmp_path, real_vec_embeddings, session_id="s1"):
     return beam
 
 
+def _install_vec_rollback_failure(beam, monkeypatch):
+    """Make _vec_insert execute a real SQLite RAISE(ROLLBACK)."""
+    beam.conn.execute("CREATE TABLE vec_insert_rollback_probe (value INTEGER)")
+    beam.conn.execute("""
+        CREATE TRIGGER rollback_vec_insert
+        BEFORE INSERT ON vec_insert_rollback_probe
+        BEGIN
+            SELECT RAISE(ROLLBACK, 'forced vec transaction rollback');
+        END
+    """)
+    beam.conn.commit()
+
+    def fail_vec_insert(conn, rowid, embedding, *, commit=True):
+        conn.execute("INSERT INTO vec_insert_rollback_probe VALUES (1)")
+
+    monkeypatch.setattr(beam_module, "_vec_insert", fail_vec_insert)
+
+
 def test_vec_insert_failure_commits_json_fallback_for_later_lookup(
     tmp_path, monkeypatch, real_vec_embeddings
 ):
@@ -54,9 +72,10 @@ def test_vec_insert_failure_commits_json_fallback_for_later_lookup(
     memory_id = beam.consolidate_to_episodic(
         "A summary that remains densely retrievable.", ["wm-1"]
     )
-    rowid = beam.conn.execute(
-        "SELECT rowid FROM episodic_memory WHERE id = ?", (memory_id,)
-    ).fetchone()[0]
+    row = beam.conn.execute(
+        "SELECT rowid, binary_vector FROM episodic_memory WHERE id = ?", (memory_id,)
+    ).fetchone()
+    rowid = row["rowid"]
     stored = beam.conn.execute(
         "SELECT embedding_json FROM memory_embeddings WHERE memory_id = ?",
         (memory_id,),
@@ -67,6 +86,7 @@ def test_vec_insert_failure_commits_json_fallback_for_later_lookup(
     assert beam.conn.execute(
         "SELECT COUNT(*) FROM vec_episodes WHERE rowid = ?", (rowid,)
     ).fetchone()[0] == 0
+    assert row["binary_vector"] is not None
     assert not beam.conn.in_transaction
 
     fallback_conn = sqlite3.connect(beam.db_path)
@@ -117,7 +137,8 @@ def test_vec_and_json_fallback_failures_commit_fts_only_with_precise_warning(
 
     memory_id = beam.consolidate_to_episodic("FTS-only after both writes fail.", [])
     row = beam.conn.execute(
-        "SELECT rowid, content FROM episodic_memory WHERE id = ?", (memory_id,)
+        "SELECT rowid, content, binary_vector FROM episodic_memory WHERE id = ?",
+        (memory_id,),
     ).fetchone()
 
     assert row["content"] == "FTS-only after both writes fail."
@@ -127,6 +148,7 @@ def test_vec_and_json_fallback_failures_commit_fts_only_with_precise_warning(
     assert beam.conn.execute(
         "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", (memory_id,)
     ).fetchone()[0] == 0
+    assert row["binary_vector"] is None
     assert not beam.conn.in_transaction
     assert (
         "consolidate_to_episodic: vec_episodes insert and memory_embeddings "
@@ -143,9 +165,10 @@ def test_successful_vec_insert_remains_ann_backed(
     beam = _new_vec_beam(tmp_path, real_vec_embeddings, session_id="ann")
 
     memory_id = beam.consolidate_to_episodic("Stored in the ANN index.", [])
-    rowid = beam.conn.execute(
-        "SELECT rowid FROM episodic_memory WHERE id = ?", (memory_id,)
-    ).fetchone()[0]
+    row = beam.conn.execute(
+        "SELECT rowid, binary_vector FROM episodic_memory WHERE id = ?", (memory_id,)
+    ).fetchone()
+    rowid = row["rowid"]
 
     assert beam.conn.execute(
         "SELECT COUNT(*) FROM vec_episodes WHERE rowid = ?", (rowid,)
@@ -153,7 +176,67 @@ def test_successful_vec_insert_remains_ann_backed(
     assert beam.conn.execute(
         "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?", (memory_id,)
     ).fetchone()[0] == 0
+    assert row["binary_vector"] is not None
     assert not beam.conn.in_transaction
+
+
+def test_vec_sqlite_rollback_preserves_owned_transaction_failure(
+    tmp_path, monkeypatch, real_vec_embeddings
+):
+    beam = _new_vec_beam(tmp_path, real_vec_embeddings, session_id="owned-rollback")
+    _install_vec_rollback_failure(beam, monkeypatch)
+
+    with pytest.raises(
+        sqlite3.IntegrityError, match="forced vec transaction rollback"
+    ):
+        beam.consolidate_to_episodic("Rolled back with its owned transaction.", [])
+
+    assert not beam.conn.in_transaction
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM episodic_memory WHERE content = ?",
+        ("Rolled back with its owned transaction.",),
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM memory_embeddings"
+    ).fetchone()[0] == 0
+
+
+def test_vec_sqlite_rollback_preserves_caller_transaction_failure(
+    tmp_path, monkeypatch, real_vec_embeddings
+):
+    beam = _new_vec_beam(tmp_path, real_vec_embeddings, session_id="caller-rollback")
+    _install_vec_rollback_failure(beam, monkeypatch)
+    beam.conn.execute(
+        "INSERT INTO working_memory "
+        "(id, content, source, timestamp, session_id) VALUES (?, ?, ?, ?, ?)",
+        (
+            "rollback-marker",
+            "caller marker",
+            "test",
+            "2026-01-01T00:00:00",
+            "caller-rollback",
+        ),
+    )
+    assert beam.conn.in_transaction
+
+    with pytest.raises(
+        sqlite3.IntegrityError, match="forced vec transaction rollback"
+    ):
+        beam.consolidate_to_episodic(
+            "Rolled back with its caller transaction.", [], emit_event=False
+        )
+
+    assert not beam.conn.in_transaction
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM working_memory WHERE id = 'rollback-marker'"
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM episodic_memory WHERE content = ?",
+        ("Rolled back with its caller transaction.",),
+    ).fetchone()[0] == 0
+    assert beam.conn.execute(
+        "SELECT COUNT(*) FROM memory_embeddings"
+    ).fetchone()[0] == 0
 
 
 def test_vec_failure_fallback_does_not_commit_caller_transaction(
