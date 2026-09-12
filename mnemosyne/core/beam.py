@@ -5991,23 +5991,58 @@ class BeamMemory:
                     (event_date, event_date_precision or "unknown", memory_id),
                 )
 
-            if vec is not None and _vec_available(self.conn):
-                try:
-                    _vec_insert(
-                        self.conn, rowid, np.asarray(vec[0]).tolist(), commit=False
-                    )
-                except Exception as _vec_exc:
-                    logger.warning(
-                        "vec_episodes insert failed (rowid=%s): %s",
-                        rowid, _vec_exc,
-                    )
-            elif vec is not None:
-                # Fallback: store in memory_embeddings table for in-memory
-                # search (still inside the guarded transaction)
-                cursor.execute("""
-                    INSERT OR REPLACE INTO memory_embeddings (memory_id, embedding_json, model)
-                    VALUES (?, ?, ?)
-                """, (memory_id, _embeddings.serialize(np.asarray(vec[0])), _embeddings._DEFAULT_MODEL))
+            if vec is not None:
+                embedding = np.asarray(vec[0])
+                if _vec_available(self.conn):
+                    try:
+                        _vec_insert(
+                            self.conn, rowid, embedding.tolist(), commit=False
+                        )
+                    except Exception as _vec_exc:
+                        # Preserve the already-produced vector for fallback
+                        # search when the optional ANN write fails. This write
+                        # stays inside the guarded transaction and deliberately
+                        # does not take over its commit boundary.
+                        try:
+                            cursor.execute("""
+                                INSERT OR REPLACE INTO memory_embeddings
+                                (memory_id, embedding_json, model)
+                                VALUES (?, ?, ?)
+                            """, (
+                                memory_id,
+                                _embeddings.serialize(embedding),
+                                _embeddings._DEFAULT_MODEL,
+                            ))
+                        except Exception as _fallback_exc:
+                            logger.warning(
+                                "consolidate_to_episodic: vec_episodes insert "
+                                "and memory_embeddings fallback failed; summary "
+                                "stored FTS-only (rowid=%s, vec_error=%s, "
+                                "fallback_error=%s)",
+                                rowid,
+                                type(_vec_exc).__name__,
+                                type(_fallback_exc).__name__,
+                            )
+                        else:
+                            logger.warning(
+                                "consolidate_to_episodic: vec_episodes insert "
+                                "failed; stored memory_embeddings fallback "
+                                "(rowid=%s, vec_error=%s)",
+                                rowid,
+                                type(_vec_exc).__name__,
+                            )
+                else:
+                    # Fallback: store in memory_embeddings table for in-memory
+                    # search (still inside the guarded transaction)
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO memory_embeddings
+                        (memory_id, embedding_json, model)
+                        VALUES (?, ?, ?)
+                    """, (
+                        memory_id,
+                        _embeddings.serialize(embedding),
+                        _embeddings._DEFAULT_MODEL,
+                    ))
 
             # Binary vector compression (Phase 2 -- 32x reduction)
             if vec is not None and _mib is not None:
