@@ -2128,7 +2128,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         should_auto_sleep = False
         auto_sleep_session_id = ""
         try:
-            with self._beam_session_scope(session_id) as beam:
+            from mnemosyne.core.filters import write_policy_operation
+            with write_policy_operation(), self._beam_session_scope(session_id) as beam:
                 if beam is None:
                     return
                 beam_session_id = getattr(beam, "session_id", None)
@@ -2139,7 +2140,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 ledger_session_id = str(session_id or "").strip()
                 if ledger_session_id and not getattr(self, "_active_session_id", ""):
                     self._active_session_id = ledger_session_id
-                if "user" in self._sync_roles and user_content and len(user_content) > 5 and not self._should_filter(user_content):
+                if "user" in self._sync_roles and user_content and len(user_content) > 5:
                     user_limit = _sync_turn_user_limit()
                     uc = user_content[:user_limit] if user_limit > 0 else user_content
                     stored_user = f"[USER] {uc}"
@@ -2154,7 +2155,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     )
                     # Check for identity-significant signals in user content
                     self._capture_identity_signals(user_content)
-                if "assistant" in self._sync_roles and assistant_content and len(assistant_content) > 10 and not self._should_filter(assistant_content):
+                if "assistant" in self._sync_roles and assistant_content and len(assistant_content) > 10:
                     assistant_limit = _sync_turn_assistant_limit()
                     ac = assistant_content[:assistant_limit] if assistant_limit > 0 else assistant_content
                     stored_assistant = f"[ASSISTANT] {ac}"
@@ -2545,6 +2546,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             metadata=metadata,
             veracity=veracity,
         )
+        if memory_id is None:
+            return json.dumps({"status": "filtered"})
         self._audit_event(
             "remember", memory_id=memory_id, bank="private",
             scope=scope, source_tool="mnemosyne_remember",
@@ -2808,6 +2811,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             memory_id=stable_id,
             veracity=veracity,
         )
+        if memory_id is None:
+            return json.dumps({"status": "filtered"})
         self._audit_event(
             "shared_remember", memory_id=memory_id, bank="surface",
             scope="global", source_tool="mnemosyne_shared_remember",
@@ -3235,7 +3240,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
     def _handle_apply_pending(self, args: Dict[str, Any]) -> str:
         from hermes_constants import get_hermes_home
+        from mnemosyne.core.filters import resolve_write_policy
         from mnemosyne.core.veracity_consolidation import clamp_veracity
+        policy = resolve_write_policy()
         pending_ids = args.get("pending_ids") or []
         if isinstance(pending_ids, str):
             pending_ids = [pid.strip() for pid in pending_ids.split(",") if pid.strip()]
@@ -3345,7 +3352,12 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                             extract=bool(p.get("extract", False)),
                             metadata=p.get("metadata"),
                             veracity=clamp_veracity(p.get("veracity"), context="apply_pending"),
+                            _write_policy=policy,
                         )
+                        if mid is None:
+                            failed.append({"id": pid, "error": "filtered"})
+                            _restore_pending_claim(claim_path, rp)
+                            continue
                         self._audit_event(
                             "remember", memory_id=mid, bank="private",
                             scope=p.get("scope", self._default_scope),
