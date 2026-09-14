@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from mnemosyne.core._connection_gc import collect_connection_cycles
 from mnemosyne.core.config import resolve_beam_runtime
+from mnemosyne.core.filters import _SYSTEM_DERIVED_WRITE_CAPABILITY
 from mnemosyne.core.journal import journal_mode
 
 logger = logging.getLogger(__name__)
@@ -5256,7 +5257,7 @@ class BeamMemory:
                  trust_tier: str = None,
                  memory_type: str = None,
                  dedupe: bool = True,
-                 _write_kind: str = "public",
+                 _write_kind: object = "public",
                  _write_policy=None,
                  _write_policy_content: Optional[str] = None) -> str:
         """Store into working_memory. Deduplicates exact content matches.
@@ -6687,7 +6688,7 @@ class BeamMemory:
                                 event_date: 'Optional[str]' = None,
                                 event_date_precision: 'Optional[str]' = None,
                                 emit_event: bool = True,
-                                _write_kind: str = "public",
+                                _write_kind: object = "public",
                                 _write_policy=None) -> str:
         """
         Store a consolidated summary into episodic_memory with optional embedding.
@@ -11703,7 +11704,7 @@ class BeamMemory:
                     scope=aggregated_scope,
                     valid_until=aggregated_valid_until,
                     veracity=aggregated_veracity,
-                    _write_kind="system_derived",
+                    _write_kind=_SYSTEM_DERIVED_WRITE_CAPABILITY,
                     _write_policy=sleep_write_policy,
                     metadata={
                         "original_count": len(items),
@@ -11732,7 +11733,7 @@ class BeamMemory:
                             scope="session",
                             veracity="inferred",
                             trust_tier="DERIVED",
-                            _write_kind="system_derived",
+                            _write_kind=_SYSTEM_DERIVED_WRITE_CAPABILITY,
                         )
                         # Proposal rows are review artifacts from this sleep pass,
                         # not fresh raw memories that should recursively trigger
