@@ -5257,7 +5257,8 @@ class BeamMemory:
                  memory_type: str = None,
                  dedupe: bool = True,
                  _write_kind: str = "public",
-                 _write_policy=None) -> str:
+                 _write_policy=None,
+                 _write_policy_content: Optional[str] = None) -> str:
         """Store into working_memory. Deduplicates exact content matches.
 
         When called from the legacy-compatible Mnemosyne.remember() path,
@@ -5307,7 +5308,9 @@ class BeamMemory:
         # It runs before sanitization, deduplication, blob writes, or SQL.
         from mnemosyne.core.filters import admit_memory_write
         should_write, _decision = admit_memory_write(
-            content, write_kind=_write_kind, policy=_write_policy
+            content if _write_policy_content is None else _write_policy_content,
+            write_kind=_write_kind,
+            policy=_write_policy,
         )
         if not should_write:
             return None  # type: ignore[return-value]
@@ -6481,7 +6484,7 @@ class BeamMemory:
 
     def update_working(self, memory_id: str, content: str = None,
                        importance: float = None, pinned: int = None,
-                       timestamp: str = None) -> bool:
+                       timestamp: str = None, _write_policy=None) -> bool:
         """Update a working_memory entry.
 
         After updating content, reindexes FTS5 (via wm_au trigger) and
@@ -6493,6 +6496,15 @@ class BeamMemory:
         pinned=1; the operator re-dates or unpins them explicitly
         through this API — no raw SQL required.
         """
+        if content is not None:
+            from mnemosyne.core.filters import admit_memory_write
+
+            should_write, _decision = admit_memory_write(
+                content, policy=_write_policy
+            )
+            if not should_write:
+                return None  # type: ignore[return-value]
+
         cursor = self.conn.cursor()
         updates = []
         params = []
@@ -11697,6 +11709,7 @@ class BeamMemory:
                             scope="session",
                             veracity="inferred",
                             trust_tier="DERIVED",
+                            _write_kind="system_derived",
                         )
                         # Proposal rows are review artifacts from this sleep pass,
                         # not fresh raw memories that should recursively trigger
