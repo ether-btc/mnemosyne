@@ -2551,6 +2551,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
         # Write-approval gate: stage to pending when enabled.
         if _write_approval_enabled():
+            from mnemosyne.core.filters import admit_memory_write
+
+            policy = getattr(self, "_write_policy", None)
+            if not admit_memory_write(content, policy=policy)[0]:
+                return json.dumps({"status": "filtered"})
             pid = _stage_pending_write({
                 "tool": "mnemosyne_remember",
                 "content": content, "importance": importance,
@@ -2611,16 +2616,25 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # (memory_id, replacement_id, action-specific fields) so approval
         # replay can dispatch by action instead of re-remembering.
         if _write_approval_enabled():
+            from mnemosyne.core.filters import admit_memory_write
+
+            policy = getattr(self, "_write_policy", None)
             staged = []
             staged_actions = []
+            results = []
             for op in normalized:
                 payload = op["payload"]
-                # #926 finding 1: only content-based ops (remember)
-                # may fabricate default values at stage time. For update
-                # (and other non-remember actions) the staged payload must
-                # carry None for absent fields so replay forwards None to
-                # update_working, which mutates ONLY the supplied fields.
                 action = op.get("action")
+                content = payload.get("content")
+                if (
+                    action in {"remember", "update"}
+                    and content is not None
+                    and not admit_memory_write(content, policy=policy)[0]
+                ):
+                    results.append({
+                        "index": op["index"], "action": action, "status": "filtered",
+                    })
+                    continue
                 if action == "remember":
                     stage_content = payload.get("content", "")
                     stage_importance = payload.get("importance", 0.5)
@@ -2648,24 +2662,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 except Exception:
                     _rollback_staged_writes(staged)
                     raise
-                # PR #926 finding 7: 'staged' carries RAW pending IDs
-                # (strings) so a client can forward response['staged']
-                # verbatim to mnemosyne_apply_pending; action metadata
-                # lives in the additive 'staged_actions' field.
                 staged.append(pid)
                 staged_actions.append({"action": action, "pending_id": pid})
-            # Response parity (#936 review): the legacy surface returns
-            # 'pending_ids'/'count' alongside 'staged'/'staged_count', and a
-            # client that forwards the documented compatibility key reads it on
-            # both. Identical keys AND identical values, message included, so the
-            # surfaces cannot drift apart again.
+                results.append({
+                    "index": op["index"], "action": action,
+                    "status": "staged", "pending_id": pid,
+                })
             return json.dumps({
-                "status": "staged", "staged": staged,
-                "pending_ids": staged,
-                "staged_actions": staged_actions,
-                "staged_count": len(staged),
-                "count": len(staged),
-                "message": f"{len(staged)} writes staged for approval. Use mnemosyne_apply_pending to commit.",
+                "status": "staged" if staged else "filtered", "staged": staged,
             })
 
         return json.dumps(apply_beam_batch(
