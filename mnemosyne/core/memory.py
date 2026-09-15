@@ -542,7 +542,7 @@ class Mnemosyne:
                  trust_tier: str = None,
                  memory_type: str = None,
                  dedupe: bool = True,
-                 _write_kind: object = "public") -> str:
+                 _write_kind: object = "public") -> Optional[str]:
         """
         Store a memory directly to SQLite.
         Writes to both BEAM working_memory and legacy memories table.
@@ -578,7 +578,7 @@ class Mnemosyne:
         if not admit_memory_write(
             content, write_kind=_write_kind, policy=policy
         )[0]:
-            return None  # type: ignore[return-value]
+            return None
 
         # BEAM write first (generates its own ID). Extract flags are passed
         # through so BeamMemory's canonical _extract_and_store_entities and
@@ -627,7 +627,7 @@ class Mnemosyne:
                 _write_policy_content=content,
             )
             if memory_id is None:
-                return None  # type: ignore[return-value]
+                return None
             timestamp = datetime.now().isoformat()
 
             # Legacy dual-write with same ID (INSERT OR REPLACE for dedup safety)
