@@ -3503,18 +3503,22 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             return json.dumps({"error": f"unknown store: {store}"})
         if action == "update" and not new_content:
             return json.dumps({"error": "new_content is required for action='update'"})
-        if action == "update":
-            from mnemosyne.core.filters import admit_memory_write
+        from mnemosyne.core.filters import admit_memory_write
 
-            if not admit_memory_write(
-                new_content, policy=self._current_operation_write_policy()
-            )[0]:
-                return json.dumps({
-                    "status": "filtered",
-                    "memory_id": memory_id,
-                    "store": store,
-                    "bank": bank,
-                })
+        policy = self._current_operation_write_policy()
+        persisted_inputs = (
+            args.get("validator"),
+            new_content if action == "update" else None,
+            note,
+        )
+        if any(value and not admit_memory_write(value, policy=policy)[0]
+               for value in persisted_inputs):
+            return json.dumps({
+                "status": "filtered",
+                "memory_id": memory_id,
+                "store": store,
+                "bank": bank,
+            })
 
         # Pick the right beam (private vs surface)
         if store == "surface":
@@ -3688,9 +3692,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         if not all([subject, predicate, obj]):
             return json.dumps({"error": "subject, predicate, and object are required"})
         from mnemosyne.core.filters import admit_memory_write
-        if not admit_memory_write(
-            obj, policy=self._current_operation_write_policy()
-        )[0]:
+        policy = self._current_operation_write_policy()
+        if any(
+            not admit_memory_write(value, policy=policy)[0]
+            for value in (subject, predicate, obj)
+        ):
             return json.dumps({"status": "filtered"})
         valid_until = args.get("valid_until", None) or None
         source = args.get("source", "") or "inferred"
