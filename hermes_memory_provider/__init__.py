@@ -2087,8 +2087,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize Mnemosyne beam for this session."""
-        with self._ensure_surface_adapter_lock():
-            self._initialize_locked(session_id, **kwargs)
+        with self._ensure_beam_access_lock():
+            with self._ensure_surface_adapter_lock():
+                self._initialize_locked(session_id, **kwargs)
 
     def _initialize_locked(self, session_id: str, **kwargs) -> None:
         """Rebuild provider state while the surface lifecycle lock is held."""
@@ -2562,7 +2563,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         except AttributeError:
             # setdefault atomically publishes one per-instance lock when
             # concurrent __new__ callers both need lazy initialization.
-            return self.__dict__.setdefault("_beam_access_lock", threading.RLock())
+            lock_factory = getattr(threading, "RLock", threading.Lock)
+            return self.__dict__.setdefault("_beam_access_lock", lock_factory())
 
     @contextmanager
     def _replay_scope_locked(self, session_scope: str, channel_scope: str = ""):
@@ -2903,18 +2905,18 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         """Dispatch one tool while the provider-wide Beam lock is held."""
         from mnemosyne.core.filters import write_policy_operation
 
-        # Initialization replaces the active Beam while holding this lifecycle
-        # lock. Resolve the write policy inside the same boundary so one public
-        # dispatch cannot pair pre-initialization policy with post-initialization
-        # provider state.
+        # Keep the private Beam/session stable for the operation, but hold the
+        # surface-adapter publication lock only while policy and provider state
+        # are captured. Long-running handlers must not prevent adapter
+        # invalidation/publication.
         with self._ensure_surface_adapter_lock():
             policy_context = (
                 write_policy_operation(self._resolve_effective_write_policy())
                 if tool_name in self._WRITE_POLICY_TOOL_NAMES
                 else nullcontext()
             )
-            with policy_context:
-                return self._dispatch_tool_call(tool_name, args, **kwargs)
+        with policy_context:
+            return self._dispatch_tool_call(tool_name, args, **kwargs)
 
     def _dispatch_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         try:
@@ -4588,15 +4590,16 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 unregister_hermes_host_llm()
             except Exception as exc:
                 logger.debug("Mnemosyne could not unregister Hermes auxiliary LLM backend: %s", exc)
-        with self._ensure_surface_adapter_lock():
-            self._invalidate_surface_locked()
-        if self._memory is not None:
-            try:
-                self._memory.close()
-            except Exception:
-                logger.debug("Mnemosyne: could not close wrapper", exc_info=True)
-        self._memory = None
-        self._beam = None
+        with self._ensure_beam_access_lock():
+            with self._ensure_surface_adapter_lock():
+                self._invalidate_surface_locked()
+            if self._memory is not None:
+                try:
+                    self._memory.close()
+                except Exception:
+                    logger.debug("Mnemosyne: could not close wrapper", exc_info=True)
+            self._memory = None
+            self._beam = None
 
         # C13: decrement this instance's contribution to the module-level
         # active-provider count. ``_provider_active`` stays True if other
