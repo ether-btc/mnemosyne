@@ -3549,7 +3549,20 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                             "id": pid, "action": action,
                             "memory_id": memory_id, "error": "memory_not_found",
                         })
-                        _restore_pending_claim(claim_path, rp)
+                        # Missing forget targets and already-absent invalidation
+                        # targets are terminal/idempotent. A failed update, or an
+                        # invalidation whose live target cannot yet use the requested
+                        # replacement, remains pending for retry.
+                        terminal = action == "forget" or (
+                            action == "invalidate"
+                            and replay_beam.get(memory_id) is None
+                        )
+                        if terminal:
+                            cleanup_error = _cleanup_committed_pending_claim(claim_path)
+                            if cleanup_error is not None:
+                                cleanup_failed.append({"id": pid, "error": cleanup_error})
+                        else:
+                            _restore_pending_claim(claim_path, rp)
                         continue
                     # Audit parity with the direct handlers (#936 review): an
                     # approved destructive mutation is audited exactly like the
