@@ -1943,6 +1943,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             {"key": "reflect", "description": "Reflection/sleep guardrails. Supports disabled_for_cron (default true) and max_calls_per_session (default 3; negative disables cap). Env: MNEMOSYNE_REFLECT_DISABLED_FOR_CRON, MNEMOSYNE_REFLECT_MAX_CALLS_PER_SESSION.", "default": {"disabled_for_cron": True, "max_calls_per_session": 3}},
             {"key": "vector_type", "description": "Vector storage type (note: not yet wired to BeamMemory at runtime; reserved for future use)", "choices": ["float32", "int8", "bit"], "default": "int8"},
             {"key": "ignore_patterns", "description": "Regex patterns to filter from memory storage (one per line in config, or comma-separated). Memories matching any pattern are skipped.", "default": []},
+            {"key": "write_classifier", "description": "Write admission mode. 'off' applies only ignore_patterns; 'warn' runs noise and secret classification but allows classified writes; 'strict' rejects classified writes. An initialize() kwarg overrides memory.mnemosyne.write_classifier in Hermes config.", "choices": ["off", "warn", "strict"], "default": "off"},
             {"key": "profile_isolation", "description": "Enable per-profile memory isolation via Mnemosyne banks. Each Hermes profile gets its own SQLite database under mnemosyne/data/banks/<profile>/. Default false for backward compatibility.", "default": False},
             {"key": "shared_surface_path", "description": "SQLite path for shared surface memories. Default is <mnemosyne>/data/shared/mnemosyne.db.", "default": "data/shared/mnemosyne.db"},
             {"key": "shared_surface_read", "description": "When true, mnemosyne_recall merges shared-surface results into private bank recall, tagging each result with its bank ('private' or 'surface'). Default false.", "default": False},
@@ -3776,10 +3777,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         return json.dumps(card)
 
     def _handle_apply_pending(self, args: Dict[str, Any]) -> str:
-        """Replay staged pending writes through the BEAM write path.
+        """Replay staged pending mutations through the BEAM write path.
 
-        Calls beam.remember() directly, bypassing the write_approval
-        gate so approved records are committed without re-staging.
+        Calls Beam methods directly, bypassing the write_approval gate so
+        approved records are committed without re-staging.
         """
         from hermes_constants import get_hermes_home
         from mnemosyne.core.veracity_consolidation import clamp_veracity
@@ -3880,7 +3881,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 # replacement_id chaining is preserved. The pending record
                 # is removed ONLY after a successful replay so no approved
                 # operation is silently lost on failure.
-                action = payload.get("action") or "remember"
+                action = payload.get("action")
+                if action is None and record.get("tool") == "mnemosyne_remember":
+                    action = "remember"
 
                 # The whole replay of this record runs with the beam bound to
                 # the recorded scope, under the Beam access lock.
@@ -3951,6 +3954,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                                 if payload.get("importance") is not None
                                 else None
                             ),
+                            _write_policy=policy,
                         )
                     elif action == "forget":
                         ok = replay_beam.forget_working(memory_id)
