@@ -59,7 +59,7 @@ pip install mnemosyne-hermes
 **Or from source:**
 
 ```bash
-git clone https://github.com/AxDSan/mnemosyne.git
+git clone https://github.com/mnemosyne-oss/mnemosyne.git
 cd mnemosyne
 pip install -e "integrations/hermes[dev]"
 ```

@@ -490,7 +490,7 @@ layered memory roadmap
 ### Security
 
 - **Fix critical JWT signature verification bypass in sync server
-  ([GHSA-xcw4-53cc-hv32](https://github.com/AxDSan/mnemosyne/security/advisories/GHSA-xcw4-53cc-hv32),
+  ([GHSA-xcw4-53cc-hv32](https://github.com/mnemosyne-oss/mnemosyne/security/advisories/GHSA-xcw4-53cc-hv32),
   CVSS 9.1).** The sync server's authentication check decoded JWT bearer
   tokens but never verified their HMAC-SHA256 signatures, allowing any
   well-formed token (including `alg: none`) to be accepted. An
@@ -917,7 +917,7 @@ endpoint.
 ### Fixed
 
 - **Irrelevant context injection in recall.** Three root-cause fixes for
-  [#198](https://github.com/AxDSan/mnemosyne/issues/198):
+  [#198](https://github.com/mnemosyne-oss/mnemosyne/issues/198):
   - Strict fact matching is now the default. Set `MNEMOSYNE_LENIENT_FACT_MATCH=1`
     to opt back into permissive matching (which matched any query word against any
     stored fact, dragging in unrelated memories with a false +20% score boost).
@@ -940,7 +940,7 @@ endpoint.
 
 ### Added
 
-- **Preferred embedding env vars.** `MNEMOSYNE_EMBEDDING_API_URL` and `MNEMOSYNE_EMBEDDING_API_KEY` are now the preferred names for custom embedding endpoints. The old `OPENROUTER_BASE_URL` and `OPENROUTER_API_KEY` names still work as fallbacks for backward compatibility. Restores the v2.8.x naming convention. ([#193](https://github.com/AxDSan/mnemosyne/issues/193))
+- **Preferred embedding env vars.** `MNEMOSYNE_EMBEDDING_API_URL` and `MNEMOSYNE_EMBEDDING_API_KEY` are now the preferred names for custom embedding endpoints. The old `OPENROUTER_BASE_URL` and `OPENROUTER_API_KEY` names still work as fallbacks for backward compatibility. Restores the v2.8.x naming convention. ([#193](https://github.com/mnemosyne-oss/mnemosyne/issues/193))
 
 ## [3.1.0] - 2026-05-26
 
@@ -1539,13 +1539,13 @@ endpoint.
 - **Hermes plugin registration** — basic tool integration
 - **AAAK compression** — early context compression for token limits
 
-[3.7.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.7.0
-[3.6.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.6.0
-[3.5.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.5.0
-[3.4.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.4.0
-[3.8.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.8.0
-[3.9.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.9.0
-[3.10.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.10.0
-[3.10.1]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.10.1
-[3.11.1]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.11.1
-[3.11.0]: https://github.com/AxDSan/mnemosyne/releases/tag/v3.11.0
+[3.7.0]: https://github.com/mnemosyne-oss/mnemosyne/releases/tag/v3.7.0
+[3.6.0]: https://github.com/mnemosyne-oss/mnemosyne/releases/tag/v3.6.0
+[3.5.0]: https://github.com/mnemosyne-oss/mnemosyne/releases/tag/v3.5.0
+[3.4.0]: https://github.com/mnemosyne-oss/mnemosyne/releases/tag/v3.4.0
+[3.8.0]: https://github.com/mnemosyne-oss/mnemosyne/releases/tag/v3.8.0
+[3.9.0]: https://github.com/mnemosyne-oss/mnemosyne/releases/tag/v3.9.0
+[3.10.0]: https://github.com/mnemosyne-oss/mnemosyne/releases/tag/v3.10.0
+[3.10.1]: https://github.com/mnemosyne-oss/mnemosyne/releases/tag/v3.10.1
+[3.11.1]: https://github.com/mnemosyne-oss/mnemosyne/releases/tag/v3.11.1
+[3.11.0]: https://github.com/mnemosyne-oss/mnemosyne/releases/tag/v3.11.0

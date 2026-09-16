@@ -2045,45 +2045,6 @@ def cleanup_plugin(
     return actions
 
 
-def _do_upgrade(*, force: bool = True, hermes_home_path: str | Path | None = None) -> bool:
-    """Run pipx upgrade mnemosyne-hermes then install --force."""
-    import subprocess as _sp
-
-    print("  Upgrading mnemosyne-hermes via pipx...")
-    try:
-        result = _sp.run(
-            ["pipx", "upgrade", "mnemosyne-hermes"],
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.strip()[:300]
-            if "not installed" in stderr:
-                print("  ⚠ mnemosyne-hermes not installed via pipx. Install it first:")
-                print("     pipx install mnemosyne-hermes")
-                return False
-            print(f"  ⚠ pipx upgrade failed: {stderr}")
-            # Continue anyway -- maybe the user installed via pip directly
-            print("  Continuing with re-install...")
-        else:
-            out = result.stdout.strip()[:200]
-            if out:
-                print(f"  {out}")
-    except FileNotFoundError:
-        print("  ⚠ pipx not found. Install it: pip install pipx")
-        return False
-
-    # Now re-install the plugin symlink
-    print("  Re-installing plugin symlink...")
-    try:
-        target = install_plugin(hermes_home_path=hermes_home_path, force=force)
-        print(f"  Installed. Symlink at {target}")
-        print(f"    -> {os.readlink(str(target))}")
-        return True
-    except Exception as exc:
-        print(f"  ⚠ Re-install failed: {exc}")
-        return False
-
-
 def is_installed(*, hermes_home_path: str | Path | None = None) -> bool:
     """Return whether the Mnemosyne provider is installed for Hermes discovery."""
     return plugin_state(hermes_home_path=hermes_home_path).installed
@@ -2648,7 +2609,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if command == "upgrade":
-            from mnemosyne_hermes.upgrade import upgrade_command
+            from mnemosyne.upgrade_hermes import upgrade_command
             return upgrade_command(args)
 
     except Exception as exc:
