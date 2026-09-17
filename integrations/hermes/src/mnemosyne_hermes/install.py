@@ -27,6 +27,8 @@ DEFAULT_WRAPPER_IMPORT_TIMEOUT = 60.0
 SKILL_NAME = "mnemosyne-memory-override"
 SKILL_CATEGORY = "memory"
 BUNDLED_SKILL_RESOURCE = ("skills", SKILL_NAME, "SKILL.md")
+WRAPPER_MANIFEST_NAME = "mnemosyne-wrapper.json"
+PROFILE_LINKS_PREFERENCE_NAME = ".mnemosyne-profile-links.json"
 
 _MAX_HERMES_BIN_DEPTH = 10
 LOGGER = logging.getLogger(__name__)
@@ -87,6 +89,18 @@ class SkillInstallResult:
     message: str
 
 
+@dataclass(frozen=True)
+class HermesPathContract:
+    """Installer-owned plugin, profile-link, and skill paths in one Hermes home."""
+
+    hermes_home: Path
+    plugin_target: Path
+    wrapper_manifest: Path
+    profile_links_preference: Path
+    profile_plugin_targets: tuple[Path, ...]
+    skill_target: Path
+
+
 class _WindowsSymlinkPrivilegeError(RuntimeError):
     """A Windows symlink failure for which the CLI has a safe retry."""
 
@@ -141,6 +155,30 @@ def skill_target_file(hermes_home_path: str | Path | None = None) -> Path:
     """
     base = Path(hermes_home_path).expanduser() if hermes_home_path else hermes_home()
     return base / "skills" / SKILL_CATEGORY / SKILL_NAME / "SKILL.md"
+
+
+def _wrapper_manifest_file(plugin_target: Path) -> Path:
+    """Return the wrapper marker/side-environment manifest for a plugin target."""
+    return plugin_target / WRAPPER_MANIFEST_NAME
+
+
+def hermes_path_contract(
+    hermes_home_path: str | Path | None = None,
+) -> HermesPathContract:
+    """Return the persistent path boundary owned by the Mnemosyne installer."""
+    base = Path(hermes_home_path).expanduser() if hermes_home_path else hermes_home()
+    plugin_target = plugin_target_dir(base)
+    return HermesPathContract(
+        hermes_home=base,
+        plugin_target=plugin_target,
+        wrapper_manifest=_wrapper_manifest_file(plugin_target),
+        profile_links_preference=_profile_links_preference_path(base),
+        profile_plugin_targets=tuple(
+            profile / "plugins" / PLUGIN_NAME
+            for profile in _iter_mnemosyne_profiles(base)
+        ),
+        skill_target=skill_target_file(base),
+    )
 
 
 def bundled_skill_resource():
@@ -302,7 +340,7 @@ def _provider_init_is_mnemosyne(init_file: Path) -> bool:
         ):
             return False
 
-        wrapper_manifest = init_file.with_name("mnemosyne-wrapper.json")
+        wrapper_manifest = _wrapper_manifest_file(init_file.parent)
         if wrapper_manifest.is_file():
             metadata = _wrapper_metadata(init_file.parent, init_file)
             return (
@@ -349,7 +387,7 @@ def _extract_wrapper_metadata(init_file: Path) -> tuple[Path | None, Path | None
 
 def _wrapper_metadata(target: Path, init_file: Path) -> _WrapperMetadata:
     """Read wrapper metadata, using legacy assignments only when no manifest exists."""
-    manifest = target / "mnemosyne-wrapper.json"
+    manifest = _wrapper_manifest_file(target)
     try:
         if not manifest.exists():
             python, site_packages = _extract_wrapper_metadata(init_file)
@@ -1246,7 +1284,7 @@ def _link_all_profiles(
 def _profile_links_preference_path(hermes_home_path: str | Path | None = None) -> Path:
     """Return the installer-managed profile-link preference for a Hermes home."""
     base = Path(hermes_home_path).expanduser() if hermes_home_path else hermes_home()
-    return base / "plugins" / ".mnemosyne-profile-links.json"
+    return base / "plugins" / PROFILE_LINKS_PREFERENCE_NAME
 
 
 def _atomic_write_profile_links_preference(path: Path, payload: bytes) -> None:
@@ -1546,7 +1584,7 @@ def _is_wrapper_plugin_target(target: Path) -> bool:
     """Return whether ``target`` is a generated Mnemosyne wrapper directory."""
     if target.is_symlink() or not target.is_dir():
         return False
-    if (target / "mnemosyne-wrapper.json").exists():
+    if _wrapper_manifest_file(target).exists():
         return True
     python, site_packages = _extract_wrapper_metadata(target / "__init__.py")
     return python is not None or site_packages is not None
@@ -1704,7 +1742,7 @@ def _guard_selected_site_packages_python_compatibility(selected_site_packages: P
 
 def activate() -> dict[str, object]:
     \"\"\"Validate the wrapper and import its selected package identity.\"\"\"
-    manifest_path = Path(__file__).with_name("mnemosyne-wrapper.json")
+    manifest_path = Path(__file__).with_name(__MNEMOSYNE_WRAPPER_MANIFEST_NAME__)
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -1772,7 +1810,7 @@ def activate() -> dict[str, object]:
     if expected_root is not None and not from_selected_package(selected_package):
         raise RuntimeError("Mnemosyne wrapper imported package from an unexpected origin")
     return manifest
-"""
+""".replace("__MNEMOSYNE_WRAPPER_MANIFEST_NAME__", repr(WRAPPER_MANIFEST_NAME))
     init_source = """\"\"\"Persistent Mnemosyne Hermes plugin wrapper.\"\"\"
 from ._mnemosyne_bootstrap import activate as _activate
 
@@ -1799,7 +1837,7 @@ _activate()
 
 from mnemosyne_hermes.cli import *  # noqa: F401,F403,E402
 """
-    (target / "mnemosyne-wrapper.json").write_text(
+    _wrapper_manifest_file(target).write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
