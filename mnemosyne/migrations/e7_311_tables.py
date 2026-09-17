@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal, TypedDict, Union, overload
 
 
 # Canonical DDL from mnemosyne/core/sync.py:641-665
@@ -110,9 +110,26 @@ def _has_index(conn: sqlite3.Connection, name: str) -> bool:
     return cursor.fetchone() is not None
 
 
+@overload
+def migrate_311_tables(db_path: Path, dry_run: Literal[True]) -> MigrationDryRunReport:
+    ...
+
+
+@overload
+def migrate_311_tables(db_path: Path, dry_run: Literal[False] = False) -> MigrationReport:
+    ...
+
+
+@overload
 def migrate_311_tables(
     db_path: Path, dry_run: bool = False
-) -> MigrationReport | MigrationDryRunReport:
+) -> Union[MigrationReport, MigrationDryRunReport]:
+    ...
+
+
+def migrate_311_tables(
+    db_path: Path, dry_run: bool = False
+) -> Union[MigrationReport, MigrationDryRunReport]:
     """Add the 3.11.1 schema tables to an existing bank at the older
     54-table schema. Idempotent.
 

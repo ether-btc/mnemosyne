@@ -102,17 +102,35 @@ def _fresh_cli_bank(tmp_path, monkeypatch):
     return db_path
 
 
-def test_e7_dry_run_leaves_schema_fingerprint_unchanged(tmp_path):
+def test_e7_dry_run_leaves_schema_fingerprint_unchanged(tmp_path, monkeypatch):
     db_path = _fresh_e7_bank(tmp_path)
     before = _schema_fingerprint(db_path)
     before_size = db_path.stat().st_size
 
+    connect_calls = []
+    real_connect = sqlite3.connect
+
+    def spy_connect(*args, **kwargs):
+        connect_calls.append((args, kwargs))
+        return real_connect(*args, **kwargs)
+
+    from mnemosyne.migrations import e7_311_tables
+
+    monkeypatch.setattr(e7_311_tables.sqlite3, "connect", spy_connect)
+
     report = migrate_311_tables(db_path, dry_run=True)
+
+    # Verify connect was called with mode=ro and uri=True
+    assert len(connect_calls) == 1
+    c_args, c_kwargs = connect_calls[0]
+    assert "mode=ro" in str(c_args[0])
+    assert c_kwargs.get("uri") is True
 
     assert report["added"] == 0
     assert report["indices_added"] == 0
-    assert "sync_meta" in report["tables_would_add"]
-    assert report["would_add"] >= 1
+    assert report["would_add"] == 2
+    assert sorted(report["tables_would_add"]) == ["memory_events", "sync_meta"]
+    assert report["indices_would_add"] == 3
     assert _schema_fingerprint(db_path) == before
     assert db_path.stat().st_size == before_size
 
@@ -183,6 +201,8 @@ def test_cli_migrate_dry_run_leaves_schema_fingerprint_unchanged(
 
     out = capsys.readouterr().out
     assert "DRY RUN" in out
-    assert "would add" in out
+    assert "memory_events" in out
+    assert "sync_meta" in out
+    assert "would add indices: 3" in out
     assert _schema_fingerprint(db_path) == before
     assert db_path.stat().st_size == before_size
