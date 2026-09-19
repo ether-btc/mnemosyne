@@ -4050,10 +4050,11 @@ _provider: Optional[Any] = None
 
 
 def _get_or_create_provider() -> MnemosyneMemoryProvider:
-    """One provider instance for MemoryManager and PluginManager tools."""
+    """Return the legacy module-level provider used by direct tool bindings."""
     global _provider
-    if globals().get("_provider") is None:
-        _provider = MnemosyneMemoryProvider()
+    with _provider_lock:
+        if globals().get("_provider") is None:
+            _provider = MnemosyneMemoryProvider()
     assert _provider is not None
     return _provider
 
@@ -4066,7 +4067,7 @@ def register_memory_provider(ctx):
     """
     import sys as _sys
     try:
-        provider = _get_or_create_provider()
+        provider = MnemosyneMemoryProvider()
     except Exception as _exc:
         print(
             f"[mnemosyne-hermes] ERROR: MnemosyneMemoryProvider() failed: {_exc}",
@@ -4101,6 +4102,14 @@ def register_memory_provider(ctx):
             pass
         raise
     ctx.register_memory_provider(provider)
+    # Keep the first module-level provider stable for callers of the legacy
+    # handler helpers, but never reuse it for a new Hermes registration. Each
+    # agent build owns its provider identity and Beam lifecycle independently.
+    global _provider
+    with _provider_lock:
+        if globals().get("_provider") is None:
+            _provider = provider
+    return provider
 
 
 # ---------------------------------------------------------------------------
@@ -4110,7 +4119,7 @@ def register_memory_provider(ctx):
 def register(ctx):
     """Called by Hermes plugin loader to register CLI commands and tools."""
     # Register the memory provider first so Hermes discovers it
-    register_memory_provider(ctx)
+    provider = register_memory_provider(ctx)
 
     from .cli import register_cli, mnemosyne_command
     ctx.register_cli_command(
@@ -4129,18 +4138,16 @@ def register(ctx):
     # instead. This registration covers the standalone PluginManager path.
     from functools import partial
 
-    global _provider
-    _provider = _get_or_create_provider()
-    for _schema in _provider.get_tool_schemas():
+    for _schema in provider.get_tool_schemas():
         _name = _schema["name"]
         # Sync tools route through SyncAdapter, persona tools through PersonaAdapter,
         # memory tools through main provider.
         if _name.startswith("mnemosyne_sync_"):
-            _handler = _get_sync_handler(_name)
+            _handler = _get_sync_handler(_name, provider=provider)
         elif _name.startswith("mnemosyne_persona_"):
-            _handler = _get_persona_handler(_name)
+            _handler = _get_persona_handler(_name, provider=provider)
         else:
-            _handler = partial(_provider.handle_tool_call, _name)
+            _handler = partial(provider.handle_tool_call, _name)
         ctx.register_tool(
             name=_name,
             toolset="memory",
@@ -4154,8 +4161,12 @@ def register(ctx):
 _sync_adapter: Optional[Any] = None
 _SYNC_ADAPTER_MAX_ATTEMPTS = 3
 
-def _get_sync_handler(tool_name: str):
-    """Return a handler fn that lazy-inits SyncAdapter on first use."""
+def _get_sync_handler(tool_name: str, provider=None):
+    """Return a provider-bound handler, or the legacy module-level binding."""
+    if provider is not None:
+        from functools import partial
+        return partial(provider._handle_sync_tool, tool_name)
+
     def _handler(args: dict) -> str:
         global _sync_adapter
         try:
@@ -4201,8 +4212,12 @@ def _get_sync_handler(tool_name: str):
 # Shares the active provider's BeamMemory connection when possible.
 _persona_adapter: Optional[Any] = None
 
-def _get_persona_handler(tool_name: str):
-    """Return a handler fn that lazy-inits PersonaAdapter on first use."""
+def _get_persona_handler(tool_name: str, provider=None):
+    """Return a provider-bound handler, or the legacy module-level binding."""
+    if provider is not None:
+        from functools import partial
+        return partial(provider._handle_persona_tool, tool_name)
+
     def _handler(args: dict) -> str:
         global _persona_adapter
         if _persona_adapter is None:
