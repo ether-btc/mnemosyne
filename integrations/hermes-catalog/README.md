@@ -5,9 +5,11 @@ This directory is the Hermes **directory plugin** that the catalog installs
 
 - `plugin.yaml` names the plugin `mnemosyne`, marks it `kind: exclusive` (a
   memory provider, loaded only when `memory.provider: mnemosyne` is set), and
-  requires a Hermes release that installs plugin dependencies
-  (`requires_hermes: ">=0.21.3"` — the version in which Hermes' catalog
-  installer began installing declared Python dependencies).
+  requires the first Hermes release that carries the whole catalog path
+  (`requires_hermes: ">=0.21.4"`: declared Python dependencies installed and
+  re-applied after `hermes update`, plus memory providers that leave core
+  installed from the catalog automatically). Both landed after 0.21.3, so
+  0.21.4 is a floor, not a round number.
 - `pyproject.toml` declares the real implementation, the `mnemosyne-hermes`
   package on PyPI, plus `mnemosyne-memory[embeddings]`. Hermes installs both
   into its own venv on install and re-applies them after every `hermes update`.
