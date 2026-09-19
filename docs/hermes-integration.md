@@ -577,10 +577,15 @@ mnemosyne mcp --transport streamable-http --port 8080  # native MCP http transpo
 ```
 
 The HTTP transports bind to loopback (`127.0.0.1`) by default and need no
-token there. A non-loopback bind exposes the selected local SQLite-backed
-memory bank to network clients, so it requires `MNEMOSYNE_MCP_TOKEN`; the
-`streamable-http` transport also requires `MNEMOSYNE_MCP_ALLOWED_HOSTS`, with
-`MNEMOSYNE_MCP_ALLOWED_ORIGINS` optionally restricting browser origins.
+token there unless `MNEMOSYNE_MCP_TOKENS` is set. `MNEMOSYNE_MCP_TOKENS`
+takes precedence; either it or `MNEMOSYNE_MCP_TOKEN` supplies HTTP
+authentication. A non-loopback bind exposes the selected local SQLite-backed
+memory bank to network clients, so it requires authentication; the
+`streamable-http` transport additionally requires
+`MNEMOSYNE_MCP_ALLOWED_HOSTS`, with `MNEMOSYNE_MCP_ALLOWED_ORIGINS` optionally
+restricting browser origins.
+Bearer tokens on a non-loopback HTTP bind require TLS termination in front of
+the server, using a reverse proxy or secure tunnel.
 
 Mnemosyne does not currently expose a standalone REST API server.
 
