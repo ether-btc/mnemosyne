@@ -1612,7 +1612,19 @@ class VectorCoverageAdapter:
         )
         if not vec_tables:
             return {"status": "not_configured", "vec_tables": []}, [], []
-        if not (self._metric_count(working, "vec_working_rows") or self._metric_count(episodic, "vec_episode_rows")):
+        populated = self._metric_count(working, "vec_working_rows") or self._metric_count(
+            episodic, "vec_episode_rows"
+        )
+        if not populated:
+            # Nothing to judge either because the store is genuinely empty or
+            # because the counts could not be read.  An unreadable vec0 table
+            # leaves no count behind, so separate the two rather than asserting
+            # an emptiness doctor has not established.
+            if any(
+                metric.get("status") in (STATUS_UNKNOWN, "unavailable")
+                for metric in (working, episodic)
+            ):
+                return {"status": STATUS_UNKNOWN, "vec_tables": vec_tables}, [], []
             return {"status": "no_vectors", "vec_tables": vec_tables}, [], []
         try:
             from mnemosyne.core.beam import _classify_vec_store_regime

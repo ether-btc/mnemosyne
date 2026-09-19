@@ -1610,3 +1610,45 @@ def test_vector_coverage_reports_the_vec_store_format_when_the_catalog_is_unread
         "error_class": "sqlite_error",
     }
     assert result.findings == []
+
+
+def test_vector_coverage_does_not_assert_an_empty_format_when_vec0_is_unreadable(tmp_path):
+    """An unreadable vec0 table leaves no row count, so the format abstains.
+
+    Reporting ``no_vectors`` here would claim the store is empty when doctor
+    could not read it at all.  The coverage entry already reports the table as
+    unavailable, and this key must not contradict it.
+    """
+
+    db_path = tmp_path / "vec-format-unreadable.db"
+    writable = sqlite3.connect(db_path)
+    writable.executescript(
+        """
+        CREATE TABLE working_memory (id TEXT PRIMARY KEY);
+        CREATE TABLE memory_embeddings (memory_id TEXT PRIMARY KEY, embedding_json TEXT);
+        CREATE TABLE vec_working (id INTEGER PRIMARY KEY);
+        INSERT INTO working_memory VALUES ('working-live');
+        INSERT INTO memory_embeddings VALUES ('working-live', '[0]');
+        PRAGMA writable_schema = ON;
+        UPDATE sqlite_master SET sql =
+          'CREATE VIRTUAL TABLE vec_working USING vec0(embedding float[3])'
+          WHERE name = 'vec_working';
+        PRAGMA writable_schema = OFF;
+        """
+    )
+    writable.commit()
+    writable.close()
+
+    readonly = open_readonly_doctor_db(db_path)
+    try:
+        result = VectorCoverageAdapter(readonly).inspect()
+    finally:
+        readonly.close()
+
+    assert result.metrics["working"]["status"] == "unavailable"
+    assert result.metrics["vec_store_format"] == {
+        "status": STATUS_UNKNOWN,
+        "vec_tables": ["vec_working"],
+    }
+    assert result.findings == []
+    assert result.repair_candidates == []
