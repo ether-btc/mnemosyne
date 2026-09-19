@@ -61,9 +61,30 @@ def _print_install_hint(stream=sys.stderr) -> None:
     for line in STANDALONE_INSTALL_HINT:
         print(f"     {line}", file=stream)
 
-_PROVIDER_PROBE = (
-    "import importlib.util as u, sys; "
-    "sys.exit(0 if u.find_spec('mnemosyne_hermes') else 1)"
+_PATH_SCRUB = (
+    "import os, sys\n"
+    "try:\n"
+    "    _cwd = os.getcwd()\n"
+    "except OSError:\n"
+    "    _cwd = None\n"
+    "sys.path[:] = [p for p in sys.path if p not in ('', '.', _cwd)]\n"
+)
+"""Drop the implicit cwd entry before importing anything.
+
+``python -c`` puts the working directory at ``sys.path[0]``. A directory that
+happens to contain a ``mnemosyne`` or ``mnemosyne_hermes`` entry — a source
+checkout, or a workspace umbrella holding one — then shadows the installed
+packages and makes a delegated probe or status report a false negative.
+"""
+
+_PROVIDER_PROBE = _PATH_SCRUB + (
+    "import importlib.util as u\n"
+    "sys.exit(0 if u.find_spec('mnemosyne_hermes') else 1)\n"
+)
+
+_DELEGATE_TO_STANDALONE = _PATH_SCRUB + (
+    "from mnemosyne_hermes.install import main\n"
+    "sys.exit(main())\n"
 )
 
 
@@ -398,10 +419,7 @@ def _standalone_runner(hermes_home: Path | None):
 
     hermes_python = _hermes_venv_python(hermes_home)
     if hermes_python is not None and _python_has_standalone(hermes_python):
-        command = [
-            str(hermes_python), "-c",
-            "import sys; from mnemosyne_hermes.install import main; sys.exit(main())",
-        ]
+        command = [str(hermes_python), "-c", _DELEGATE_TO_STANDALONE]
         return lambda argv: subprocess.call([*command, *argv])
 
     return None
@@ -483,6 +501,7 @@ def status(hermes_home_path: str | Path | None = None) -> bool:
             if hermes_home_path is not None:
                 argv += ["--hermes-home", str(hermes_home_path)]
             print("ℹ️  Provider found outside this Python; delegating the plugin check")
+            sys.stdout.flush()  # the delegated status writes to the same terminal
             if runner(argv) == 0:
                 print("✅ Standalone provider reports the plugin installed and discoverable")
             else:
@@ -568,9 +587,9 @@ def install(
     if hermes_home_path is not None:
         argv += ["--hermes-home", str(hermes_home_path)]
 
+    sys.stdout.flush()  # the delegated installer writes to the same terminal
     returncode = runner(argv)
     if returncode != 0:
-        sys.stdout.flush()  # keep the banner above this stderr block in a terminal
         print()
         print("❌ Standalone provider install failed.", file=sys.stderr)
         print("   Run it directly for the full report: "

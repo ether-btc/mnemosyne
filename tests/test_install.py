@@ -8,6 +8,7 @@ migrates legacy links, and fails clearly when the provider is unavailable.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 
 import pytest
@@ -616,3 +617,42 @@ def test_standalone_probe_names_the_submodule():
     """The probe must look for the distribution, not a submodule import."""
     assert "mnemosyne_hermes" in install._PROVIDER_PROBE
     assert install.STANDALONE_MODULE == "mnemosyne_hermes.install"
+
+
+def test_delegated_commands_scrub_the_working_directory():
+    """``python -c`` prepends cwd, so both delegated commands must drop it."""
+    for command in (install._PROVIDER_PROBE, install._DELEGATE_TO_STANDALONE):
+        assert "sys.path[:]" in command
+        assert "os.getcwd()" in command
+
+
+def test_path_scrub_removes_the_working_directory(tmp_path):
+    """A shadowing cwd must not make an installed package look absent/present.
+
+    The control run proves the scrub, not the environment, is what changes the
+    answer: without it cwd *is* searched, which is how ``mnemosyne-install
+    --status`` reported a healthy provider as ``Core library: MISSING`` when run
+    from a directory holding a ``mnemosyne`` entry.
+    """
+    (tmp_path / "mnemosyne_shadow_probe.py").write_text("SHADOW = True\n", encoding="utf-8")
+
+    scrubbed = subprocess.run(
+        [
+            sys.executable, "-c",
+            install._PATH_SCRUB
+            + "import importlib.util as u\n"
+            + "print('FOUND' if u.find_spec('mnemosyne_shadow_probe') else 'ABSENT')\n",
+        ],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert scrubbed.stdout.strip() == "ABSENT", scrubbed.stderr
+
+    control = subprocess.run(
+        [
+            sys.executable, "-c",
+            "import importlib.util as u\n"
+            "print('FOUND' if u.find_spec('mnemosyne_shadow_probe') else 'ABSENT')\n",
+        ],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert control.stdout.strip() == "FOUND", control.stderr
