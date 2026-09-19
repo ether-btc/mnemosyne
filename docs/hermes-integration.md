@@ -425,6 +425,30 @@ ln -s "$PKG"/* "$TARGET/"
 
 If you installed in a custom venv (for example, `~/.hermes-venv`), replace `~/.hermes/hermes-agent/venv/bin/python` with the Python binary inside that venv. Do not combine this manual mode with a wrapper directory, and do not use it to link Docker profiles to the side venv's `site-packages` package.
 
+#### Migrating from the legacy `mnemosyne-install` route
+
+`mnemosyne-install` and `mnemosyne-uninstall` from the core `mnemosyne-memory`
+package remain available, but they are now a compatibility entry point rather
+than a second installer. They no longer create the historical
+`~/.hermes/plugins/mnemosyne -> hermes_memory_provider/` symlink (#651); they
+delegate to the standalone provider and verify the result:
+
+```bash
+mnemosyne-install             # migrate any legacy link, then delegate an install
+mnemosyne-install --status    # verify the provider, the plugin directory, and the config
+mnemosyne-install --migrate   # remove legacy links only
+mnemosyne-install --dry-run   # show what would change without changing it
+```
+
+A legacy install is detected by the resolved target of the plugin link, so a
+link into `mnemosyne_hermes` — including the manual fallback above — is left
+alone. A real directory is reported and preserved, never deleted. When the
+standalone provider is not importable in the current Python, not the
+`mnemosyne-hermes` console script, and not installed in Hermes' own venv, the
+command fails with the install commands instead of recreating the obsolete
+link. `--status` exits non-zero on any of those conditions, so it is usable as
+a check in scripts.
+
 ### Step 3: Activate
 
 ```bash
