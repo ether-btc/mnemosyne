@@ -68,7 +68,7 @@ Issues = "https://github.com/mnemosyne-oss/mnemosyne/issues"
 Documentation = "https://github.com/mnemosyne-oss/mnemosyne/blob/main/docs/README.md"
 
 [project.scripts]
-mnemosyne-install = "mnemosyne.install:install"
+mnemosyne-install = "mnemosyne.install:main"
 mnemosyne-uninstall = "mnemosyne.install:uninstall"
 mnemosyne = "mnemosyne.cli:run_cli"
 mnemosyne-browser = "mnemosyne.integrations.memory_browser:main"
