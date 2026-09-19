@@ -44,6 +44,29 @@ def test_manifest_is_an_exclusive_memory_provider_named_like_the_wrapper():
     assert m["provides_hooks"] == [] and m["provides_middleware"] == [] and m["requires_env"] == []
 
 
+def test_manifest_gates_loading_on_a_lower_bound_hermes_release():
+    """`requires_hermes` must stay a plain floor, because Hermes refuses to load the plugin below it.
+
+    Hermes' `plugins_manifest.requires_hermes_error()` blocks the plugin and reports the reason
+    when the running version fails this specifier, so an exact pin (`==0.21.3`) would uninstall
+    the plugin's future rather than describe it -- the next Hermes release would load-block a
+    plugin that works. That is the part this test can decide on its own.
+
+    It deliberately does NOT decide whether the named floor actually exists. `>=0.21.4` was the
+    shipped bug -- Hermes' version file has never carried 0.21.4, so the gate load-blocked the
+    plugin on every installation -- and `>=0.21.4` matches the pattern below. Deciding existence
+    needs the set of published Hermes releases, which this repository has no access to, so it
+    stays a review-time obligation against hermes-agent. Read the assertion as "a floor, well
+    formed", never as "a floor that is real".
+    """
+    spec = _manifest()["requires_hermes"]
+    assert re.fullmatch(r">=\s*\d+(\.\d+){1,2}", spec), (
+        f"requires_hermes must be a '>=X.Y' or '>=X.Y.Z' lower bound, got {spec!r}: an exact "
+        "pin would load-block the plugin on the very next Hermes release, and a specifier that "
+        "is not a plain floor is harder to keep honest as Hermes moves."
+    )
+
+
 def _toml_loads(text: str) -> dict:
     try:
         import tomllib
