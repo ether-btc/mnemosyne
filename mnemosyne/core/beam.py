@@ -834,13 +834,13 @@ def _warn_vec_store_unknown_once() -> None:
 
 def _env_vec_admit() -> float:
     """Resolve MNEMOSYNE_EM_VEC_ADMIT once at import: finite and within
-    (0, 1]; NaN, Inf or out-of-range values fall back to 0.80 with a warning.
+    (0, 1]; NaN, Inf or out-of-range values fall back to 0.62 with a warning.
     NaN would otherwise make `sim < threshold` always False and admit every
     vector candidate."""
-    v = _env_float("MNEMOSYNE_EM_VEC_ADMIT", 0.80)
+    v = _env_float("MNEMOSYNE_EM_VEC_ADMIT", 0.62)
     if not math.isfinite(v) or not (0.0 < v <= 1.0):
-        logger.warning("MNEMOSYNE_EM_VEC_ADMIT=%r out of range; using 0.80", v)
-        return 0.80
+        logger.warning("MNEMOSYNE_EM_VEC_ADMIT=%r out of range; using 0.62", v)
+        return 0.62
     return v
 
 
@@ -856,9 +856,16 @@ def _env_vec_admit() -> float:
 # never decided by this threshold alone.
 # Resolved once at import: changing MNEMOSYNE_EM_VEC_ADMIT in a deployment
 # env (.env / gateway config) requires restarting the gateway process to
-# take effect. Calibration note: 0.80 is the default on the absolute-cosine
-# scale. Deployments on e5-style stores that need the full 0.74-0.80
-# paraphrase band can lower the threshold via the env var.
+# take effect. Calibration note: the default follows the shipped embedding
+# model, BAAI/bge-small-en-v1.5 (384d), measured on real memory text --
+# genuine matches land at 0.62-0.71 (best observed 0.7090) while unrelated
+# queries top out at 0.5960, so the two bands separate. The previous 0.80
+# default sat above the entire genuine band, which made vector-only
+# episodic admission unreachable on the default model: session-scope dense
+# recall returned nothing at all. 0.62 admits that band and still excluded
+# every unrelated row measured (0 of 390 candidates). Deployments on
+# e5-style stores, whose paraphrase band sits at 0.74-0.80, can raise the
+# threshold via the env var.
 EM_VEC_ADMIT = _env_vec_admit()
 
 
