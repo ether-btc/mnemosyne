@@ -91,6 +91,15 @@ individual operation; empty values preserve the active session. A configured
 session changes, so a branch or compression switch does not adopt the child
 session ID.
 
+A configured skip context (`subagent`, `cron`, `flush`, `background`, or
+`skill_loop` by default) intentionally receives no private Beam. If an existing
+primary provider instance is re-initialized under one of those contexts, it must
+clear the live Beam to prevent writes into the wrong session. That transition
+emits a warning, returns `reason_code="reset_by_reinit"` from memory tools, and
+shows an `UNAVAILABLE` prompt notice. Re-initialize the provider in a primary
+context to recover. A provider that starts directly in a skip context remains
+silent and returns `reason_code="skipped_context"`.
+
 Provider lifecycle hooks are fail-soft. Database or disk failures during
 prefetch, turn sync, session-end or automatic consolidation, and wrapper or
 audit cleanup are logged and suppressed so Hermes can continue without a

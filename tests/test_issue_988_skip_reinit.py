@@ -37,6 +37,19 @@ def test_skip_context_reinit_reports_destroyed_live_beam(tmp_path, caplog):
     assert "UNAVAILABLE" in provider.system_prompt_block()
     assert "dropped a live beam" in caplog.text
 
+    provider.initialize(
+        "recovered-primary",
+        hermes_home=str(tmp_path),
+        profile_isolation=False,
+        agent_context="primary",
+    )
+    recovered = json.loads(
+        provider.handle_tool_call("mnemosyne_remember", {"content": "recovered"})
+    )
+    assert provider._beam is not None
+    assert recovered.get("status") != "memory_unavailable"
+    assert "UNAVAILABLE" not in provider.system_prompt_block()
+
 
 def test_first_skip_context_init_is_distinct_from_reset(tmp_path, caplog):
     """A provider that never held a Beam remains a silent skip-context session."""
