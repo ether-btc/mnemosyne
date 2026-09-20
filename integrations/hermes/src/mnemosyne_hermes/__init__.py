@@ -16,7 +16,7 @@ Based on mnemosyne-memory core library. Zero cloud. Zero latency.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import logging
 import math
@@ -778,6 +778,29 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
     """Mnemosyne native memory — local SQLite with vector + FTS5 hybrid search."""
 
     _VALID_SYNC_ROLES: frozenset = frozenset({"user", "assistant"})
+    _WRITE_POLICY_TOOL_NAMES: frozenset = frozenset({
+        "mnemosyne_apply_pending",
+        "mnemosyne_batch",
+        "mnemosyne_forget",
+        "mnemosyne_forget_canonical",
+        "mnemosyne_graph_link",
+        "mnemosyne_import",
+        "mnemosyne_invalidate",
+        "mnemosyne_model_refresh",
+        "mnemosyne_remember",
+        "mnemosyne_remember_canonical",
+        "mnemosyne_scratchpad_clear",
+        "mnemosyne_scratchpad_write",
+        "mnemosyne_shared_forget",
+        "mnemosyne_shared_remember",
+        "mnemosyne_sleep",
+        "mnemosyne_sync_pull",
+        "mnemosyne_task_progress",
+        "mnemosyne_triple_add",
+        "mnemosyne_triple_end",
+        "mnemosyne_update",
+        "mnemosyne_validate",
+    })
 
     # How long on_session_end will wait for sleep/consolidation to finish before
     # giving up and letting the daemon thread continue in the background. Tests
@@ -856,6 +879,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         self._reflect_max_calls_per_session = _parse_env_optional_int("MNEMOSYNE_REFLECT_MAX_CALLS_PER_SESSION", 3)
         self._reflect_calls_this_session = 0
         self._ignore_patterns: List[str] = []  # Regex patterns to filter from memory
+        # Explicit initialize() policy kwargs remain sticky across runtime
+        # config reloads and provider re-initialization. Empty values are real
+        # overrides, so membership (not truthiness) controls precedence.
+        self._write_policy_overrides: Dict[str, Any] = {}
         self._sync_roles: Set[str] = {"user"}
         _sync_env = os.environ.get("MNEMOSYNE_SYNC_ROLES")
         if _sync_env is not None:
@@ -1169,14 +1196,13 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         if vector_type and vector_type not in ("float32", "int8", "bit"):
             logger.warning("Mnemosyne: unknown vector_type=%r, ignoring", vector_type)
 
-        # ignore_patterns: list of regex patterns to filter from memory storage
-        patterns = kwargs.get("ignore_patterns") or self._read_config_key("ignore_patterns")
-        if patterns:
-            if isinstance(patterns, str):
-                patterns = [p.strip() for p in patterns.replace(",", "\n").split("\n") if p.strip()]
-            elif isinstance(patterns, list):
-                patterns = [str(p).strip() for p in patterns if str(p).strip()]
-            self._ignore_patterns = patterns
+        overrides = getattr(self, "_write_policy_overrides", None)
+        if overrides is None:
+            overrides = self._write_policy_overrides = {}
+        for key in ("ignore_patterns", "write_classifier"):
+            if key in kwargs and kwargs[key] is not None:
+                overrides[key] = kwargs[key]
+        self._write_policy = self._resolve_effective_write_policy()
 
         # profile_isolation: separate DB per Hermes profile (bank-based).
         # Default OFF. When enabled, each profile derives its own Mnemosyne bank.
@@ -1255,6 +1281,51 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             except re.error:
                 logger.debug("Mnemosyne: invalid ignore pattern %r, skipping", pattern)
         return False
+
+    def _resolve_effective_write_policy(self):
+        """Resolve one immutable provider policy for a public write operation."""
+        from mnemosyne.core.filters import make_write_policy, resolve_write_policy
+
+        core_policy = resolve_write_policy()
+        overrides = getattr(self, "_write_policy_overrides", {})
+        patterns = overrides.get("ignore_patterns")
+        if "ignore_patterns" not in overrides:
+            patterns = read_hermes_config_key(
+                getattr(self, "_hermes_home", None), "ignore_patterns"
+            )
+        if patterns is None:
+            patterns = core_policy.ignore_patterns
+        if isinstance(patterns, str):
+            patterns = [
+                pattern.strip()
+                for pattern in patterns.replace(",", "\n").split("\n")
+                if pattern.strip()
+            ]
+        elif isinstance(patterns, (list, tuple)):
+            patterns = [str(pattern).strip() for pattern in patterns if str(pattern).strip()]
+
+        configured_mode = overrides.get("write_classifier")
+        if "write_classifier" not in overrides:
+            configured_mode = read_hermes_config_key(
+                getattr(self, "_hermes_home", None), "write_classifier"
+            )
+        if configured_mode is None:
+            configured_mode = core_policy.classifier_mode
+
+        policy = make_write_policy(patterns, configured_mode)
+        self._ignore_patterns = list(policy.ignore_patterns)
+        self._write_policy = policy
+        return policy
+
+    def _current_operation_write_policy(self):
+        """Return the immutable snapshot bound to the current operation."""
+        from mnemosyne.core.filters import active_write_policy, current_write_policy
+
+        return (
+            active_write_policy()
+            or getattr(self, "_write_policy", None)
+            or current_write_policy()
+        )
 
     def _read_config_key(self, key: str) -> Any:
         """Read a single key, checking Hermes config first, then Mnemosyne config.
@@ -1351,6 +1422,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             {"key": "reflect", "description": "Reflection/sleep guardrails. Supports disabled_for_cron (default true) and max_calls_per_session (default 3; negative disables cap). Env: MNEMOSYNE_REFLECT_DISABLED_FOR_CRON, MNEMOSYNE_REFLECT_MAX_CALLS_PER_SESSION.", "default": {"disabled_for_cron": True, "max_calls_per_session": 3}},
             {"key": "vector_type", "description": "Vector storage type (note: not yet wired to BeamMemory at runtime; reserved for future use)", "choices": ["float32", "int8", "bit"], "default": "int8"},
             {"key": "ignore_patterns", "description": "Regex patterns to filter from memory storage (one per line in config, or comma-separated). Memories matching any pattern are skipped.", "default": []},
+            {"key": "write_classifier", "description": "Write admission mode. 'off' applies only ignore_patterns; 'warn' runs noise and secret classification but allows classified writes; 'strict' rejects classified writes. An initialize() kwarg overrides memory.mnemosyne.write_classifier in Hermes config.", "choices": ["off", "warn", "strict"], "default": "off"},
             {"key": "profile_isolation", "description": "Enable per-profile memory isolation via Mnemosyne banks. Each Hermes profile gets its own SQLite database under mnemosyne/data/banks/<profile>/. Default false for backward compatibility.", "default": False},
             {"key": "shared_surface_path", "description": "SQLite path for shared surface memories. Default is <mnemosyne>/data/shared/mnemosyne.db.", "default": "data/shared/mnemosyne.db"},
             {"key": "shared_surface_read", "description": "When true, mnemosyne_recall merges shared-surface results into private bank recall, tagging each result with its bank ('private' or 'surface'). Default false.", "default": False},
@@ -2128,7 +2200,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         should_auto_sleep = False
         auto_sleep_session_id = ""
         try:
-            with self._beam_session_scope(session_id) as beam:
+            from mnemosyne.core.filters import write_policy_operation
+            policy = self._resolve_effective_write_policy()
+            with write_policy_operation(
+                policy
+            ), self._beam_session_scope(session_id) as beam:
                 if beam is None:
                     return
                 beam_session_id = getattr(beam, "session_id", None)
@@ -2139,22 +2215,24 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 ledger_session_id = str(session_id or "").strip()
                 if ledger_session_id and not getattr(self, "_active_session_id", ""):
                     self._active_session_id = ledger_session_id
-                if "user" in self._sync_roles and user_content and len(user_content) > 5 and not self._should_filter(user_content):
+                if "user" in self._sync_roles and user_content and len(user_content) > 5:
                     user_limit = _sync_turn_user_limit()
                     uc = user_content[:user_limit] if user_limit > 0 else user_content
                     stored_user = f"[USER] {uc}"
                     capture = ledger.capture if ledger else None
                     remember = (lambda **kw: capture(ledger_session_id, ticket, beam, user_content, **kw)) if capture else beam.remember
-                    remember(
+                    user_memory_id = remember(
                         content=stored_user,
                         source="conversation",
                         importance=0.5,
                         scope=self._default_scope,
                         extract_entities=True,
+                        _write_policy_content=user_content,
                     )
                     # Check for identity-significant signals in user content
-                    self._capture_identity_signals(user_content)
-                if "assistant" in self._sync_roles and assistant_content and len(assistant_content) > 10 and not self._should_filter(assistant_content):
+                    if user_memory_id is not None:
+                        self._capture_identity_signals(user_content)
+                if "assistant" in self._sync_roles and assistant_content and len(assistant_content) > 10:
                     assistant_limit = _sync_turn_assistant_limit()
                     ac = assistant_content[:assistant_limit] if assistant_limit > 0 else assistant_content
                     stored_assistant = f"[ASSISTANT] {ac}"
@@ -2166,6 +2244,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         importance=0.15,
                         scope=self._default_scope,
                         extract_entities=True,
+                        _write_policy_content=assistant_content,
                     )
                 if durable_operation:
                     self._turn_count += 1
@@ -2231,12 +2310,16 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         for signal in self._IDENTITY_SIGNALS:
             if signal in content_lower:
                 # Save identity memory with high importance for durable recall
+                from mnemosyne.core.filters import _SYSTEM_DERIVED_WRITE_CAPABILITY
+
                 self._beam.remember(
                     content=f"[IDENTITY] {user_content[:400]}",
                     source="identity",
                     importance=0.85,
                     scope="global",
                     veracity="stated",
+                    _write_kind=_SYSTEM_DERIVED_WRITE_CAPABILITY,
+                    _write_policy=self._current_operation_write_policy(),
                 )
                 break  # One identity memory per turn
 
@@ -2347,28 +2430,42 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         if tool_name == "mnemosyne_sleep" and self._reflect_disabled_for_cron and (self._agent_context or "").strip().lower() == "cron":
             return json.dumps(self._reflection_skip_response("reflect_disabled_for_cron", "tool"))
         try:
-            self._maybe_retry_init()
-            self._ensure_initialized_for_tools()
-            # Tools use the durable session selected by on_session_switch().
-            # Hold the same session lock for the complete dispatch so a write,
-            # recall, or sleep cannot be re-attributed mid-operation.
-            with self._beam_session_scope("") as beam:
-                if beam is None:
-                    # C27: structured response carries the actual failure reason
-                    # instead of a generic "not initialized" string. Status field
-                    # is parseable by tool consumers; `reason` is human-readable for
-                    # the agent to relay to the user. The `error` field is kept
-                    # alongside `status` so callers using the prior "if 'error' in
-                    # payload" pattern (codex review finding #4) don't silently
-                    # misclassify unavailable as success.
-                    reason = self._init_error_reason()
-                    return json.dumps({
-                        "status": "memory_unavailable",
-                        "tool": tool_name,
-                        "reason": reason,
-                        "error": f"Mnemosyne unavailable: {reason}",
-                    })
-                return self._dispatch_tool_call_locked(tool_name, args)
+            from mnemosyne.core.filters import write_policy_operation
+
+            # Keep the private Beam/session stable for the operation, but hold
+            # the surface-adapter publication lock only while lazy initialization
+            # and policy capture observe one lifecycle generation. Long-running
+            # handlers must not prevent adapter invalidation/publication.
+            with self._ensure_beam_access_lock():
+                with self._ensure_surface_adapter_lock():
+                    self._maybe_retry_init()
+                    self._ensure_initialized_for_tools()
+                    policy_context = (
+                        write_policy_operation(self._resolve_effective_write_policy())
+                        if tool_name in self._WRITE_POLICY_TOOL_NAMES
+                        else nullcontext()
+                    )
+                with policy_context:
+                    # Tools use the durable session selected by on_session_switch().
+                    # Hold the same session lock for the complete dispatch so a write,
+                    # recall, or sleep cannot be re-attributed mid-operation.
+                    with self._beam_session_scope("") as beam:
+                        if beam is None:
+                            # C27: structured response carries the actual failure reason
+                            # instead of a generic "not initialized" string. Status field
+                            # is parseable by tool consumers; `reason` is human-readable for
+                            # the agent to relay to the user. The `error` field is kept
+                            # alongside `status` so callers using the prior "if 'error' in
+                            # payload" pattern (codex review finding #4) don't silently
+                            # misclassify unavailable as success.
+                            reason = self._init_error_reason()
+                            return json.dumps({
+                                "status": "memory_unavailable",
+                                "tool": tool_name,
+                                "reason": reason,
+                                "error": f"Mnemosyne unavailable: {reason}",
+                            })
+                        return self._dispatch_tool_call_locked(tool_name, args)
         except Exception as e:
             logger.error("Mnemosyne tool %s failed: %s", tool_name, e)
             return json.dumps({"error": f"Mnemosyne tool '{tool_name}' failed: {e}"})
@@ -2518,6 +2615,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
         # Write-approval gate: stage to pending when enabled.
         if _write_approval_enabled():
+            from mnemosyne.core.filters import admit_memory_write
+
+            policy = self._current_operation_write_policy()
+            if not admit_memory_write(content, policy=policy)[0]:
+                return json.dumps({"status": "filtered"})
             pid = _stage_pending_write({
                 "tool": "mnemosyne_remember",
                 "content": content, "importance": importance,
@@ -2544,7 +2646,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             extract=extract,
             metadata=metadata,
             veracity=veracity,
+            _write_policy=self._current_operation_write_policy(),
         )
+        if memory_id is None:
+            return json.dumps({"status": "filtered"})
         self._audit_event(
             "remember", memory_id=memory_id, bank="private",
             scope=scope, source_tool="mnemosyne_remember",
@@ -2575,15 +2680,42 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # (memory_id, replacement_id, action-specific fields) so approval
         # replay can dispatch by action instead of re-remembering.
         if _write_approval_enabled():
+            from mnemosyne.core.filters import admit_memory_write
+
+            policy = self._current_operation_write_policy()
+            admitted = [
+                admit_memory_write(
+                    op["payload"]["content"], policy=policy
+                )[0]
+                for op in normalized
+                if op.get("action") in {"remember", "update"}
+                and op["payload"].get("content") is not None
+            ]
+            if not all(admitted):
+                results = [
+                    {
+                        "index": op["index"],
+                        "action": op["action"],
+                        "status": "filtered",
+                    }
+                    for op in normalized
+                ]
+                return json.dumps({
+                    "status": "filtered",
+                    "staged": [],
+                    "pending_ids": [],
+                    "staged_actions": [],
+                    "staged_count": 0,
+                    "count": 0,
+                    "filtered_count": len(results),
+                    "results": results,
+                    "message": "0 writes staged for approval. Use mnemosyne_apply_pending to commit.",
+                })
             staged = []
             staged_actions = []
+            results = []
             for op in normalized:
                 payload = op["payload"]
-                # #926 finding 1: only content-based ops (remember)
-                # may fabricate default values at stage time. For update
-                # (and other non-remember actions) the staged payload must
-                # carry None for absent fields so replay forwards None to
-                # update_working, which mutates ONLY the supplied fields.
                 action = op.get("action")
                 if action == "remember":
                     stage_content = payload.get("content", "")
@@ -2599,7 +2731,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         "content": stage_content,
                         "importance": stage_importance,
                         "source": payload.get("source", "user"),
-                        "scope": payload.get("scope", self._default_scope),
+                        "scope": payload.get(
+                            "scope", getattr(self, "_default_scope", "session")
+                        ),
                         "valid_until": payload.get("valid_until"),
                         "extract_entities": payload.get("extract_entities", False),
                         "extract": payload.get("extract", False),
@@ -2607,28 +2741,27 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         "veracity": payload.get("veracity"),
                         "memory_id": payload.get("memory_id"),
                         "replacement_id": payload.get("replacement_id"),
-                    }, session_scope=self._session_id,
-                       channel_scope=str(getattr(self._beam, "channel_id", "") or ""))
+                    }, session_scope=str(getattr(self, "_session_id", "") or ""),
+                       channel_scope=str(
+                           getattr(getattr(self, "_beam", None), "channel_id", "") or ""
+                       ))
                 except Exception:
                     _rollback_staged_writes(staged)
                     raise
-                # PR #926 finding 7: 'staged' carries RAW pending IDs
-                # (strings) so a client can forward response['staged']
-                # verbatim to mnemosyne_apply_pending; action metadata
-                # lives in the additive 'staged_actions' field.
                 staged.append(pid)
                 staged_actions.append({"action": action, "pending_id": pid})
-            # Response parity (#936 review): the legacy surface returns
-            # 'pending_ids'/'count' alongside 'staged'/'staged_count', and a
-            # client that forwards the documented compatibility key reads it on
-            # both. Identical keys AND identical values, message included, so the
-            # surfaces cannot drift apart again.
+                results.append({
+                    "index": op["index"], "action": action,
+                    "status": "staged", "pending_id": pid,
+                })
             return json.dumps({
-                "status": "staged", "staged": staged,
+                "status": "staged" if staged else "filtered", "staged": staged,
                 "pending_ids": staged,
                 "staged_actions": staged_actions,
                 "staged_count": len(staged),
                 "count": len(staged),
+                "filtered_count": len(results) - len(staged),
+                "results": results,
                 "message": f"{len(staged)} writes staged for approval. Use mnemosyne_apply_pending to commit.",
             })
 
@@ -2640,6 +2773,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             remember_source_tool="mnemosyne_batch",
             audit_event=self._audit_event,
             extract_defaults_global=False,
+            write_policy=self._current_operation_write_policy(),
         ))
 
     def _handle_recall(self, args: Dict[str, Any]) -> str:
@@ -2807,7 +2941,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             scope="global",
             memory_id=stable_id,
             veracity=veracity,
+            _write_policy=self._current_operation_write_policy(),
+            _write_policy_content=content,
         )
+        if memory_id is None:
+            return json.dumps({"status": "filtered"})
         self._audit_event(
             "shared_remember", memory_id=memory_id, bank="surface",
             scope="global", source_tool="mnemosyne_shared_remember",
@@ -2928,6 +3066,22 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             return json.dumps({"error": f"unknown store: {store}"})
         if action == "update" and not new_content:
             return json.dumps({"error": "new_content is required for action='update'"})
+        from mnemosyne.core.filters import admit_memory_write
+
+        policy = self._current_operation_write_policy()
+        persisted_inputs = (
+            validator,
+            new_content if action == "update" else None,
+            note,
+        )
+        if any(value and not admit_memory_write(value, policy=policy)[0]
+               for value in persisted_inputs):
+            return json.dumps({
+                "status": "filtered",
+                "memory_id": memory_id,
+                "store": store,
+                "bank": bank,
+            })
 
         # Pick the right beam (private vs surface)
         if store == "surface":
@@ -3100,6 +3254,13 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         valid_from = args.get("valid_from", None) or None
         if not all([subject, predicate, obj]):
             return json.dumps({"error": "subject, predicate, and object are required"})
+        from mnemosyne.core.filters import admit_memory_write
+        policy = self._current_operation_write_policy()
+        if any(
+            not admit_memory_write(value, policy=policy)[0]
+            for value in (subject, predicate, obj)
+        ):
+            return json.dumps({"status": "filtered"})
         valid_until = args.get("valid_until", None) or None
         source = args.get("source", "") or "inferred"
         confidence = args.get("confidence", 1.0)
@@ -3166,6 +3327,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             owner_id, category, name, body,
             source=source, confidence=confidence,
         )
+        if row is None:
+            return json.dumps({"status": "filtered", "store": "canonical"})
         status = row.pop("status", "stored")
         self._audit_event(
             "remember_canonical", bank="canonical",
@@ -3236,6 +3399,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
     def _handle_apply_pending(self, args: Dict[str, Any]) -> str:
         from hermes_constants import get_hermes_home
         from mnemosyne.core.veracity_consolidation import clamp_veracity
+        policy = self._current_operation_write_policy()
         pending_ids = args.get("pending_ids") or []
         if isinstance(pending_ids, str):
             pending_ids = [pid.strip() for pid in pending_ids.split(",") if pid.strip()]
@@ -3345,7 +3509,12 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                             extract=bool(p.get("extract", False)),
                             metadata=p.get("metadata"),
                             veracity=clamp_veracity(p.get("veracity"), context="apply_pending"),
+                            _write_policy=policy,
                         )
+                        if mid is None:
+                            failed.append({"id": pid, "error": "filtered"})
+                            _restore_pending_claim(claim_path, rp)
+                            continue
                         self._audit_event(
                             "remember", memory_id=mid, bank="private",
                             scope=p.get("scope", self._default_scope),
@@ -3381,6 +3550,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                                 if p.get("importance") is not None
                                 else None
                             ),
+                            _write_policy=policy,
                         )
                     elif action == "forget":
                         ok = replay_beam.forget_working(memory_id)
@@ -3399,7 +3569,22 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                             "id": pid, "action": action,
                             "memory_id": memory_id, "error": "memory_not_found",
                         })
-                        _restore_pending_claim(claim_path, rp)
+                        # Missing forget targets and already-absent invalidation
+                        # targets are terminal/idempotent. A failed update, or an
+                        # invalidation whose live target cannot yet use the requested
+                        # replacement, remains pending for retry.
+                        terminal = not recorded_scope and (
+                            action == "forget" or (
+                            action == "invalidate"
+                            and replay_beam.get(memory_id) is None
+                            )
+                        )
+                        if terminal:
+                            cleanup_error = _cleanup_committed_pending_claim(claim_path)
+                            if cleanup_error is not None:
+                                cleanup_failed.append({"id": pid, "error": cleanup_error})
+                        else:
+                            _restore_pending_claim(claim_path, rp)
                         continue
                     # Audit parity with the direct handlers (#936 review): an
                     # approved destructive mutation is audited exactly like the
@@ -3505,6 +3690,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         if not content:
             return json.dumps({"error": "Content is required"})
         pad_id = self._beam.scratchpad_write(content)
+        if pad_id is None:
+            return json.dumps({"status": "filtered", "store": "scratchpad"})
         return json.dumps({"status": "written", "id": pad_id})
 
     def _handle_scratchpad_read(self, args: Dict[str, Any]) -> str:
@@ -3530,7 +3717,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             return json.dumps({"error": "memory_id is required"})
         content = args.get("content")
         importance = args.get("importance")
-        ok = self._beam.update_working(memory_id, content=content, importance=importance)
+        ok = self._beam.update_working(
+            memory_id,
+            content=content,
+            importance=importance,
+            _write_policy=self._current_operation_write_policy(),
+        )
+        if ok is None:
+            return json.dumps({"status": "filtered", "memory_id": memory_id})
         if ok:
             self._audit_event(
                 "update", memory_id=memory_id, bank="private",
@@ -3731,12 +3925,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             body = state
             if metadata:
                 body += "\n" + json.dumps(metadata, default=str)
-            store.remember(
+            row = store.remember(
                 owner_id=owner_id,
                 category="task:progress",
                 name=task,
                 body=body,
             )
+            if row is None:
+                return json.dumps({"status": "filtered", "store": "canonical"})
             self._audit_event(
                 "task_progress_set",
                 bank="private",
@@ -3822,6 +4018,14 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             })
         if self._beam.episodic_graph is None:
             return json.dumps({"error": "Episodic graph not available"})
+        from mnemosyne.core.filters import admit_memory_write
+
+        if not admit_memory_write(
+            relationship,
+            write_kind="public",
+            policy=self._current_operation_write_policy(),
+        )[0]:
+            return json.dumps({"status": "filtered"})
         GraphEdge = _get_graph_edge_class()
         edge = GraphEdge(
             source=source_id,
@@ -3975,7 +4179,12 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         if action not in ("add", "replace"):
             return
         try:
-            with self._beam_session_scope("") as beam:
+            from mnemosyne.core.filters import write_policy_operation
+            policy = self._resolve_effective_write_policy()
+
+            with write_policy_operation(
+                policy
+            ), self._beam_session_scope("") as beam:
                 if beam is None:
                     return
                 scope = "global" if target == "user" else "session"
@@ -3984,9 +4193,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     source=f"builtin_memory_{target}",
                     importance=0.7 if target == "user" else 0.5,
                     scope=scope,
+                    _write_policy=self._current_operation_write_policy(),
                 )
         except Exception as e:
-            logger.debug("Mnemosyne mirror write failed: %s", e)
+            logger.debug("Mnemosyne mirror write failed: %s", type(e).__name__)
 
     # How long shutdown() will wait for an in-flight session_end consolidation
     # to finish before clearing the host backend. Bounded so shutdown is never
@@ -4012,27 +4222,33 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     "proceeding (daemon thread will be reaped on process exit)",
                     self.SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
                 )
+        drain_timed_out = thread is not None and thread.is_alive()
         self._session_end_thread = None
 
         # Only a successfully initialized primary provider owns a backend lease.
         # Releasing a non-owner (skip context or failed initialization) is a no-op;
         # the final owner clears the global backend.
         self._release_host_llm_backend_ownership()
-        with self._ensure_surface_adapter_lock():
-            self._invalidate_surface_locked()
-        if self._memory is not None:
-            try:
-                self._memory.close()
-            except Exception:
-                logger.debug("Mnemosyne: could not close wrapper", exc_info=True)
-        self._memory = None
-        if self._audit is not None:
-            try:
-                self._audit.close()
-            except Exception:
-                logger.debug("Mnemosyne: could not close audit log", exc_info=True)
-        self._audit = None
-        self._beam = None
+        # Do not reacquire the lock held by an over-time consolidation worker;
+        # that would defeat the bounded drain above. The worker owns a separate
+        # Beam/connection, so the base shutdown path remains safe here.
+        beam_context = nullcontext() if drain_timed_out else self._ensure_beam_access_lock()
+        with beam_context:
+            with self._ensure_surface_adapter_lock():
+                self._invalidate_surface_locked()
+            if self._memory is not None:
+                try:
+                    self._memory.close()
+                except Exception:
+                    logger.debug("Mnemosyne: could not close wrapper", exc_info=True)
+            self._memory = None
+            if self._audit is not None:
+                try:
+                    self._audit.close()
+                except Exception:
+                    logger.debug("Mnemosyne: could not close audit log", exc_info=True)
+            self._audit = None
+            self._beam = None
 
         # C13: decrement this instance's contribution to the module-level
         # active-provider count. ``_provider_active`` stays True if other
