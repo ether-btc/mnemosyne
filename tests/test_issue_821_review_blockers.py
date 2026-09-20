@@ -730,6 +730,7 @@ print(json.dumps({
     "approved_update_apply": approved_update_apply,
     "approved_pending_ids": approved_pending_ids,
     "unsupported_pending": unsupported_pending,
+    "rejected_pending": rejected_pending,
     "allowed_id": allowed_id,
     "invalidate_id": invalidate_id,
     "replacement_id": replacement_id,
@@ -791,8 +792,10 @@ def test_write_approval_rejects_before_pending_persistence(
     assert payload["approved_update_batch"]["status"] == "staged"
     assert payload["approved_update_batch"]["count"] == 3
     assert payload["approved_update_batch"]["filtered_count"] == 0
-    assert "staged" not in payload["approved_update_batch"]
-    assert "staged_count" not in payload["approved_update_batch"]
+    assert payload["approved_update_batch"]["staged"] == (
+        payload["approved_update_batch"]["pending_ids"]
+    )
+    assert payload["approved_update_batch"]["staged_count"] == 3
     assert payload["approved_update_batch"]["message"] == (
         "3 writes staged for approval. Use mnemosyne_apply_pending to commit."
     )
@@ -803,26 +806,31 @@ def test_write_approval_rejects_before_pending_persistence(
         isinstance(pending_id, str)
         for pending_id in payload["approved_update_batch"]["pending_ids"]
     )
-    assert payload["approved_update_apply"] == {
-        "applied": [
-            {
-                "id": payload["approved_pending_ids"][0],
-                "memory_id": payload["approved_batch_remember_id"],
-            },
-            {
-                "id": payload["approved_pending_ids"][1],
-                "memory_id": payload["allowed_id"],
-            },
-            {
-                "id": payload["approved_pending_ids"][2],
-                "memory_id": payload["invalidate_id"],
-            },
-        ],
-        "failed": [{"id": payload["unsupported_pending"],
-                    "error": "unsupported action"}],
-        "applied_count": 3,
-        "failed_count": 1,
-    }
+    assert payload["approved_update_apply"]["applied"] == [
+        {
+            "id": payload["approved_pending_ids"][0],
+            "action": "remember",
+            "memory_id": payload["approved_batch_remember_id"],
+        },
+        {
+            "id": payload["approved_pending_ids"][1],
+            "action": "update",
+            "memory_id": payload["allowed_id"],
+        },
+        {
+            "id": payload["approved_pending_ids"][2],
+            "action": "invalidate",
+            "memory_id": payload["invalidate_id"],
+        },
+    ]
+    assert payload["approved_update_apply"]["failed"] == [{
+        "id": payload["unsupported_pending"],
+        "error": "memory_id is required for action unsupported",
+    }]
+    assert payload["approved_update_apply"]["applied_count"] == 3
+    assert payload["approved_update_apply"]["failed_count"] == 1
+    assert payload["approved_update_apply"]["cleanup_failed_count"] == 0
+    assert payload["approved_update_apply"]["session_redirected_count"] == 0
     assert payload["approved_batch_remember_rows"] == 1
     assert payload["invalidation"]["valid_until"] is not None
     assert payload["invalidation"]["superseded_by"] == payload["replacement_id"]
@@ -837,7 +845,10 @@ def test_write_approval_rejects_before_pending_persistence(
     assert payload["apply_response"]["applied_count"] == 1
     assert payload["apply_response"]["failed_count"] == 1
     assert payload["apply_response"]["failed"][0]["error"] == "filtered"
-    assert payload["pending_after_apply"] == []
+    assert {Path(path).stem for path in payload["pending_after_apply"]} == {
+        payload["unsupported_pending"],
+        payload["rejected_pending"],
+    }
     assert payload["marker_rows"] == 0
     assert payload["allowed_rows"] == 1
     assert payload["working_rows"] == 5
@@ -994,19 +1005,28 @@ def test_pending_mutation_retry_and_terminal_cleanup(
     })
 
     update_pending_id = payload["update_missing"]["failed"][0]["id"]
-    assert payload["update_missing"] == {
-        "applied": [],
-        "failed": [{"id": update_pending_id, "error": "memory not found"}],
-        "applied_count": 0,
-        "failed_count": 1,
-    }
+    assert payload["update_missing"]["applied"] == []
+    assert payload["update_missing"]["applied_count"] == 0
+    assert payload["update_missing"]["failed_count"] == 1
+    assert payload["update_missing"]["failed"] == [{
+        "id": update_pending_id,
+        "action": "update",
+        "memory_id": "pendingupdatetarget",
+        "error": "memory_not_found",
+    }]
+    assert payload["update_missing"]["cleanup_failed_count"] == 0
+    assert payload["update_missing"]["session_redirected_count"] == 0
     assert payload["update_retained"] is True
-    assert payload["update_retried"] == {
-        "applied": [{"id": update_pending_id, "memory_id": "pendingupdatetarget"}],
-        "failed": [],
-        "applied_count": 1,
-        "failed_count": 0,
-    }
+    assert payload["update_retried"]["applied"] == [{
+        "id": update_pending_id,
+        "action": "update",
+        "memory_id": "pendingupdatetarget",
+    }]
+    assert payload["update_retried"]["failed"] == []
+    assert payload["update_retried"]["applied_count"] == 1
+    assert payload["update_retried"]["failed_count"] == 0
+    assert payload["update_retried"]["cleanup_failed_count"] == 0
+    assert payload["update_retried"]["session_redirected_count"] == 0
     assert payload["update_cleaned"] is True
     assert payload["update_content"] == "updated after retry"
 
@@ -1014,7 +1034,7 @@ def test_pending_mutation_retry_and_terminal_cleanup(
     assert payload["forget_cleaned"] is True
     assert payload["forget_already_satisfied"]["applied"] == []
     assert payload["forget_already_satisfied"]["failed"][0]["error"] == (
-        "memory not found"
+        "memory_not_found"
     )
     assert payload["forget_terminal_cleaned"] is True
     assert payload["forget_transient"]["failed"][0]["error"] == (
@@ -1026,12 +1046,12 @@ def test_pending_mutation_retry_and_terminal_cleanup(
 
     assert payload["invalidate_missing"]["applied"] == []
     assert payload["invalidate_missing"]["failed"][0]["error"] == (
-        "memory not found"
+        "memory_not_found"
     )
     assert payload["invalidate_terminal_cleaned"] is True
     assert payload["invalidate_replacement_missing"]["applied"] == []
     assert payload["invalidate_replacement_missing"]["failed"][0]["error"] == (
-        "memory not found"
+        "memory_not_found"
     )
     assert payload["invalidate_retained"] is True
     assert payload["invalidate_retried"]["applied_count"] == 1

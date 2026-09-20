@@ -2713,7 +2713,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         "content": stage_content,
                         "importance": stage_importance,
                         "source": payload.get("source", "user"),
-                        "scope": payload.get("scope", self._default_scope),
+                        "scope": payload.get(
+                            "scope", getattr(self, "_default_scope", "session")
+                        ),
                         "valid_until": payload.get("valid_until"),
                         "extract_entities": payload.get("extract_entities", False),
                         "extract": payload.get("extract", False),
@@ -2721,8 +2723,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         "veracity": payload.get("veracity"),
                         "memory_id": payload.get("memory_id"),
                         "replacement_id": payload.get("replacement_id"),
-                    }, session_scope=self._session_id,
-                       channel_scope=str(getattr(self._beam, "channel_id", "") or ""))
+                    }, session_scope=str(getattr(self, "_session_id", "") or ""),
+                       channel_scope=str(
+                           getattr(getattr(self, "_beam", None), "channel_id", "") or ""
+                       ))
                 except Exception:
                     _rollback_staged_writes(staged)
                     raise
@@ -3461,9 +3465,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 # chaining is preserved. The pending record is removed ONLY
                 # after a successful replay so no approved op is lost on
                 # failure.
-                action = p.get("action")
-                if action is None and record.get("tool") == "mnemosyne_remember":
-                    action = "remember"
+                action = p.get("action") or "remember"
 
                 with self._replay_scope_locked(
                     replay_scope, replay_channel
@@ -3553,9 +3555,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         # targets are terminal/idempotent. A failed update, or an
                         # invalidation whose live target cannot yet use the requested
                         # replacement, remains pending for retry.
-                        terminal = action == "forget" or (
+                        terminal = not recorded_scope and (
+                            action == "forget" or (
                             action == "invalidate"
                             and replay_beam.get(memory_id) is None
+                            )
                         )
                         if terminal:
                             cleanup_error = _cleanup_committed_pending_claim(claim_path)
@@ -4200,13 +4204,18 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     "proceeding (daemon thread will be reaped on process exit)",
                     self.SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
                 )
+        drain_timed_out = thread is not None and thread.is_alive()
         self._session_end_thread = None
 
         # Only a successfully initialized primary provider owns a backend lease.
         # Releasing a non-owner (skip context or failed initialization) is a no-op;
         # the final owner clears the global backend.
         self._release_host_llm_backend_ownership()
-        with self._ensure_beam_access_lock():
+        # Do not reacquire the lock held by an over-time consolidation worker;
+        # that would defeat the bounded drain above. The worker owns a separate
+        # Beam/connection, so the base shutdown path remains safe here.
+        beam_context = nullcontext() if drain_timed_out else self._ensure_beam_access_lock()
+        with beam_context:
             with self._ensure_surface_adapter_lock():
                 self._invalidate_surface_locked()
             if self._memory is not None:

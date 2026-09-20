@@ -2563,8 +2563,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         except AttributeError:
             # setdefault atomically publishes one per-instance lock when
             # concurrent __new__ callers both need lazy initialization.
-            lock_factory = getattr(threading, "RLock", threading.Lock)
-            return self.__dict__.setdefault("_beam_access_lock", lock_factory())
+            return self.__dict__.setdefault("_beam_access_lock", threading.RLock())
 
     @contextmanager
     def _replay_scope_locked(self, session_scope: str, channel_scope: str = ""):
@@ -3190,7 +3189,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         "content": stage_content,
                         "importance": stage_importance,
                         "source": payload.get("source", "user"),
-                        "scope": payload.get("scope", self._default_scope),
+                        "scope": payload.get(
+                            "scope", getattr(self, "_default_scope", "session")
+                        ),
                         "valid_until": payload.get("valid_until"),
                         "extract_entities": payload.get("extract_entities", False),
                         "extract": payload.get("extract", False),
@@ -3198,8 +3199,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         "veracity": payload.get("veracity"),
                         "memory_id": payload.get("memory_id"),
                         "replacement_id": payload.get("replacement_id"),
-                    }, session_scope=self._session_id,
-                       channel_scope=str(getattr(self._beam, "channel_id", "") or ""))
+                    }, session_scope=str(getattr(self, "_session_id", "") or ""),
+                       channel_scope=str(
+                           getattr(getattr(self, "_beam", None), "channel_id", "") or ""
+                       ))
                 except Exception:
                     _rollback_staged_writes(staged)
                     raise
@@ -3950,9 +3953,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 # replacement_id chaining is preserved. The pending record
                 # is removed ONLY after a successful replay so no approved
                 # operation is silently lost on failure.
-                action = payload.get("action")
-                if action is None and record.get("tool") == "mnemosyne_remember":
-                    action = "remember"
+                action = payload.get("action") or "remember"
 
                 # The whole replay of this record runs with the beam bound to
                 # the recorded scope, under the Beam access lock.
@@ -4046,9 +4047,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         # targets are terminal/idempotent. A failed update, or an
                         # invalidation whose live target cannot yet use the requested
                         # replacement, remains pending for retry.
-                        terminal = action == "forget" or (
+                        terminal = not recorded_scope and (
+                            action == "forget" or (
                             action == "invalidate"
                             and replay_beam.get(memory_id) is None
+                            )
                         )
                         if terminal:
                             cleanup_error = _cleanup_committed_pending_claim(claim_path)
@@ -4604,6 +4607,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     "proceeding (daemon thread will be reaped on process exit)",
                     self.SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
                 )
+        drain_timed_out = thread is not None and thread.is_alive()
         self._session_end_thread = None
 
         # Symmetric with initialize(): clear the Hermes host LLM backend so a
@@ -4617,7 +4621,12 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 unregister_hermes_host_llm()
             except Exception as exc:
                 logger.debug("Mnemosyne could not unregister Hermes auxiliary LLM backend: %s", exc)
-        with self._ensure_beam_access_lock():
+        # The consolidation worker owns this lock while sleeping. After the
+        # bounded drain expires, reacquiring it here would turn the timeout into
+        # an unbounded shutdown wait. The worker uses its own Beam/connection, so
+        # preserve the base shutdown behavior in that one timeout case.
+        beam_context = nullcontext() if drain_timed_out else self._ensure_beam_access_lock()
+        with beam_context:
             with self._ensure_surface_adapter_lock():
                 self._invalidate_surface_locked()
             if self._memory is not None:
