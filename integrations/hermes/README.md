@@ -264,7 +264,8 @@ memory:
 
 For `ignore_patterns` and `write_classifier`, an explicit `initialize(...)`
 keyword argument takes precedence. Without that override, resolution is
-`memory.mnemosyne` in `config.yaml` > environment variable > default.
+Hermes `config.yaml` `memory.mnemosyne.*` > core `config.yaml` > environment
+variable > default.
 `MNEMOSYNE_IGNORE_PATTERNS` is newline-separated and defaults to empty (no
 patterns). `MNEMOSYNE_WRITE_CLASSIFIER` controls admission for explicit writes
 and autosaved turns: `off` still applies `ignore_patterns`; `warn` runs the
