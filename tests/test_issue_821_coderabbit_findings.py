@@ -156,6 +156,58 @@ def test_mcp_validate_allows_note_and_update(monkeypatch, tmp_path: Path):
         memory.conn.close()
 
 
+def test_mcp_validate_rejects_effective_fallback_validator(monkeypatch):
+    from mnemosyne import mcp_tools
+    from mnemosyne.core.filters import WritePolicySnapshot, write_policy_operation
+
+    monkeypatch.setenv("MNEMOSYNE_AUTHOR_ID", "ISSUE821 blocked fallback validator")
+    monkeypatch.setattr(
+        mcp_tools,
+        "_create_instance",
+        lambda **_kwargs: pytest.fail("validator rejection must precede lookup"),
+    )
+    with write_policy_operation(WritePolicySnapshot((r"^ISSUE821",), "strict")):
+        result = mcp_tools._handle_validate({
+            "memory_id": "missing",
+            "action": "attest",
+        })
+
+    assert result == {
+        "status": "filtered",
+        "memory_id": "missing",
+        "store": "private",
+        "bank": "default",
+    }
+
+
+@pytest.mark.parametrize("provider_name", PROVIDERS)
+def test_provider_validate_rejects_effective_fallback_validator(
+    provider_name: str,
+):
+    from mnemosyne.core.filters import WritePolicySnapshot, write_policy_operation
+
+    module = importlib.import_module(provider_name)
+    provider = module.MnemosyneMemoryProvider.__new__(module.MnemosyneMemoryProvider)
+    provider._agent_identity = "ISSUE821 blocked fallback validator"
+    provider._beam = types.SimpleNamespace(conn=types.SimpleNamespace(
+        execute=lambda *_args, **_kwargs: pytest.fail(
+            "validator rejection must precede lookup"
+        )
+    ))
+    with write_policy_operation(WritePolicySnapshot((r"^ISSUE821",), "strict")):
+        result = json.loads(provider._handle_validate({
+            "memory_id": "missing",
+            "action": "attest",
+        }))
+
+    assert result == {
+        "status": "filtered",
+        "memory_id": "missing",
+        "store": "private",
+        "bank": "private",
+    }
+
+
 @pytest.mark.parametrize("provider_name", PROVIDERS)
 def test_batch_staging_handles_explicit_null_content(
     provider_name: str, tmp_path: Path, monkeypatch
@@ -260,6 +312,51 @@ def test_mcp_triple_add_rejects_each_field_before_target_lookup(
         result = mcp_tools.handle_tool_call("mnemosyne_triple_add", values)
     assert result == {"status": "filtered", "store": "triples"}
     assert lookups == 0
+
+
+def test_mcp_occurred_on_preserves_valid_from_as_annotation_value(
+    monkeypatch, tmp_path: Path
+):
+    from mnemosyne import mcp_tools
+    from mnemosyne.core.memory import Mnemosyne
+
+    memory = Mnemosyne(session_id="occurred-on", db_path=tmp_path / "occurred.db")
+    monkeypatch.setattr(mcp_tools, "_create_instance", lambda **_kwargs: memory)
+    try:
+        result = mcp_tools.handle_tool_call("mnemosyne_triple_add", {
+            "subject": "memory-1",
+            "predicate": "occurred_on",
+            "object": "graduated college",
+            "valid_from": "2010-06-15",
+        })
+        assert result["status"] == "added"
+        assert result["annotation_id"] is not None
+        rows = memory.beam.annotations.query_by_memory(
+            "memory-1", kind="occurred_on"
+        )
+        assert [row["value"] for row in rows] == ["2010-06-15"]
+    finally:
+        memory.conn.close()
+
+
+def test_remember_media_rejects_title_before_asset_upsert(tmp_path: Path):
+    from mnemosyne.core.beam import BeamMemory
+    from mnemosyne.core.filters import WritePolicySnapshot
+
+    beam = BeamMemory(session_id="media-title", db_path=tmp_path / "media-title.db")
+    try:
+        result = beam.remember_media(
+            "https://example.test/allowed.png",
+            title="ISSUE821 blocked media title",
+            _write_policy=WritePolicySnapshot((r"^ISSUE821",), "strict"),
+        )
+        assert result.status == "filtered"
+        assert result.asset_id == ""
+        assert beam.conn.execute(
+            "SELECT COUNT(*) FROM media_assets"
+        ).fetchone()[0] == 0
+    finally:
+        beam.conn.close()
 
 
 def test_annotation_counts_only_inserted_admitted_rows(tmp_path: Path):

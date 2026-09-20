@@ -358,6 +358,11 @@ def current_write_policy() -> WritePolicySnapshot:
     return _active_write_policy.get() or resolve_write_policy()
 
 
+def active_write_policy() -> Optional[WritePolicySnapshot]:
+    """Return the active operation snapshot without resolving a new policy."""
+    return _active_write_policy.get()
+
+
 @contextmanager
 def write_policy_operation(
     policy: Optional[WritePolicySnapshot] = None,

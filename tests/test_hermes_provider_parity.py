@@ -1716,6 +1716,9 @@ def test_public_sync_dispatch_releases_publication_lock_and_retries_generation(
         )
         assert getattr(provider, cache_name).beam is surface_b
 
+        provider.shutdown()
+        assert shutdown == [surface_a, surface_b]
+
 
 def test_standalone_sync_construction_race_retries_current_surface(
     monkeypatch, provider_modules

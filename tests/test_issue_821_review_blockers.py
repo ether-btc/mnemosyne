@@ -164,9 +164,12 @@ def test_update_boundary_provider_batch_and_importance_only(tmp_path: Path):
             }]}))
             assert beam.update_working(memory_id, importance=0.91) is True
         assert direct == {"status": "filtered", "memory_id": memory_id}
-        assert batch["results"] == [
-            {"index": 0, "action": "update", "status": "filtered"}
-        ]
+        assert batch == {
+            "status": "error",
+            "error": "batch_failed",
+            "failed_index": 0,
+            "action": "update",
+        }
         assert "ISSUE821" not in json.dumps((direct, batch))
         row = beam.get(memory_id)
         assert row["content"] == "allowed original"
@@ -677,6 +680,18 @@ pending_files = list(pending_root.rglob("*")) if pending_root.exists() else []
 pending_text = "\n".join(
     path.read_text(errors="replace") for path in pending_files if path.is_file()
 )
+mixed_batch = json.loads(provider.handle_tool_call("mnemosyne_batch", {"operations": [
+    {"action": "remember", "content": "allowed mixed batch member"},
+    {"action": "remember", "content": marker + " mixed"},
+]}))
+mixed_pending_entries = [
+    str(path.relative_to(pending_root))
+    for path in (pending_root.rglob("*") if pending_root.exists() else [])
+    if path.is_file()
+]
+mixed_allowed_rows = provider._beam.conn.execute(
+    "SELECT COUNT(*) FROM working_memory WHERE content = 'allowed mixed batch member'"
+).fetchone()[0]
 approved_update_batch = json.loads(provider.handle_tool_call(
     "mnemosyne_batch", {"operations": [
         {"action": "remember", "content": "allowed approved batch remember"},
@@ -723,6 +738,9 @@ print(json.dumps({
     "pending_exists": pending_root.exists(),
     "pending_entries": [str(path.relative_to(pending_root)) for path in pending_files],
     "pending_text": pending_text,
+    "mixed_batch": mixed_batch,
+    "mixed_pending_entries": mixed_pending_entries,
+    "mixed_allowed_rows": mixed_allowed_rows,
     "non_content": non_content,
     "non_content_records": non_content_records,
     "apply_response": json.loads(apply_response),
@@ -787,6 +805,13 @@ def test_write_approval_rejects_before_pending_persistence(
         {"index": 1, "action": "update", "status": "filtered"},
     ]
     assert payload["pending_entries"] == []
+    assert payload["mixed_batch"]["status"] == "filtered"
+    assert payload["mixed_batch"]["results"] == [
+        {"index": 0, "action": "remember", "status": "filtered"},
+        {"index": 1, "action": "remember", "status": "filtered"},
+    ]
+    assert payload["mixed_pending_entries"] == []
+    assert payload["mixed_allowed_rows"] == 0
     assert payload["original"] == "allowed approved update"
     assert payload["updated_importance"] == pytest.approx(0.83)
     assert payload["approved_update_batch"]["status"] == "staged"

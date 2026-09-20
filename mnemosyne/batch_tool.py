@@ -204,7 +204,7 @@ def _apply_one(
             veracity=veracity,
         )
         if memory_id is None:
-            return {"index": index, "action": action, "status": "filtered"}
+            raise BatchOperationError("write_policy_rejected")
         audit_events.append((
             "remember",
             {"memory_id": memory_id, "bank": "private", "scope": scope, "source_tool": remember_source_tool},
@@ -220,7 +220,7 @@ def _apply_one(
             importance=float(importance) if importance is not None else None,
         )
         if ok is None:
-            return {"index": index, "action": action, "status": "filtered"}
+            raise BatchOperationError("write_policy_rejected")
         if not ok:
             raise BatchOperationError("memory_not_found")
         audit_events.append(("update", {"memory_id": memory_id, "bank": "private", "source_tool": remember_source_tool}))

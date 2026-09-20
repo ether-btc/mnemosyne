@@ -1897,10 +1897,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
     def _current_operation_write_policy(self):
         """Return the immutable snapshot bound to the current operation."""
-        from mnemosyne.core.filters import _active_write_policy, current_write_policy
+        from mnemosyne.core.filters import active_write_policy, current_write_policy
 
         return (
-            _active_write_policy.get()
+            active_write_policy()
             or getattr(self, "_write_policy", None)
             or current_write_policy()
         )
@@ -3159,22 +3159,40 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             from mnemosyne.core.filters import admit_memory_write
 
             policy = self._current_operation_write_policy()
+            admitted = [
+                admit_memory_write(
+                    op["payload"]["content"], policy=policy
+                )[0]
+                for op in normalized
+                if op.get("action") in {"remember", "update"}
+                and op["payload"].get("content") is not None
+            ]
+            if not all(admitted):
+                results = [
+                    {
+                        "index": op["index"],
+                        "action": op["action"],
+                        "status": "filtered",
+                    }
+                    for op in normalized
+                ]
+                return json.dumps({
+                    "status": "filtered",
+                    "staged": [],
+                    "pending_ids": [],
+                    "staged_actions": [],
+                    "staged_count": 0,
+                    "count": 0,
+                    "filtered_count": len(results),
+                    "results": results,
+                    "message": "0 writes staged for approval. Use mnemosyne_apply_pending to commit.",
+                })
             staged = []
             staged_actions = []
             results = []
             for op in normalized:
                 payload = op["payload"]
                 action = op.get("action", "")
-                content = payload.get("content")
-                if (
-                    action in {"remember", "update"}
-                    and content is not None
-                    and not admit_memory_write(content, policy=policy)[0]
-                ):
-                    results.append({
-                        "index": op["index"], "action": action, "status": "filtered",
-                    })
-                    continue
                 if action == "remember":
                     stage_content = payload.get("content", "")
                     stage_importance = payload.get("importance", 0.5)
@@ -3510,7 +3528,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
         policy = self._current_operation_write_policy()
         persisted_inputs = (
-            args.get("validator"),
+            validator,
             new_content if action == "update" else None,
             note,
         )

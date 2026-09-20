@@ -1361,9 +1361,13 @@ def remember_media(
     from mnemosyne.core.filters import admit_memory_write, current_write_policy
 
     write_policy = _write_policy or current_write_policy()
-    if not admit_memory_write(
-        ref, write_kind=_write_kind, policy=write_policy
-    )[0]:
+    if any(
+        not admit_memory_write(
+            value, write_kind=_write_kind, policy=write_policy
+        )[0]
+        for value in (ref, title)
+        if value
+    ):
         return MediaIngestResult(asset_id="", status="filtered")
 
     store = getattr(beam, "media", None)

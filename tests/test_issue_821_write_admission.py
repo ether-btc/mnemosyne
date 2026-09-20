@@ -465,7 +465,12 @@ def test_direct_mcp_batch_updates_use_one_immutable_policy_snapshot(
             {"action": "update", "memory_id": first, "content": "ISSUE821 first"},
             {"action": "update", "memory_id": second, "content": "ISSUE821 second"},
         ]})
-        assert [item["status"] for item in result["results"]] == ["filtered", "filtered"]
+        assert result == {
+            "status": "error",
+            "error": "batch_failed",
+            "failed_index": 0,
+            "action": "update",
+        }
         assert config.calls == 1
         assert memory.beam.get(first)["content"] == "allowed first"
         assert memory.beam.get(second)["content"] == "allowed second"

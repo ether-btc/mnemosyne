@@ -34,7 +34,7 @@ These functions create a default `Mnemosyne` instance and delegate to it. The op
 | `recall()` | `(query, top_k=5, **kwargs) -> list` | Search memories |
 | `get_stats()` | `() -> dict` | Memory statistics |
 | `forget()` | `(memory_id) -> bool` | Delete a memory |
-| `update()` | `(memory_id, **kwargs) -> bool` | Update a memory |
+| `update()` | `(memory_id, **kwargs) -> Optional[bool]` | Update a memory; returns `None` when write policy rejects it |
 | `get_context()` | `(limit=10, bank=None) -> list[dict]` | Get recent working-memory context |
 
 ---

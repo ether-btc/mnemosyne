@@ -608,7 +608,7 @@ def _handle_validate(arguments: Dict[str, Any]) -> Dict[str, Any]:
 
     policy = current_write_policy()
     persisted_inputs = (
-        arguments.get("validator"),
+        validator,
         new_content if action == "update" else None,
         note,
     )
@@ -745,7 +745,7 @@ def _handle_triple_add(arguments: Dict[str, Any]) -> Dict[str, Any]:
 
     Routes annotation-flavored predicates (mentions, fact, occurred_on,
     has_source) to AnnotationStore; everything else to TripleStore.
-    For occurred_on, valid_from is forwarded to AnnotationStore (issue #111).
+    For occurred_on, valid_from is stored as the annotation value (issue #111).
     """
     import logging
     _log = logging.getLogger("mnemosyne.mcp.triple_add")
@@ -783,10 +783,10 @@ def _handle_triple_add(arguments: Dict[str, Any]) -> Dict[str, Any]:
                 row_id = store.add(
                     memory_id=arguments["subject"],
                     kind=predicate,
-                    value=arguments["object"],
+                    value=valid_from,
                     source=arguments.get("source", "conversation"),
                     confidence=arguments.get("confidence", 1.0),
-                    valid_from=valid_from,
+                    _write_policy=policy,
                 )
             else:
                 if valid_from:
@@ -801,6 +801,7 @@ def _handle_triple_add(arguments: Dict[str, Any]) -> Dict[str, Any]:
                     value=arguments["object"],
                     source=arguments.get("source", "conversation"),
                     confidence=arguments.get("confidence", 1.0),
+                    _write_policy=policy,
                 )
             return {"status": "added", "annotation_id": row_id, "store": "annotations"}
 
