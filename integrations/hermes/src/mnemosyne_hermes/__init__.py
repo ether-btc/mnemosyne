@@ -219,7 +219,7 @@ except Exception as _persona_import_exc:  # pragma: no cover - graceful import f
         def _with_persona_block(self, base: str) -> str:
             return base
 
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 
 logger = logging.getLogger(__name__)
 
@@ -831,6 +831,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # `_beam is None AND _init_error is not None` means a real failure that
         # users and operators need to see.
         self._init_error: Optional[BaseException] = None
+        self._unavailable_reason_code = "never_initialized"
+        self._unavailable_reason = ""
         # Lazy re-init after a TRANSIENT init failure (a SQLite lock held at
         # the exact moment this session initialized). Holds the (session_id,
         # kwargs) of the failed initialize() call plus the earliest monotonic
@@ -1062,6 +1064,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         Returns a generic string when init was never attempted (e.g. a
         subagent-context session that legitimately skipped initialize()).
         """
+        unavailable_reason = getattr(self, "_unavailable_reason", "")
+        if unavailable_reason:
+            return unavailable_reason
         if self._init_error is None:
             return "Mnemosyne not initialized"
         msg = str(self._init_error)
@@ -1653,6 +1658,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
     def _initialize_locked(self, session_id: str, **kwargs) -> None:
         """Rebuild provider state while the Beam access lock is held."""
+        had_beam = self._beam is not None
+        _prev_active = getattr(self, "_active_session_id", "") or ""
         # C27: clear stale state from any prior init attempt so a re-init
         # returns the provider to a clean slate. _beam reset is critical
         # for the primary->skip-context re-init case (codex review finding
@@ -1676,6 +1683,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         self._audit = None
         self._beam = None
         self._init_error = None
+        self._unavailable_reason_code = "never_initialized"
+        self._unavailable_reason = ""
         # A fresh initialize() supersedes any pending transient-failure retry;
         # the except path below re-stashes if THIS attempt also fails.
         self._retry_init_args = None
@@ -1684,7 +1693,6 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
         # Re-init rebinds the verbatim ledger: entries recorded under a
         # previous session must never leak their exclusion into the new one.
-        _prev_active = getattr(self, "_active_session_id", "") or ""
         self._active_session_id = str(session_id or "").strip()
         if _prev_active and _prev_active != self._active_session_id:
             self._verbatim_ledger.reset_session(_prev_active)
@@ -1714,7 +1722,25 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             logger.debug("Mnemosyne could not register Hermes auxiliary LLM backend: %s", exc)
 
         if self._agent_context in self._skip_contexts:
-            logger.debug("Mnemosyne skipped: non-primary context=%s", self._agent_context)
+            if had_beam:
+                self._unavailable_reason_code = "reset_by_reinit"
+                self._unavailable_reason = (
+                    f"reset by re-init under context={self._agent_context}"
+                )
+                logger.warning(
+                    "Mnemosyne: re-init under context=%s dropped a live beam "
+                    "(previous session=%s)",
+                    self._agent_context,
+                    _prev_active or "unknown",
+                )
+            else:
+                self._unavailable_reason_code = "skipped_context"
+                self._unavailable_reason = (
+                    f"skipped for non-primary context={self._agent_context}"
+                )
+                logger.debug(
+                    "Mnemosyne skipped: non-primary context=%s", self._agent_context
+                )
             # C13: a skip-context re-init must DEACTIVATE the instance if
             # it was previously active in this process. Without this, a
             # primary -> subagent re-init keeps _provider_active=True and
@@ -1795,6 +1821,8 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             logger.warning("Mnemosyne init failed: %s", e)
             self._beam = None
             self._init_error = e
+            self._unavailable_reason_code = "init_failed"
+            self._unavailable_reason = ""
             # A failed re-initialization no longer supplies a live primary
             # backend owner, even though _provider_active retains its existing
             # fallback semantics. A first failed primary init registered the
@@ -1875,7 +1903,13 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # it the user -- can see that memory is unavailable rather than
         # silently behaving as if nothing was stored. The skip-context case
         # still returns "" because that is the documented contract for
-        # cron/subagent/skill_loop sessions.
+        # cron/subagent/skill_loop sessions unless a live primary was reset.
+        if getattr(self, "_unavailable_reason_code", "never_initialized") == "reset_by_reinit":
+            return (
+                "# Mnemosyne Memory\n"
+                f"⚠️ UNAVAILABLE: {self._init_error_reason()}\n"
+                "Reinitialize the provider in a primary context to restore memory."
+            )
         if self._init_error is not None:
             hint = (
                 "Init failed on transient database contention and will be retried "
@@ -2463,6 +2497,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                                 "status": "memory_unavailable",
                                 "tool": tool_name,
                                 "reason": reason,
+                                "reason_code": getattr(
+                                    self, "_unavailable_reason_code", "never_initialized"
+                                ),
                                 "error": f"Mnemosyne unavailable: {reason}",
                             })
                         return self._dispatch_tool_call_locked(tool_name, args)
