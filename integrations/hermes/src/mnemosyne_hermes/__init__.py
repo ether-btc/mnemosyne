@@ -471,9 +471,62 @@ def _prefetch_tokens(content: str) -> Set[str]:
     return tokens
 
 
+def _canonical_match_tokens(content: str, *, cjk_ngram_size: int = 2) -> Set[str]:
+    """Tokenize canonical matching without treating CJK characters as words.
+
+    Ordinary prefetch deliberately uses CJK character overlap to retain broad
+    recall compatibility. Canonical rows are high-trust and merged ahead of
+    ordinary results, so that broad evidence is unsafe here: unrelated prose
+    often shares two characters. Overlapping bigrams retain spaceless CJK
+    terms while making accidental overlap materially less likely.
+    """
+    c = _strip_prefetch_prefix(content).lower()
+    tokens: Set[str] = set()
+    cjk_run: List[str] = []
+
+    def flush_cjk_run() -> None:
+        if not cjk_run:
+            return
+        run = "".join(cjk_run)
+        if len(run) >= cjk_ngram_size:
+            tokens.update(
+                run[index:index + cjk_ngram_size]
+                for index in range(len(run) - cjk_ngram_size + 1)
+            )
+        cjk_run.clear()
+
+    non_cjk: List[str] = []
+    for char in c:
+        if _is_prefetch_cjk_char(char) or char == "\u3005":
+            cjk_run.append(char)
+            non_cjk.append(" ")
+        else:
+            flush_cjk_run()
+            non_cjk.append(char)
+    flush_cjk_run()
+
+    for token in _PREFETCH_TOKEN_RE.findall("".join(non_cjk)):
+        token = token.strip(".,;!?()[]{}\"'“”’‘")
+        if len(token) <= 2 or token in _PREFETCH_DEDUP_STOPWORDS:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _canonical_cjk_ngram_size(query: str) -> int:
+    """Preserve exact one-character CJK lookups without weakening normal queries."""
+    stripped = _strip_prefetch_prefix(query).strip()
+    cjk_chars = [char for char in stripped if _is_prefetch_cjk_char(char)]
+    non_cjk_tokens = _PREFETCH_TOKEN_RE.findall(
+        "".join(" " if _is_prefetch_cjk_char(char) else char for char in stripped)
+    )
+    return 1 if len(cjk_chars) == 1 and not non_cjk_tokens else 2
+
+
 def _canonical_recall_rows(store: Any, owner_id: str, query: str, *, limit: int = 3) -> List[Dict[str, Any]]:
     """Return canonical facts using the established explicit-recall contract."""
-    query_tokens = _prefetch_tokens(query)
+    cjk_ngram_size = _canonical_cjk_ngram_size(query)
+    query_tokens = _canonical_match_tokens(query, cjk_ngram_size=cjk_ngram_size)
     if not query_tokens:
         return []
     try:
@@ -486,7 +539,7 @@ def _canonical_recall_rows(store: Any, owner_id: str, query: str, *, limit: int 
         body = str(row.get("body") or "").strip()
         if not body:
             continue
-        row_tokens = _prefetch_tokens(body)
+        row_tokens = _canonical_match_tokens(body, cjk_ngram_size=cjk_ngram_size)
         overlap = query_tokens & row_tokens
         distinctive_overlap = overlap - generic_tokens
         if not distinctive_overlap:
@@ -523,7 +576,8 @@ def _canonical_prefetch_rows(store: Any, owner_id: str, query: str, *, limit: in
     lightweight lexical pass over current slots is enough and avoids LLM/reranker
     cost. Importance cannot rescue a row here; it must share query terms.
     """
-    query_tokens = _prefetch_tokens(query)
+    cjk_ngram_size = _canonical_cjk_ngram_size(query)
+    query_tokens = _canonical_match_tokens(query, cjk_ngram_size=cjk_ngram_size)
     if not query_tokens:
         return []
     try:
@@ -541,7 +595,7 @@ def _canonical_prefetch_rows(store: Any, owner_id: str, query: str, *, limit: in
         # labels such as "identity" or "profile" are schema metadata; counting
         # them as topical evidence made generic identity slots inject into
         # unrelated professional-identity questions.
-        row_tokens = _prefetch_tokens(body)
+        row_tokens = _canonical_match_tokens(body, cjk_ngram_size=cjk_ngram_size)
         tokenized_rows.append((row, body, row_tokens))
         for token in row_tokens - generic_tokens:
             token_document_frequency[token] = token_document_frequency.get(token, 0) + 1
@@ -655,6 +709,13 @@ def _prefetch_has_distinctive_lexical_evidence(query: str, content: str) -> bool
         len(overlap) >= _prefetch_min_distinctive_tokens()
         and (len(overlap) / max(len(query_tokens), 1)) >= _prefetch_min_query_coverage()
     )
+
+
+def _sanitize_prefetch_query(query: str) -> str:
+    """Use core's shared sanitizer lazily to preserve diagnostic CLI imports."""
+    from mnemosyne.core.query_sanitize import sanitize_prefetch_query
+
+    return sanitize_prefetch_query(query)
 
 
 def _semantic_dedup_prefetch(rows: List[Dict[str, Any]], threshold: float = 0.72) -> List[Dict[str, Any]]:
@@ -1936,6 +1997,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         if not self._beam or self._agent_context in self._skip_contexts:
             return ""
         try:
+            query = _sanitize_prefetch_query(query)
+            if not query.strip():
+                return ""
             with self._beam_session_scope(session_id) as beam:
                 if beam is None:
                     return ""
@@ -2812,12 +2876,16 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
     def _handle_recall(self, args: Dict[str, Any]) -> str:
         query = args.get("query", "")
+        # Tool queries carry the same gateway speaker stamps as prefetch
+        # (an agent forwarding a stamped message body); sanitize so
+        # recall does not score rows on speaker-name tokens.
+        query = _sanitize_prefetch_query(query)
         top_k = int(args.get("limit", 5))
         temporal_weight = float(args.get("temporal_weight", 0.0))
         query_time = args.get("query_time") or None
         temporal_halflife_hours = float(args.get("temporal_halflife", 24))
         explain = bool(args.get("explain", False))
-        if not query:
+        if not query.strip():
             return json.dumps({"error": "query is required"})
 
         # Forward configurable scoring weights ONLY when the caller actually
