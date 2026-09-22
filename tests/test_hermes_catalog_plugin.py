@@ -37,10 +37,11 @@ def test_catalog_dir_has_every_loadable_piece():
 
 
 def test_manifest_is_an_exclusive_memory_provider_named_like_the_wrapper():
+    """Keep catalog identity, exclusivity, and wrapper version aligned."""
     m = _manifest()
     assert m["name"] == "mnemosyne", "catalog install dir must match the wrapper's plugin name"
     assert m["kind"] == "exclusive", "memory providers must not be imported by the general loader"
-    assert m["version"] == "0.7.2"
+    assert m["version"] == "0.7.3"
     assert m["provides_hooks"] == [] and m["provides_middleware"] == [] and m["requires_env"] == []
 
 
@@ -96,10 +97,11 @@ def _toml_loads(text: str) -> dict:
 
 
 def test_wrapper_pyproject_declares_the_package_and_is_not_a_distribution():
+    """Require the catalog wrapper to declare packages without becoming one."""
     data = _toml_loads((CATALOG / "pyproject.toml").read_text())
     deps = data["project"]["dependencies"]
-    assert any(d.startswith("mnemosyne-hermes>=0.7.2") for d in deps), deps
-    assert any(d.startswith("mnemosyne-memory[embeddings]") for d in deps), deps
+    assert "mnemosyne-hermes>=0.7.3,<0.8" in deps, deps
+    assert "mnemosyne-memory[embeddings]>=4.0.0b3" in deps, deps
     assert "build-system" not in data, "the catalog wrapper must never build as a package"
     assert data["project"]["version"] == _manifest()["version"]
 
