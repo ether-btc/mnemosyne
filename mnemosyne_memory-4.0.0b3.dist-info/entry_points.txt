@@ -1,0 +1,6 @@
+[console_scripts]
+mnemosyne = mnemosyne.cli:run_cli
+mnemosyne-auto-save = mnemosyne.integrations.auto_save_openwebui:main
+mnemosyne-browser = mnemosyne.integrations.memory_browser:main
+mnemosyne-install = mnemosyne.install:main
+mnemosyne-uninstall = mnemosyne.install:uninstall

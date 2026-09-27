@@ -1,0 +1,5 @@
+deploy
+dist
+hermes_memory_provider
+mnemosyne
+skills

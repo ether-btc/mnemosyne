@@ -184,7 +184,9 @@ INVALIDATE_SCHEMA = {
     "name": "mnemosyne_invalidate",
     "description": (
         "Mark a memory as expired or superseded. Provide memory_id from recall results. "
-        "Optionally provide replacement_id to chain old to new."
+        "Optionally provide a replacement_id that must resolve to a working-memory or episodic-memory "
+        "record that is accessible in the current session or global scope to chain old to new. "
+        "An unknown or out-of-scope target or replacement returns status: memory_not_found."
     ),
     "parameters": {
         "type": "object",
@@ -231,11 +233,22 @@ VALIDATE_SCHEMA = {
                 "description": "Optional reason or evidence for this validation.",
                 "default": "",
             },
-            "bank": {
+            "store": {
                 "type": "string",
                 "enum": ["private", "surface"],
-                "description": "Which bank holds the memory. Default 'private'.",
+                "description": "Which store holds the memory: 'private' (the caller's own memory, tenant bank selectable via 'bank') or 'surface' (the shared cross-agent surface, one global store). Default 'private'.",
                 "default": "private",
+            },
+            "bank": {
+                "type": "string",
+                "description": (
+                    "Memory bank to operate on when store is 'private'. Banks are "
+                    "separate stores: memories written to one are not visible to "
+                    "another, which is how a single MCP server serves more than one "
+                    "tenant. Defaults to the server's MNEMOSYNE_MCP_BANK, or 'default'. "
+                    "Deprecated: the values 'private' and 'surface' are still accepted "
+                    "here as an alias for 'store' and will stop being accepted in 5.0."
+                ),
             },
         },
         "required": ["memory_id", "action"],
@@ -263,6 +276,8 @@ TRIPLE_ADD_SCHEMA = {
     "description": (
         "Add a temporal fact triple (subject, predicate, object) to the knowledge graph. "
         "Example: ('user', 'prefers', 'neovim'). Use for structured relationships. "
+        "For predicate='occurred_on', when valid_from is provided, valid_from is stored "
+        "as the annotation value and the supplied object is intentionally discarded. "
         "By default a new triple supersedes any prior fact with the same subject+predicate; "
         "set supersede=false for multi-valued facts that should coexist "
         "(e.g. ('user','speaks','English') and ('user','speaks','Spanish'))."
@@ -367,8 +382,9 @@ RECALL_CANONICAL_SCHEMA = {
 FORGET_CANONICAL_SCHEMA = {
     "name": "mnemosyne_forget_canonical",
     "description": (
-        "Retire a CANONICAL self-fact slot for the current profile. "
-        "Stamps valid_until on the current row, preserving it as history. "
+        "Retire a CANONICAL self-fact slot for the resolved owner in the selected "
+        "local bank. This operation is private to that owner. Stamps valid_until "
+        "on the current row, preserving it as local SQLite history. "
         "Returns whether a current row was retired. Nothing is deleted. "
         "Use this to remove a canonical fact (e.g. a stale preference or identity)."
     ),
@@ -859,7 +875,7 @@ ALL_TOOL_SCHEMAS: List[Dict[str, Any]] = [
     SLEEP_SCHEMA, STATS_SCHEMA,
     INVALIDATE_SCHEMA, VALIDATE_SCHEMA, GET_SCHEMA,
     TRIPLE_ADD_SCHEMA, TRIPLE_QUERY_SCHEMA, TRIPLE_END_SCHEMA,
-    REMEMBER_CANONICAL_SCHEMA, RECALL_CANONICAL_SCHEMA,
+    REMEMBER_CANONICAL_SCHEMA, RECALL_CANONICAL_SCHEMA, FORGET_CANONICAL_SCHEMA,
     SCRATCHPAD_WRITE_SCHEMA, SCRATCHPAD_READ_SCHEMA, SCRATCHPAD_CLEAR_SCHEMA,
     EXPORT_SCHEMA, UPDATE_SCHEMA, FORGET_SCHEMA, BATCH_SCHEMA, IMPORT_SCHEMA, DIAGNOSE_SCHEMA,
     GRAPH_QUERY_SCHEMA, GRAPH_LINK_SCHEMA,
@@ -867,3 +883,85 @@ ALL_TOOL_SCHEMAS: List[Dict[str, Any]] = [
     PERSONA_PROMOTE_SCHEMA, PERSONA_DEMOTE_SCHEMA, PERSONA_LIST_SCHEMA, PERSONA_REINFORCE_SCHEMA,
     HYGIENE_AUDIT_SCHEMA, HYGIENE_CLEAN_SCHEMA,
 ]
+
+
+# ---------------------------------------------------------------------------
+# Tenant bank declaration
+# ---------------------------------------------------------------------------
+#
+# ``_resolve_bank()`` in ``mcp_tools`` has always read ``arguments["bank"]``
+# before falling back to ``MNEMOSYNE_MCP_BANK``, so nearly every tool already
+# honours a per-call bank at runtime. Almost none of them said so in their
+# schema, which left the capability undiscoverable: a conforming MCP client
+# has no way to learn about a parameter that is not declared, and a client
+# that validates arguments against the advertised schema may strip it.
+#
+# Declaring it here rather than editing each schema literal keeps the property
+# wording identical across tools and means a tool added later cannot silently
+# forget it. Membership is decided by an explicit exemption set, so adding a
+# tool that must not take a tenant bank is a deliberate edit rather than an
+# omission.
+
+BANK_PROPERTY: Dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "Memory bank to operate on. Banks are separate stores: memories written "
+        "to one are not visible to another, which is how a single MCP server "
+        "serves more than one tenant. Defaults to the server's "
+        "MNEMOSYNE_MCP_BANK, or 'default'."
+    ),
+}
+
+# Tools that must not receive a tenant bank.
+#
+# ``mnemosyne_validate`` declares its own ``bank``: it is the tenant bank, as
+# everywhere else, but its description also documents the deprecated alias
+# where ``bank`` carried ``private``/``surface`` (now ``store``). Because the
+# schema already spells ``bank`` out, ``_declare_bank`` leaves it alone.
+#
+# The ``mnemosyne_shared_*`` tools operate on the shared surface database,
+# which is a single global store by design. A tenant bank has no meaning
+# there, and accepting one would imply an isolation guarantee that does not
+# exist.
+#
+# The persona, sync and ``mnemosyne_triple_end`` schemas are defined here for
+# the Hermes provider, which pins its own copies to these definitions. The MCP
+# dispatcher in ``mcp_tools`` does not serve them, so no per-call bank is ever
+# read for them; the provider resolves its bank per Hermes profile instead.
+# Declaring ``bank`` on them would advertise a parameter nothing honours.
+BANK_EXEMPT_TOOLS: frozenset = frozenset({
+    "mnemosyne_shared_remember",
+    "mnemosyne_shared_recall",
+    "mnemosyne_shared_forget",
+    "mnemosyne_shared_stats",
+    "mnemosyne_triple_end",
+    "mnemosyne_sync_push",
+    "mnemosyne_sync_pull",
+    "mnemosyne_sync_status",
+    "mnemosyne_persona_promote",
+    "mnemosyne_persona_demote",
+    "mnemosyne_persona_list",
+    "mnemosyne_persona_reinforce",
+})
+
+
+def _declare_bank(schemas: List[Dict[str, Any]]) -> None:
+    """Add ``bank`` to every non-exempt schema that does not already declare it.
+
+    Mutates in place, at import, so ``ALL_TOOL_SCHEMAS`` and everything built
+    from it observe the same objects. Schemas that already spell out their own
+    ``bank`` are left untouched.
+    """
+    for schema in schemas:
+        if schema.get("name") in BANK_EXEMPT_TOOLS:
+            continue
+        container = schema.get("parameters") or schema.get("inputSchema")
+        if not isinstance(container, dict):
+            continue
+        properties = container.setdefault("properties", {})
+        if not isinstance(properties, dict) or "bank" in properties:
+            continue
+        properties["bank"] = dict(BANK_PROPERTY)
+
+
+_declare_bank(ALL_TOOL_SCHEMAS)
