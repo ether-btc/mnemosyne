@@ -6,7 +6,17 @@ That is precisely the class of defect that produces a plugin which loads cleanly
 and then fails on first use, so the symbols now have explicit tests.
 
 These tests are structural: they assert the API is present and that the provider
-and core agree. They deliberately do not touch the live database.
+and core agree.
+
+On the live database: these tests never open or write the real database
+(verified by instrumenting `builtins.open` and `os.open` for the live path —
+0 opens of `mnemosyne.db` across the run, and the file's sha256 is unchanged).
+Importing `mnemosyne.core.filters` does perform one `open()` of the zero-byte
+`mnemosyne.db.init.lock` sibling, which is a pre-existing module-level side
+effect of the import chain, not something these tests do with the data. The
+distinction is worth stating precisely: no data is read or modified, but "does
+not touch the live database" was too strong a phrasing for an import that
+reaches into the data directory.
 """
 
 from __future__ import annotations
