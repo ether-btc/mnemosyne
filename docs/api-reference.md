@@ -30,11 +30,11 @@ These functions create a default `Mnemosyne` instance and delegate to it. The op
 
 | Function | Signature | Description |
 |---|---|---|
-| `remember()` | `(content, source="conversation", importance=0.5, **kwargs) -> str` | Store a memory, returns memory ID |
+| `remember()` | `(content, source="conversation", importance=0.5, **kwargs) -> Optional[str]` | Store a memory; returns its ID, or `None` when write policy rejects it |
 | `recall()` | `(query, top_k=5, **kwargs) -> list` | Search memories |
 | `get_stats()` | `() -> dict` | Memory statistics |
 | `forget()` | `(memory_id) -> bool` | Delete a memory |
-| `update()` | `(memory_id, **kwargs) -> bool` | Update a memory |
+| `update()` | `(memory_id, **kwargs) -> Optional[bool]` | Update a memory; returns `None` when write policy rejects it |
 | `get_context()` | `(limit=10, bank=None) -> list[dict]` | Get recent working-memory context |
 
 ---
@@ -555,7 +555,8 @@ from mnemosyne.core.canonical import CanonicalStore
 
 store = CanonicalStore(db_path)
 
-# Upsert the canonical value for a slot (returns the current row + status).
+# Upsert the canonical value for a slot (returns the current row + status,
+# or None without mutation when write policy rejects the body).
 store.remember("jessi", "identity", "name", "My name is Jessi.")   # status="created"
 store.remember("jessi", "identity", "name", "My name is Jessi.")   # status="unchanged" (no-op)
 store.remember("jessi", "identity", "name", "I go by Jess now.")    # status="updated"
@@ -572,9 +573,10 @@ When used through `BeamMemory` the store is available as `beam.canonical`,
 sharing the beam's connection. Two profiles each get an isolated namespace via
 `owner_id`; the shared surface remains the place for *cross-profile* sharing.
 
-Exposed as the `mnemosyne_remember_canonical` and `mnemosyne_recall_canonical`
-tools (see below). The provider derives `owner_id` from the active profile, so a
-profile cannot reach another profile's canonical bank.
+Exposed as the `mnemosyne_remember_canonical`, `mnemosyne_recall_canonical`, and
+`mnemosyne_forget_canonical` tools (see below). The provider derives `owner_id`
+from the active profile, so a profile cannot reach another profile's canonical
+bank.
 
 ---
 
@@ -595,14 +597,13 @@ mnemosyne mcp --bank project_a
 
 ### MCP Tools
 
-Mnemosyne advertises 36 tools via `ALL_TOOL_SCHEMAS` in `mnemosyne/tool_schemas.py`.
-**28 of them are callable over MCP**, dispatched by `_TOOL_HANDLERS` in `mnemosyne/mcp_tools.py`. The
+Mnemosyne advertises 37 tools via `ALL_TOOL_SCHEMAS` in `mnemosyne/tool_schemas.py`.
+**29 of them are callable over MCP**, dispatched by `_TOOL_HANDLERS` in `mnemosyne/mcp_tools.py`. The
 remaining 8 are implemented only in the Hermes provider and raise `Unknown tool` if
 called over MCP.
 
-Note that `mnemosyne_forget_canonical` is defined in `tool_schemas.py` but is **not
-in `ALL_TOOL_SCHEMAS`**, so it is not advertised over MCP at all. It is reachable
-only through the Hermes provider.
+`mnemosyne_forget_canonical` is callable over MCP and retires the resolved owner's
+slot in the selected local bank while preserving its local SQLite history.
 
 The complete, per-parameter list is generated from the code on every build. Do not
 maintain a copy here:

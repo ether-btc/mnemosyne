@@ -307,6 +307,18 @@ CONFIG_DESCRIPTIONS = {
     "host_llm_model": "Model override passed to the host backend.",
     "host_llm_n_ctx": "Context budget assumed for the host backend.",
 
+    # Modality providers (RFC 0002)
+    "modality_enabled": "Allow outbound calls to describe non-text media. Off by default; nothing is sent until this is set.",
+    "modality_base_url": "Base URL of an OpenAI-compatible vision endpoint. Any provider that speaks the protocol works.",
+    "modality_api_key": "API key for the modality endpoint.",
+    "modality_vision_model": "Model used to describe images and documents.",
+    "modality_video_model": "Model used to describe video.",
+    "modality_audio_model": "Model used to transcribe or describe audio.",
+    "modality_timeout": "Timeout in seconds for a modality describe call.",
+    "modality_max_moments": "Maximum moments retained per media asset.",
+    "media_allowed_paths": "Directories the mnemosyne_remember_media tool may read local files from (os.pathsep or comma separated). Empty: tool calls cannot name local files.",
+    "media_allow_private_urls": "Let the mnemosyne_remember_media tool fetch URLs that resolve to loopback, private or link-local addresses.",
+
     # Conflict detection
     "llm_conflict_detection": "Enable LLM-based contradiction detection during sleep.",
     "conflict_llm_base_url": "Base URL for the conflict detection endpoint.",
@@ -476,8 +488,8 @@ ENV_ONLY_DESCRIPTIONS = {
     "MNEMOSYNE_CHANNEL_ID": "Channel or session identifier for memory scoping.",
     "MNEMOSYNE_CONTEXT_INCLUDE_CONSOLIDATED": "Include already-consolidated rows in assembled context.",
     "MNEMOSYNE_CROSS_TIER_DEDUP": "A/B toggle for deduplication across working and episodic results.",
-    "MNEMOSYNE_EMBEDDING_DOC_PREFIX": "Prefix prepended to documents before embedding. Applied verbatim.",
-    "MNEMOSYNE_EMBEDDING_QUERY_PREFIX": "Prefix prepended to queries before embedding. Applied verbatim.",
+    "MNEMOSYNE_EMBEDDING_DOC_PREFIX": "Prefix prepended verbatim to every document before embedding. Unset or empty by default, preserving the original text. When `MNEMOSYNE_EMBEDDING_API_URL` is configured with a remote endpoint, prefixed text may be sent to that embedding API; privacy-sensitive deployments should remain local-first by using local embeddings or a locally hosted endpoint.",
+    "MNEMOSYNE_EMBEDDING_QUERY_PREFIX": "Prefix prepended verbatim to every retrieval query before embedding. Unset or empty by default, preserving the original text. When `MNEMOSYNE_EMBEDDING_API_URL` is configured with a remote endpoint, prefixed text may be sent to that embedding API; privacy-sensitive deployments should remain local-first by using local embeddings or a locally hosted endpoint.",
     "MNEMOSYNE_EMBEDDING_THREADS": "Thread count for local ONNX embedding inference.",
     "MNEMOSYNE_EXTRACTION_MODEL": "Model used by the cloud extraction client.",
     "MNEMOSYNE_EXTRACTION_PROMPT": "Override the fact extraction prompt.",
@@ -486,12 +498,18 @@ ENV_ONLY_DESCRIPTIONS = {
     "MNEMOSYNE_HOST_LLM_TIMEOUT": "Timeout in seconds for host LLM backend calls.",
     "MNEMOSYNE_IMPORTED_WEIGHT": "Veracity multiplier for imported memories.",
     "MNEMOSYNE_INFERRED_WEIGHT": "Veracity multiplier for inferred memories.",
+    "MNEMOSYNE_LEXICAL_GATE_MIN": "Override the lexical admission gate (float 0.0–1.0, clamped; non-finite/invalid values fall back to the historical query-length thresholds 0.15/0.5/0.3). `0.0` admits purely-vector candidates (recall-first, at a precision cost). Read on every recall call; retrieval stays local (sqlite-vec + JSON/NumPy embeddings, or lexical-only FTS5 when embeddings are unavailable).",
+    "MNEMOSYNE_MCP_ALLOWED_HOSTS": "Comma-separated Host header values allowed for a non-loopback MCP Streamable HTTP bind (exact names or `name:*` patterns covering any port). A non-loopback Streamable HTTP bind additionally requires this variable; HTTP authentication can be supplied by `MNEMOSYNE_MCP_TOKENS` (which takes precedence) or `MNEMOSYNE_MCP_TOKEN`. Requests presenting any other Host are rejected with HTTP 421.",
+    "MNEMOSYNE_MCP_ALLOWED_ORIGINS": "Optional comma-separated browser Origins allowed for a non-loopback MCP Streamable HTTP bind. Requests with no Origin header (CLI/SDK clients) always pass; any Origin not listed is rejected with HTTP 403. Origins only narrow the exposure boundary; the token and Host policy above are always required.",
     "MNEMOSYNE_MCP_BANK": "Memory bank used by the MCP server.",
-    "MNEMOSYNE_MCP_TOKEN": "Bearer token for MCP SSE auth. Required for any non-loopback bind.",
+    "MNEMOSYNE_MCP_TOKEN": "Single bearer token for MCP HTTP (SSE and Streamable HTTP) authentication. Either `MNEMOSYNE_MCP_TOKENS` or this variable supplies HTTP authentication, with `MNEMOSYNE_MCP_TOKENS` taking precedence. Authentication is required for any non-loopback bind, which exposes the selected local SQLite-backed memory bank to network clients.",
+    "MNEMOSYNE_MCP_TOKENS": "JSON object mapping unique, non-empty string token names to unique, non-empty string secrets for MCP HTTP (SSE and Streamable HTTP) bearer authentication. When set, it takes precedence over `MNEMOSYNE_MCP_TOKEN` and requires authentication on every host, including loopback; when unset, loopback is tokenless and non-loopback requires `MNEMOSYNE_MCP_TOKEN`. In multi-agent mode, the matched token name is the authoritative `author_id`: conflicting client-supplied values are rejected, while matching or omitted values are accepted. The legacy `MNEMOSYNE_MCP_TOKEN` remains backward compatible and does not bind an author identity. The mapping is validated at startup, which fails for blank, malformed, non-object, empty, non-string, duplicate-name, normalized-name collision, empty-name/secret, or duplicate-secret values.",
+    "MNEMOSYNE_MODEL_CACHE_DIR": "Directory holding the local GGUF consolidation model. Unset or blank keeps `~/.hermes/mnemosyne/models`. Read at import; an explicitly set path is authoritative, so an unusable one fails rather than falling back to the default.",
     "MNEMOSYNE_PERSONA_FILE": "Path to an external persona facts file.",
     "MNEMOSYNE_PREFETCH_MODEL_SLOT_LIMIT": "Maximum canonical slots prefetched per turn.",
     "MNEMOSYNE_PREFETCH_MODEL_SLOT_MIN_OVERLAP": "Minimum token overlap for a canonical slot to count as relevant.",
     "MNEMOSYNE_PREFETCH_PROFILE": "Prefetch profile name, for example `general` or `coding`.",
+    "MNEMOSYNE_RECALL_PROVENANCE": "Set to `1` to make linear `recall()` append one JSONL audit line per call to `<db>.recall_provenance.jsonl` (plaintext: up to 200 chars of raw query text, plus the first 20 results with id/tier/score/importance/timestamp). Default OFF, read per call. The file is created `0600`, rotates at 1 MB (the current file plus one `.1` are retained), and reads are bounded to a 256 KB tail of the current generation. `explain=True` calls are intentionally excluded: their trace object is the audit surface for that call. Provenance is suppressed only when `recall_enhanced()` takes its enhanced branch (`MNEMOSYNE_ENHANCED_RECALL=1`); with the flag unset it is a plain passthrough into `recall()` and its calls ARE logged. Polyphonic paths are never logged. Fail-open: a provenance failure never breaks recall. When enabled, each call pays one small locked append (no fsync); local filesystems only.",
     "MNEMOSYNE_SESSION_END_TIMEOUT": "Seconds allowed for end-of-session memory writes.",
     "MNEMOSYNE_SHUTDOWN_DRAIN_TIMEOUT": "Seconds allowed to drain pending writes on shutdown.",
     "MNEMOSYNE_STATED_WEIGHT": "Veracity multiplier for directly stated memories.",
@@ -544,7 +562,7 @@ def _render_tool_schema(tools, version: str) -> str:
         "> Regenerate with `python3 scripts/generate-docs.py`.",
         "",
         f"Mnemosyne declares **{len(tools)} tools**. Of those, **{len(mcp)} are callable over MCP** "
-        f"(stdio and SSE), and **{len(plugin_only)} are implemented only in the Hermes provider** "
+        f"(stdio, SSE and Streamable HTTP), and **{len(plugin_only)} are implemented only in the Hermes provider** "
         "and are not reachable through the MCP server.",
         "",
         "The split is real and worth respecting: calling a plugin-only tool over MCP raises "
