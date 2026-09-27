@@ -1,5 +1,5 @@
 name: mnemosyne
-version: 4.0.0b3
+version: 3.15.2
 description: "Native local memory for Hermes — SQLite with vector search, FTS5 hybrid ranking, episodic consolidation, temporal triples, and bidirectional sync with optional client-side encryption. Zero cloud. Zero latency."
 author: Abdias J
 provides_tools:
@@ -8,6 +8,10 @@ provides_tools:
   - mnemosyne_stats
   - mnemosyne_triple_add
   - mnemosyne_triple_query
+  - mnemosyne_shared_forget
+  - mnemosyne_shared_recall
+  - mnemosyne_shared_remember
+  - mnemosyne_shared_stats
   - mnemosyne_sleep
   - mnemosyne_scratchpad_write
   - mnemosyne_scratchpad_read
@@ -34,10 +38,6 @@ provides_tools:
   - mnemosyne_persona_list
   - mnemosyne_persona_reinforce
   - mnemosyne_triple_end
-  - mnemosyne_shared_remember
-  - mnemosyne_shared_recall
-  - mnemosyne_shared_forget
-  - mnemosyne_shared_stats
 provides_hooks:
   - pre_llm_call
   - on_session_start
