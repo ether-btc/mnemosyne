@@ -56,7 +56,7 @@ authoritative slot here.
 
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -72,9 +72,16 @@ def _default_db_path() -> Path:
 
 
 def _now() -> str:
-    """ISO timestamp used for valid_from / valid_until. Second precision is
-    enough for an identity store and keeps history rows human-readable."""
-    return datetime.now().isoformat(timespec="seconds")
+    """UTC timestamp used for valid_from / valid_until (#1062).
+
+    Rendered as naive-UTC ``YYYY-MM-DD HH:MM:SS``, the exact shape SQLite's
+    ``CURRENT_TIMESTAMP`` writes to ``created_at``, so every timestamp column
+    on a row shares one clock and one format regardless of the host timezone
+    (the same discipline #525 established for ``working_memory``). Second
+    precision is enough for an identity store and keeps history rows
+    human-readable.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _get_conn(db_path: Optional[Path] = None) -> sqlite3.Connection:
