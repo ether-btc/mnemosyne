@@ -4803,4 +4803,3 @@ def register(ctx):
     # and logged "hermes_plugin registration failed (hooks may be missing) ...
     # This is NOT graceful degradation", on every provider load. The message is
     # wrong on both counts: nothing is missing, and the load is fine.
-
