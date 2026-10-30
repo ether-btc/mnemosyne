@@ -3981,6 +3981,12 @@ def reindex_vectors(conn: sqlite3.Connection, *, batch_size: int = 64,
     ``dry_run`` returns the plan (model, dim, per-store counts) without writing.
     ``progress`` is an optional ``callable(store, done, total)`` for reporting.
     """
+    # Standalone callers may pass a bare sqlite3.connect() connection whose
+    # default row_factory yields plain tuples; the row reads below index by
+    # column name, so adopt sqlite3.Row indexing unless the caller set a
+    # custom factory (which we must not silently override).
+    if getattr(conn, "row_factory", None) is None:
+        conn.row_factory = sqlite3.Row
     target_dim = int(_embeddings.EMBEDDING_DIM)
     vec_type = _effective_vec_type(conn)
     vec_ok = _vec_available(conn)
