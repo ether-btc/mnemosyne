@@ -86,11 +86,31 @@ def test_create_backup_succeeds_with_sqlite_vec_tables(tmp_path):
     result = recovery.create_backup(db_path=db_path, backup_dir=backup_dir)
 
     # Assert: backup file exists, is non-empty, gzipped, and the gz
-    # contents contain the vec0 table definition.
+    # contents are a SQLite database image (format sqlite-binary-v1).
+    #
+    # The backup used to be a gzipped SQL text dump produced by iterdump().
+    # That format could not be restored: iterdump() also emits the FTS5
+    # shadow tables, and replaying those rows against the shadow tables
+    # SQLite recreates itself fails ("table ... already exists" / UNIQUE),
+    # which aborted every restore. The backup is now the raw SQLite image.
     assert Path(result["backup_path"]).exists()
     assert result["backup_size"] > 0
+    assert result["format"] == "sqlite-binary-v1"
     import gzip
-    with gzip.open(result["backup_path"], "rt") as f:
-        dump = f.read()
-    assert "vec_items" in dump
-    assert "CREATE VIRTUAL TABLE" in dump
+    with gzip.open(result["backup_path"], "rb") as f:
+        payload = f.read()
+    assert payload[:16] == b"SQLite format 3\x00"
+
+    # The restored copy must carry the vec0 table and the source rows.
+    restored = tmp_path / "restored.db"
+    recovery.restore_backup(Path(result["backup_path"]), db_path=restored)
+    rconn = sqlite3.connect(str(restored))
+    rconn.enable_load_extension(True)
+    import sqlite_vec
+    sqlite_vec.load(rconn)
+    tables = {r[0] for r in rconn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "vec_items" in tables
+    assert rconn.execute("SELECT count(*) FROM meta").fetchone()[0] == 2
+    assert rconn.execute("SELECT count(*) FROM vec_items").fetchone()[0] == 0
+    rconn.close()

@@ -5,7 +5,6 @@ Comprehensive backup, restore, and integrity verification for Mnemosyne.
 """
 
 import gzip
-import io
 import os
 import json
 import hashlib
@@ -14,6 +13,20 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
+
+
+def _load_sqlite_vec(conn):
+    """Load the sqlite-vec extension on a connection, if it is installed.
+
+    Without it sqlite3 refuses to touch vec0 virtual tables ("no such
+    module: vec0") -- during backup serialization and during restore.
+    """
+    try:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+    except (ImportError, sqlite3.OperationalError):
+        pass  # optional extra; absence just means no vec0 tables
 
 
 def get_default_paths():
@@ -70,33 +83,35 @@ def create_backup(db_path: Path = None, backup_dir: Path = None) -> Dict:
     # approach only copied the .db file, missed .db-wal frames, and
     # could produce corrupted backups under concurrent write load.
     src = sqlite3.connect(str(db_path))
-    # Load sqlite-vec on BOTH connections involved in the backup.
-    # Without this, src.backup(dst) fails with "no such module: vec0"
-    # when copying vec0 virtual tables, AND dst.iterdump() (used to
-    # serialize the in-memory backup to gzipped SQL) fails the same
-    # way when introspecting the destination's vec0 schema.
+    # Load sqlite-vec on BOTH connections: without it src.backup(dst) and the
+    # serialization step both fail with "no such module: vec0".
     # Mirrors the graceful-fallback pattern in core/beam.py.
-    def _load_sqlite_vec(conn):
-        try:
-            import sqlite_vec
-            conn.enable_load_extension(True)
-            sqlite_vec.load(conn)
-        except (ImportError, sqlite3.OperationalError):
-            pass  # optional extra; absence just means no vec0 tables
     _load_sqlite_vec(src)
     dst = sqlite3.connect(":memory:")
     _load_sqlite_vec(dst)
     src.backup(dst)
     src.close()
 
-    # Serialize the in-memory backup → gzip → disk
-    buf = io.BytesIO()
-    for line in dst.iterdump():
-        buf.write((line + "\n").encode("utf-8"))
+    # Serialize the in-memory backup → gzip → disk.
+    # Binary SQLite payload (exact page copy, keeps vec0 virtual tables and
+    # FTS index state intact). The previous SQL-text dump could not be
+    # replayed reliably: iterdump() also emits the FTS5 shadow tables, and
+    # replaying those rows against the shadow tables SQLite recreates itself
+    # fails ("already exists" / UNIQUE) and aborts the restore.
+    try:
+        payload = dst.serialize()
+    except AttributeError:  # pragma: no cover - Python < 3.11
+        tmp_db = backup_path.with_suffix(".tmp.db")
+        file_dst = sqlite3.connect(str(tmp_db))
+        _load_sqlite_vec(file_dst)
+        dst.backup(file_dst)
+        file_dst.close()
+        payload = tmp_db.read_bytes()
+        tmp_db.unlink()
     dst.close()
 
     with gzip.open(backup_path, "wb") as f_out:
-        f_out.write(buf.getvalue())
+        f_out.write(payload)
     
     # Calculate checksums
     db_checksum = hashlib.sha256(db_path.read_bytes()).hexdigest()[:16]
@@ -109,7 +124,8 @@ def create_backup(db_path: Path = None, backup_dir: Path = None) -> Dict:
         "backup_size": backup_path.stat().st_size,
         "db_checksum": db_checksum,
         "backup_checksum": backup_checksum,
-        "compressed": True
+        "compressed": True,
+        "format": "sqlite-binary-v1"
     }
     
     # Save metadata
@@ -150,50 +166,79 @@ def restore_backup(backup_path: Path, db_path: Path = None) -> Dict:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     with gzip.open(backup_path, "rb") as f_in:
-        sql_dump = f_in.read().decode("utf-8")
+        payload = f_in.read()
 
-    # Execute statement-by-statement with sqlite3.complete_statement so we can
-    # tolerate any duplicate CREATE/INSERT that the FTS shadow tables produce
-    # on replay (CREATE VIRTUAL TABLE creates them; the dump also emits
-    # CREATE TABLE/INSERT lines for them explicitly). Whole-dump atomic
-    # executescript aborts at the very first such duplicate, which makes
-    # restores non-viable for large dumps in practice.
-    # Rebuild DB in-memory. The dump emits each statement on its own line,
-    # so we replay statement-by-statement (sqlite3.complete_statement) and
-    # TOLERATE duplicate shadow-table rows created by FTS5 expansion
-    # (CREATE VIRTUAL TABLE creates them; the dump also emits CREATE TABLE
-    # and INSERT lines for them, which would otherwise fail the encrypted
-    # whole-dump execablescript). All fts_ statements are skippable.
-    mem_db = sqlite3.connect(":memory:")
-    stmt = ""
-    skip = 0
-    for raw in sql_dump.splitlines():
-        stmt += raw + "\n"
-        if sqlite3.complete_statement(stmt):
-            if "fts_" in stmt:
+    def _is_shadow_stmt(stmt: str) -> bool:
+        """True for the shadow-table DDL/DML that SQLite recreates itself.
+
+        FTS5 and sqlite-vec virtual tables own shadow tables
+        (<name>_config/_data/_docsize/_idx/_content, <name>_chunks/
+        _rowids/_info/_vector_chunks). iterdump() emits those explicitly, and
+        replaying them against the shadows the virtual table already created
+        fails ("already exists" / UNIQUE) and aborts the restore.
+        """
+        low = stmt.lower()
+        if "create virtual table" in low:
+            return False
+        bases = ("fts_episodes", "fts_facts", "fts_working",
+                 "vec_episodes", "vec_facts", "vec_working")
+        suffixes = ("_config", "_data", "_docsize", "_idx", "_content",
+                    "_chunks", "_rowids", "_info", "vector_chunks")
+        for base in bases:
+            if base in low and any(sfx in low for sfx in suffixes):
+                return True
+        return False
+
+    if payload[:16] == b"SQLite format 3\x00":
+        # Binary backup (format sqlite-binary-v1): exact page copy.
+        tmp_db = db_path.with_suffix(".restore.tmp.db")
+        tmp_db.write_bytes(payload)
+        src_db = sqlite3.connect(str(tmp_db))
+        _load_sqlite_vec(src_db)
+        integrity = src_db.execute("PRAGMA quick_check;").fetchone()[0] == "ok"
+        if not integrity:
+            src_db.close()
+            tmp_db.unlink()
+            raise RuntimeError("Backup failed integrity check; restore aborted")
+        target_db = sqlite3.connect(str(db_path))
+        _load_sqlite_vec(target_db)
+        src_db.backup(target_db)
+        src_db.close()
+        target_db.close()
+        tmp_db.unlink()
+    else:
+        # Legacy SQL-text dump (pre sqlite-binary-v1). Replay statement by
+        # statement: FTS5 shadow-table statements are skipped because the
+        # virtual-table DDL recreates those shadows itself (the explicit
+        # shadow rows in a dump collide and abort the whole restore), and the
+        # full-text index must be rebuilt afterwards. Any other failure is
+        # fatal so a partial restore is never reported as success.
+        sql_dump = payload.decode("utf-8")
+        mem_db = sqlite3.connect(":memory:")
+        _load_sqlite_vec(mem_db)
+        stmt = ""
+        skipped_fts = 0
+        for raw in sql_dump.splitlines():
+            stmt += raw + "\n"
+            if not sqlite3.complete_statement(stmt):
+                continue
+            if _is_shadow_stmt(stmt):
+                skipped_fts += 1
                 stmt = ""
                 continue
-            try:
-                mem_db.execute(stmt)
-            except (sqlite3.OperationalError, sqlite3.IntegrityError):
-                skip += 1
-                # localized heuristic: drop iidempotent schema statements
-                pass
-            stmt = ""
-    if stmt.strip():
-        try:
             mem_db.execute(stmt)
-        except (sqlite3.OperationalError, sqlite3.IntegrityError):
-            if "fts_" in stmt:
-                skip += 1  # recover
-            else:
-                raise
-    print("restore replay: skipped", skip, "fts_ statement(s).")
-    target_db = sqlite3.connect(str(db_path))
-    mem_db.backup(target_db)
-    mem_db.close()
-    target_db.close()
-    
+            stmt = ""
+        if stmt.strip():
+            mem_db.execute(stmt)
+        if skipped_fts:
+            print(f"restore: skipped {skipped_fts} FTS shadow statement(s); "
+                  "run a reindex/rebuild if full-text search returns empty.")
+        target_db = sqlite3.connect(str(db_path))
+        _load_sqlite_vec(target_db)
+        mem_db.backup(target_db)
+        mem_db.close()
+        target_db.close()
+
     # Verify restored database
     is_valid = verify_integrity(db_path)
     
