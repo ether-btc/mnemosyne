@@ -72,6 +72,16 @@ def test_plugin_yaml_tools_all_have_schemas():
         for k, v in vars(tool_schemas).items()
         if k.endswith("_SCHEMA") and isinstance(v, dict) and "name" in v
     }
+    # plugin.yaml is the Hermes *provider's* declaration: provider-native
+    # tools (mnemosyne_apply_pending, mnemosyne_model_card/refresh,
+    # mnemosyne_recall_diagnostics, mnemosyne_task_progress) are registered in
+    # hermes_memory_provider, not in mnemosyne's MCP tool_schemas, so a
+    # declared tool is valid when it exists in either registry.
+    from hermes_memory_provider import MnemosyneMemoryProvider
+
+    _provider = MnemosyneMemoryProvider()
+    known |= {s["name"] for s in _provider.get_tool_schemas()}
+
     declared = _plugin_yaml_tools()
     assert declared, "could not parse provides_tools from plugin.yaml"
     unknown = [t for t in declared if t not in known]

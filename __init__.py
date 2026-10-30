@@ -1,6 +1,18 @@
 """
 Mnemosyne Plugin for Hermes Agent
 Entry point at repo root for `hermes plugins install` compatibility.
+
+IMPORTANT: this file is the Hermes plugin shim at the repository root, NOT
+the mnemosyne package. With the repo root on sys.path (e.g. cwd at the repo
+root), `import mnemosyne` binds this stub, which exposes only
+__version__, __author__, register(), and register_memory_provider(). The real
+mnemosyne package lives at mnemosyne/mnemosyne/, so `mnemosyne.core` is
+unavailable here: `import mnemosyne.core` raises ModuleNotFoundError and
+attribute access `mnemosyne.core` raises a loud ImportError (see the
+__getattr__ guard below). That is intentional plugin-layout behavior, not a
+broken install — install mnemosyne (pip install <repo root>) or run with the
+repo's mnemosyne/ package directory on sys.path so mnemosyne.core resolves to
+the real package.
 """
 
 import sys
@@ -95,3 +107,43 @@ def register_memory_provider(ctx):
             raise  # Transitive dependency missing inside the module — let it propagate
         return  # Bridge module genuinely absent — tools/hooks still load via hermes_plugin
     register_memory_provider(ctx)
+
+
+# This file is the Hermes plugin shim at the repository root, NOT the
+# mnemosyne package itself. With the repo root on sys.path (e.g. cwd at the
+# repo root), `import mnemosyne` binds this stub: it exposes only
+# __version__, __author__, register(), and register_memory_provider(). The
+# real mnemosyne package lives at mnemosyne/mnemosyne/, so mnemosyne.core is
+# unavailable here — `import mnemosyne.core` raises ModuleNotFoundError and
+# attribute access `mnemosyne.core` raises the ImportError below. That is
+# intentional plugin-layout behavior, not a broken install: install mnemosyne
+# (pip install <repo root>) or run with the repo's mnemosyne/ package
+# directory on sys.path so mnemosyne.core resolves to the real package.
+# See tests/test_init_register_shadowing.py and
+# tests/test_loader_registers_provider.py for the loader contract this stub
+# satisfies.
+_STUB_MISSING_SUBPACKAGES = frozenset({"core"})
+
+
+def __getattr__(name: str):
+    """Loud failure for real-package subpackages this stub does not provide.
+
+    Attribute access such as ``mnemosyne.core`` on this shim raises
+    ImportError with an actionable message instead of a confusing partial
+    import (a stub that imports fine but lacks .core).
+    """
+    if name in _STUB_MISSING_SUBPACKAGES:
+        repo_root = Path(__file__).resolve().parent
+        raise ImportError(
+            f"mnemosyne.{name} is not available through this module. "
+            f"{__file__} is the Hermes plugin shim at the repository root "
+            f"({repo_root}), not the mnemosyne package itself: `import mnemosyne` "
+            f"from here binds a partial stub "
+            f"(__version__, __author__, register, register_memory_provider "
+            f"only). Install mnemosyne (pip install {repo_root}) or run with "
+            f"the repo's mnemosyne/ package directory on sys.path so "
+            f"mnemosyne.core resolves to the real package. The repo-root "
+            f"shadow is intentional for Hermes plugin discovery, not a broken "
+            f"install."
+        )
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
