@@ -82,7 +82,13 @@ def create_backup(db_path: Path = None, backup_dir: Path = None) -> Dict:
     # file if a checkpoint runs partway through. The old copyfileobj
     # approach only copied the .db file, missed .db-wal frames, and
     # could produce corrupted backups under concurrent write load.
-    src = sqlite3.connect(str(db_path))
+    # OPEN THE SOURCE READ-ONLY. A read-write connection to a WAL database can
+    # become the "last connection" and, on close, checkpoint and unlink the
+    # -wal/-shm files. If another long-lived process (the Hermes agent) still
+    # holds those sidecars open, every later statement in that process fails
+    # with SQLITE_IOERR "disk I/O error" until it restarts. Backups only read,
+    # so mode=ro is both correct and non-disturbing.
+    src = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     # Load sqlite-vec on BOTH connections: without it src.backup(dst) and the
     # serialization step both fail with "no such module: vec0".
     # Mirrors the graceful-fallback pattern in core/beam.py.
@@ -153,9 +159,22 @@ def restore_backup(backup_path: Path, db_path: Path = None) -> Dict:
     """
     _, _, default_db = get_default_paths()
     db_path = db_path or default_db
-    
+
     if not backup_path.exists():
         raise FileNotFoundError(f"Backup not found: {backup_path}")
+
+    # Restoring OVER the live database while the agent holds it open replaces
+    # the pages under a running process (its -wal/-shm map to the old inode),
+    # leaving it with SQLITE_IOERR "disk I/O error" until it restarts.
+    # Fail closed: the live path needs an explicit opt-in from the operator.
+    if Path(db_path).resolve() == Path(default_db).resolve() and not os.environ.get(
+        "MNEMOSYNE_ALLOW_LIVE_RESTORE"
+    ):
+        raise RuntimeError(
+            "Refusing to restore over the live database: stop the Hermes agent "
+            "first, or set MNEMOSYNE_ALLOW_LIVE_RESTORE=1 if you accept that the "
+            "running process must be restarted afterwards."
+        )
     
     # Create emergency backup of current DB
     if db_path.exists():

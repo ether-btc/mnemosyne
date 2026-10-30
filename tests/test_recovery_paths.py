@@ -114,3 +114,51 @@ def test_create_backup_succeeds_with_sqlite_vec_tables(tmp_path):
     assert rconn.execute("SELECT count(*) FROM meta").fetchone()[0] == 2
     assert rconn.execute("SELECT count(*) FROM vec_items").fetchone()[0] == 0
     rconn.close()
+
+
+def test_backup_opens_source_read_only(tmp_path, monkeypatch):
+    """A read-write source connection can become the last WAL holder and, on
+    close, checkpoint and unlink -wal/-shm. Any process still holding those
+    sidecars then fails every statement with SQLITE_IOERR. Backups only read,
+    so the source must be opened with mode=ro.
+    """
+    db = tmp_path / "src.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+
+    seen = []
+    real_connect = sqlite3.connect
+
+    def spy(dsn, *args, **kwargs):
+        seen.append((str(dsn), kwargs.get("uri", False)))
+        return real_connect(dsn, *args, **kwargs)
+
+    monkeypatch.setattr(recovery.sqlite3, "connect", spy)
+    recovery.create_backup(db_path=db, backup_dir=tmp_path / "backups")
+
+    dsn, uri = seen[0]
+    assert "mode=ro" in dsn and uri is True
+
+
+def test_restore_refuses_live_path(tmp_path, monkeypatch):
+    """Restoring over the live DB replaces pages under a running agent whose
+    -wal/-shm map the old inode; it must need an explicit opt-in.
+    """
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("MNEMOSYNE_ALLOW_LIVE_RESTORE", raising=False)
+    live = tmp_path / "data" / "mnemosyne.db"
+    live.parent.mkdir(parents=True)
+    conn = sqlite3.connect(str(live))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+
+    backup = recovery.create_backup(db_path=live, backup_dir=tmp_path / "backups")
+    with pytest.raises(RuntimeError, match="Refusing to restore over the live database"):
+        recovery.restore_backup(Path(backup["backup_path"]))
+
+    monkeypatch.setenv("MNEMOSYNE_ALLOW_LIVE_RESTORE", "1")
+    result = recovery.restore_backup(Path(backup["backup_path"]))
+    assert result["restored"] is True and result["integrity_check"] is True
