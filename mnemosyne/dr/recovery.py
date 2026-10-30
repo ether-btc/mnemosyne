@@ -180,15 +180,13 @@ def restore_backup(backup_path: Path, db_path: Path = None) -> Dict:
     if not backup_path.exists():
         raise FileNotFoundError(f"Backup not found: {backup_path}")
 
-    # Restoring OVER the live database while the agent holds it open replaces
-    # the pages under a running process (its -wal/-shm map to the old inode),
-    # leaving it with SQLITE_IOERR "disk I/O error" until it restarts.
-    # Fail closed: the live path needs an explicit opt-in from the operator.
     # Sidecar refusal first (a live holder leaves -wal/-shm behind), regardless
-    # of how default_db resolved.
-    if Path(str(db_path) + "-wal").exists() and Path(str(db_path) + "-shm").exists():
+    # of how default_db resolved. Either sidecar is enough to refuse: an
+    # orphaned stale -wal can replay old frames into the restored DB on next
+    # open (the original incident's corruption class).
+    if Path(str(db_path) + "-wal").exists() or Path(str(db_path) + "-shm").exists():
         raise RuntimeError(
-            "Refusing to restore over the live database: -wal and -shm sidecars present"
+            "Refusing to restore over the live database: -wal or -shm sidecar present"
         )
     if Path(db_path).resolve() == Path(default_db).resolve() and not _live_restore_allowed():
         raise RuntimeError(
@@ -279,6 +277,20 @@ def restore_backup(backup_path: Path, db_path: Path = None) -> Dict:
             if not integrity:
                 src_db.close()
                 raise RuntimeError("Backup failed integrity check; restore aborted")
+            # C5: a binary image may be structurally intact (quick_check ok)
+            # yet carry zero schema objects (e.g. a backup of a never-
+            # initialised 0-byte database). Restoring it over a populated
+            # target silently wipes every table while reporting success.
+            # Fail closed: refuse, the temp file is removed by finally, the
+            # target is never opened for writing.
+            schema_objects = src_db.execute(
+                "SELECT COUNT(*) FROM sqlite_master"
+            ).fetchone()[0]
+            if schema_objects == 0:
+                src_db.close()
+                raise RuntimeError(
+                    "Refusing to restore binary payload with no schema objects"
+                )
             target_db = sqlite3.connect(str(db_path))
             _load_sqlite_vec(target_db)
             src_db.backup(target_db)

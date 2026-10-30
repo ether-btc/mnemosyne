@@ -259,6 +259,94 @@ def test_c4_sidecars_refuse(tmp_path, monkeypatch):
     assert db.read_bytes() == before
 
 
+def test_c5_binary_zero_schema_refuses(tmp_path, monkeypatch):
+    """A valid sqlite-binary-v1 image with ZERO schema objects must not
+    replace a populated target. Reproduced: create_backup() of a never-
+    initialised (0-byte) database yields a 121-byte gz that wiped a DB
+    holding a ``keep`` table while returning restored=True,
+    integrity_check=True. The guard must refuse and leave the target bytes
+    and its rows untouched.
+    """
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MNEMOSYNE_ALLOW_LIVE_RESTORE", "1")
+    data = tmp_path / "data"
+    data.mkdir(parents=True)
+    target = data / "mnemosyne.db"
+    conn = sqlite3.connect(str(target))
+    conn.execute("CREATE TABLE keep(a)")
+    conn.execute("INSERT INTO keep VALUES (1)")
+    conn.commit()
+    conn.close()
+    before = target.read_bytes()
+
+    empty_db = tmp_path / "empty.db"
+    empty_db.write_bytes(b"")
+    backup = recovery.create_backup(
+        db_path=empty_db, backup_dir=tmp_path / "backups"
+    )
+
+    with pytest.raises(
+        RuntimeError, match="Refusing to restore binary payload with no schema objects"
+    ):
+        recovery.restore_backup(Path(backup["backup_path"]), db_path=target)
+    assert target.read_bytes() == before
+    rconn = sqlite3.connect(str(target))
+    assert rconn.execute("SELECT count(*) FROM keep").fetchone()[0] == 1
+    rconn.close()
+
+
+def test_c6_sidecar_wal_only_refuses(tmp_path, monkeypatch):
+    """A wal-only sidecar (no -shm) must refuse the restore and leave the
+    target untouched; an orphaned stale -wal can replay old frames into the
+    restored DB on next open.
+
+    The stale -wal is added AFTER create_backup(): opening a wal-bearing
+    source during backup materialises a -shm, which would mask the wal-only
+    case and make this test pass even without the fix.
+    """
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MNEMOSYNE_ALLOW_LIVE_RESTORE", "1")
+    data = tmp_path / "data"
+    data.mkdir(parents=True)
+    db = data / "mnemosyne.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+    backup = recovery.create_backup(db_path=db, backup_dir=tmp_path / "backups")
+    # Add only a stale -wal (no -shm) to the target now.
+    (data / "mnemosyne.db-wal").write_bytes(b"stale frames")
+    before = db.read_bytes()
+    with pytest.raises(RuntimeError, match="Refusing to restore over the live database"):
+        recovery.restore_backup(Path(backup["backup_path"]))
+    assert db.read_bytes() == before
+
+
+def test_c6_sidecar_shm_only_refuses(tmp_path, monkeypatch):
+    """A shm-only sidecar (no -wal) must refuse the restore and leave the
+    target untouched.
+
+    The stale -shm is added AFTER create_backup() for the same reason as the
+    wal-only case: keep exactly one sidecar present at restore time.
+    """
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MNEMOSYNE_ALLOW_LIVE_RESTORE", "1")
+    data = tmp_path / "data"
+    data.mkdir(parents=True)
+    db = data / "mnemosyne.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+    backup = recovery.create_backup(db_path=db, backup_dir=tmp_path / "backups")
+    # Add only a stale -shm (no -wal) to the target now.
+    (data / "mnemosyne.db-shm").write_bytes(b"stale frames")
+    before = db.read_bytes()
+    with pytest.raises(RuntimeError, match="Refusing to restore over the live database"):
+        recovery.restore_backup(Path(backup["backup_path"]))
+    assert db.read_bytes() == before
+
+
 def test_f5_verify_integrity_read_only(tmp_path, monkeypatch):
     db = tmp_path / "v.db"
     conn = sqlite3.connect(str(db))
