@@ -1,5 +1,6 @@
 """CLI backup-path normalization regressions for Windows/MSYS (#659)."""
 
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -111,3 +112,22 @@ def test_cmd_backup_fails_before_backend_for_rejected_path(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "bad path" in captured.err
     assert "Backup created:" not in captured.out
+
+
+def test_cmd_verify_quick_opens_read_only(monkeypatch, tmp_path, capsys):
+    db = tmp_path / "v.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+
+    seen = []
+    real = sqlite3.connect
+
+    def spy(dsn, *a, **k):
+        seen.append((str(dsn), k.get("uri", False)))
+        return real(dsn, *a, **k)
+
+    monkeypatch.setattr(cli.sqlite3, "connect", spy)
+    cli.cmd_verify(["--quick", str(db)])
+    assert seen and "mode=ro" in seen[0][0] and seen[0][1] is True

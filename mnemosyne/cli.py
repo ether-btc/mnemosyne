@@ -9,6 +9,7 @@ All commands use the v2 BEAM architecture (Mnemosyne/BeamMemory).
 import os
 import sys
 import json
+import sqlite3
 import importlib.metadata
 from pathlib import Path, PureWindowsPath
 from typing import NoReturn
@@ -1184,13 +1185,17 @@ def cmd_restore(args):
 def cmd_verify(args):
     """Verify database integrity."""
     from mnemosyne.dr.recovery import verify_integrity
-    db_path = Path(args[0]) if args else None
     quick = "--quick" in args
+    # "--quick" is a flag, not the database path: the path is the remaining arg.
+    db_path = None
+    for a in args:
+        if a != "--quick":
+            db_path = Path(a)
+            break
     try:
         if quick:
-            import sqlite3
             db = db_path or Path(DATA_DIR) / "mnemosyne.db"
-            conn = sqlite3.connect(str(db))
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
             cursor = conn.cursor()
             cursor.execute("PRAGMA quick_check")
             result = cursor.fetchone()

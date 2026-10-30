@@ -5,6 +5,7 @@ Comprehensive backup, restore, and integrity verification for Mnemosyne.
 """
 
 import gzip
+import logging
 import os
 import json
 import hashlib
@@ -59,7 +60,10 @@ def get_default_paths():
 def create_backup(db_path: Path = None, backup_dir: Path = None) -> Dict:
     """
     Create a compressed backup of the database.
-    
+
+    Note: db_checksum covers the main database file only (sha256 of
+    read_bytes); -wal/-shm sidecars are not covered.
+
     Returns:
         Dict with backup_path, size, checksum, and timestamp
     """
@@ -146,6 +150,16 @@ def create_backup(db_path: Path = None, backup_dir: Path = None) -> Dict:
     }
 
 
+def _live_restore_allowed() -> bool:
+    """Guard env parsing for MNEMOSYNE_ALLOW_LIVE_RESTORE.
+
+    Accepts only {"1", "true", "yes"} case-insensitively (whitespace
+    stripped). Everything else (including unset/empty) refuses.
+    """
+    value = os.environ.get("MNEMOSYNE_ALLOW_LIVE_RESTORE", "")
+    return value.strip().lower() in {"1", "true", "yes"}
+
+
 def restore_backup(backup_path: Path, db_path: Path = None) -> Dict:
     """
     Restore database from a compressed backup.
@@ -156,6 +170,9 @@ def restore_backup(backup_path: Path, db_path: Path = None) -> Dict:
         
     Returns:
         Dict with restore status and details
+
+    Note: restored=True can be returned with integrity_check=False; the
+    caller must check integrity_check.
     """
     _, _, default_db = get_default_paths()
     db_path = db_path or default_db
@@ -167,9 +184,13 @@ def restore_backup(backup_path: Path, db_path: Path = None) -> Dict:
     # the pages under a running process (its -wal/-shm map to the old inode),
     # leaving it with SQLITE_IOERR "disk I/O error" until it restarts.
     # Fail closed: the live path needs an explicit opt-in from the operator.
-    if Path(db_path).resolve() == Path(default_db).resolve() and not os.environ.get(
-        "MNEMOSYNE_ALLOW_LIVE_RESTORE"
-    ):
+    # Sidecar refusal first (a live holder leaves -wal/-shm behind), regardless
+    # of how default_db resolved.
+    if Path(str(db_path) + "-wal").exists() and Path(str(db_path) + "-shm").exists():
+        raise RuntimeError(
+            "Refusing to restore over the live database: -wal and -shm sidecars present"
+        )
+    if Path(db_path).resolve() == Path(default_db).resolve() and not _live_restore_allowed():
         raise RuntimeError(
             "Refusing to restore over the live database: stop the Hermes agent "
             "first, or set MNEMOSYNE_ALLOW_LIVE_RESTORE=1 if you accept that the "
@@ -179,6 +200,9 @@ def restore_backup(backup_path: Path, db_path: Path = None) -> Dict:
     # Create emergency backup of current DB
     if db_path.exists():
         emergency_path = db_path.with_suffix('.emergency_backup.db')
+        # NOTE: this emergency copy is a RAW main-file copy (shutil.copy2 on
+        # the .db only). It misses uncheckpointed -wal frames and must not be
+        # treated as a recovery source.
         shutil.copy2(db_path, emergency_path)
     
     # Decompress and restore using sqlite3 backup API
@@ -190,41 +214,78 @@ def restore_backup(backup_path: Path, db_path: Path = None) -> Dict:
     def _is_shadow_stmt(stmt: str) -> bool:
         """True for the shadow-table DDL/DML that SQLite recreates itself.
 
-        FTS5 and sqlite-vec virtual tables own shadow tables
-        (<name>_config/_data/_docsize/_idx/_content, <name>_chunks/
-        _rowids/_info/_vector_chunks). iterdump() emits those explicitly, and
-        replaying them against the shadows the virtual table already created
-        fails ("already exists" / UNIQUE) and aborts the restore.
+        Parses the statement's actual target identifier instead of substring
+        matching, so lookalike content (e.g. a row whose text mentions a
+        shadow table name, or an *_archive table) is NOT treated as a shadow.
         """
-        low = stmt.lower()
+        low = stmt.lower().strip()
         if "create virtual table" in low:
             return False
-        bases = ("fts_episodes", "fts_facts", "fts_working",
-                 "vec_episodes", "vec_facts", "vec_working")
-        suffixes = ("_config", "_data", "_docsize", "_idx", "_content",
-                    "_chunks", "_rowids", "_info", "vector_chunks")
-        for base in bases:
-            if base in low and any(sfx in low for sfx in suffixes):
-                return True
-        return False
+
+        import re
+
+        dq, sq, bq = '"', "'", "`"
+        ident = rf"(?:[{dq}{sq}{bq}]?[A-Za-z_][\w$]*[{dq}{sq}{bq}]?)"
+
+        def _strip_quotes(name: str) -> str:
+            name = name.strip()
+            if len(name) >= 2 and name[0] == name[-1] and name[0] in (dq, sq, bq):
+                return name[1:-1]
+            return name
+
+        name = None
+        m = re.match(rf"create\s+(?:or\s+replace\s+)?(?:temp(?:orary)?\s+)?table\s+(?:if\s+not\s+exists\s+)?({ident})", low, re.IGNORECASE)
+        if m:
+            name = _strip_quotes(m.group(1))
+        else:
+            m = re.match(rf"insert\s+(?:or\s+\w+\s+)?into\s+({ident})", low, re.IGNORECASE)
+            if m:
+                name = _strip_quotes(m.group(1))
+            else:
+                m = re.match(rf"delete\s+from\s+({ident})", low, re.IGNORECASE)
+                if m:
+                    name = _strip_quotes(m.group(1))
+                else:
+                    m = re.match(rf"alter\s+table\s+({ident})", low, re.IGNORECASE)
+                    if m:
+                        name = _strip_quotes(m.group(1))
+
+        if name is None:
+            return False
+
+        fts_bases = ("fts_episodes", "fts_facts", "fts_working")
+        vec_bases = ("vec_episodes", "vec_facts", "vec_working")
+        fts_suffixes = ("_config", "_data", "_docsize", "_idx", "_content")
+        vec_suffixes = ("_chunks", "_rowids", "_info", "_vector_chunks")
+
+        shadow_names = set()
+        for base in fts_bases:
+            for sfx in fts_suffixes:
+                shadow_names.add(base + sfx)
+        for base in vec_bases:
+            for sfx in vec_suffixes:
+                shadow_names.add(base + sfx)
+
+        return name in shadow_names
 
     if payload[:16] == b"SQLite format 3\x00":
         # Binary backup (format sqlite-binary-v1): exact page copy.
         tmp_db = db_path.with_suffix(".restore.tmp.db")
-        tmp_db.write_bytes(payload)
-        src_db = sqlite3.connect(str(tmp_db))
-        _load_sqlite_vec(src_db)
-        integrity = src_db.execute("PRAGMA quick_check;").fetchone()[0] == "ok"
-        if not integrity:
+        try:
+            tmp_db.write_bytes(payload)
+            src_db = sqlite3.connect(str(tmp_db))
+            _load_sqlite_vec(src_db)
+            integrity = src_db.execute("PRAGMA quick_check;").fetchone()[0] == "ok"
+            if not integrity:
+                src_db.close()
+                raise RuntimeError("Backup failed integrity check; restore aborted")
+            target_db = sqlite3.connect(str(db_path))
+            _load_sqlite_vec(target_db)
+            src_db.backup(target_db)
             src_db.close()
-            tmp_db.unlink()
-            raise RuntimeError("Backup failed integrity check; restore aborted")
-        target_db = sqlite3.connect(str(db_path))
-        _load_sqlite_vec(target_db)
-        src_db.backup(target_db)
-        src_db.close()
-        target_db.close()
-        tmp_db.unlink()
+            target_db.close()
+        finally:
+            tmp_db.unlink(missing_ok=True)
     else:
         # Legacy SQL-text dump (pre sqlite-binary-v1). Replay statement by
         # statement: FTS5 shadow-table statements are skipped because the
@@ -237,21 +298,48 @@ def restore_backup(backup_path: Path, db_path: Path = None) -> Dict:
         _load_sqlite_vec(mem_db)
         stmt = ""
         skipped_fts = 0
+        executed = 0
         for raw in sql_dump.splitlines():
             stmt += raw + "\n"
             if not sqlite3.complete_statement(stmt):
                 continue
+            if not stmt.strip():
+                stmt = ""
+                continue
             if _is_shadow_stmt(stmt):
                 skipped_fts += 1
+                logging.getLogger(__name__).warning(
+                    "restore: skipping shadow statement: %s", stmt.strip()
+                )
                 stmt = ""
                 continue
             mem_db.execute(stmt)
+            executed += 1
             stmt = ""
         if stmt.strip():
-            mem_db.execute(stmt)
+            if _is_shadow_stmt(stmt):
+                skipped_fts += 1
+                logging.getLogger(__name__).warning(
+                    "restore: skipping shadow statement: %s", stmt.strip()
+                )
+            else:
+                mem_db.execute(stmt)
+                executed += 1
         if skipped_fts:
             print(f"restore: skipped {skipped_fts} FTS shadow statement(s); "
                   "run a reindex/rebuild if full-text search returns empty.")
+        # C1: fail-closed empty legacy payload
+        schema_objects = mem_db.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+        if executed == 0 or schema_objects == 0:
+            mem_db.close()
+            raise RuntimeError(
+                "Refusing to restore empty legacy payload: no statements replayed"
+            )
+        # Commit any open transaction from replayed DML before backing up:
+        # sqlite3.Connection.backup() blocks when the source holds an open
+        # write transaction (a replayed INSERT/DELETE leaves one open under
+        # Python's implicit-transaction rules).
+        mem_db.commit()
         target_db = sqlite3.connect(str(db_path))
         _load_sqlite_vec(target_db)
         mem_db.backup(target_db)
@@ -296,7 +384,9 @@ def emergency_restore(backup_dir: Path = None, db_path: Path = None) -> Dict:
                     "backup_used": str(backup),
                     "attempts": 1
                 }
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, RuntimeError) and "refusing to restore over the live database" in str(exc).lower():
+                raise
             continue
     
     raise RuntimeError("All backups failed integrity check")
@@ -318,7 +408,7 @@ def verify_integrity(db_path: Path = None) -> bool:
         return False
     
     try:
-        conn = sqlite3.connect(str(db_path))
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         cursor = conn.cursor()
         
         # Run PRAGMA integrity_check

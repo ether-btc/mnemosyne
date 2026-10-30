@@ -9,6 +9,9 @@ wrong database.
 """
 from __future__ import annotations
 
+import gzip
+import logging
+import os
 import sqlite3
 from pathlib import Path
 
@@ -162,3 +165,146 @@ def test_restore_refuses_live_path(tmp_path, monkeypatch):
     monkeypatch.setenv("MNEMOSYNE_ALLOW_LIVE_RESTORE", "1")
     result = recovery.restore_backup(Path(backup["backup_path"]))
     assert result["restored"] is True and result["integrity_check"] is True
+
+
+def test_c1_empty_legacy_payload_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MNEMOSYNE_ALLOW_LIVE_RESTORE", "1")
+    data = tmp_path / "data"
+    data.mkdir(parents=True)
+    target = data / "mnemosyne.db"
+    conn = sqlite3.connect(str(target))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+    before = target.read_bytes()
+
+    for payload in (b"", b"   \n\t"):
+        backup = tmp_path / ("empty.gz" if payload == b"" else "ws.gz")
+        with gzip.open(backup, "wb") as f:
+            f.write(payload)
+        with pytest.raises(RuntimeError):
+            recovery.restore_backup(backup, db_path=target)
+        assert target.read_bytes() == before
+
+
+def test_c2_shadow_skip_regression(tmp_path, caplog):
+    target = tmp_path / "target.db"
+    sql = (
+        "CREATE TABLE fts_facts_data (id INTEGER PRIMARY KEY, x TEXT);\n"
+        "INSERT INTO fts_facts_data VALUES (1, 'shadow');\n"
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, note TEXT);\n"
+        "INSERT INTO t VALUES (1, 'keep ... fts_facts_data ...');\n"
+        "CREATE TABLE vec_facts_chunks_archive (id INTEGER);\n"
+    )
+    backup = tmp_path / "legacy.gz"
+    with gzip.open(backup, "wb") as f:
+        f.write(sql.encode())
+    caplog.set_level(logging.WARNING, logger="mnemosyne.dr.recovery")
+    recovery.restore_backup(backup, db_path=target)
+    conn = sqlite3.connect(str(target))
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "t" in tables
+    assert "vec_facts_chunks_archive" in tables
+    assert "fts_facts_data" not in tables
+    assert conn.execute("SELECT note FROM t").fetchone()[0] == "keep ... fts_facts_data ..."
+    conn.close()
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 2
+
+
+@pytest.mark.parametrize("val,allowed", [
+    ("1", True), ("TRUE", True), ("Yes", True), ("true", True),
+    ("0", False), ("false", False), ("no", False), ("", False),
+])
+def test_c3_live_restore_env_parsing(tmp_path, monkeypatch, val, allowed):
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    data = tmp_path / "data"
+    data.mkdir(parents=True, exist_ok=True)
+    db = data / "mnemosyne.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+    backup = recovery.create_backup(db_path=db, backup_dir=tmp_path / "backups")
+    if val == "":
+        monkeypatch.delenv("MNEMOSYNE_ALLOW_LIVE_RESTORE", raising=False)
+    else:
+        monkeypatch.setenv("MNEMOSYNE_ALLOW_LIVE_RESTORE", val)
+    if allowed:
+        res = recovery.restore_backup(Path(backup["backup_path"]))
+        assert res["restored"] is True
+    else:
+        with pytest.raises(RuntimeError, match="Refusing to restore over the live database"):
+            recovery.restore_backup(Path(backup["backup_path"]))
+
+
+def test_c4_sidecars_refuse(tmp_path, monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MNEMOSYNE_ALLOW_LIVE_RESTORE", "1")
+    data = tmp_path / "data"
+    data.mkdir(parents=True)
+    db = data / "mnemosyne.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+    (data / "mnemosyne.db-wal").write_bytes(b"x")
+    (data / "mnemosyne.db-shm").write_bytes(b"y")
+    backup = recovery.create_backup(db_path=db, backup_dir=tmp_path / "backups")
+    before = db.read_bytes()
+    with pytest.raises(RuntimeError, match="Refusing to restore over the live database"):
+        recovery.restore_backup(Path(backup["backup_path"]))
+    assert db.read_bytes() == before
+
+
+def test_f5_verify_integrity_read_only(tmp_path, monkeypatch):
+    db = tmp_path / "v.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+    seen = []
+    real = sqlite3.connect
+
+    def spy(dsn, *a, **k):
+        seen.append((str(dsn), k.get("uri", False)))
+        return real(dsn, *a, **k)
+
+    monkeypatch.setattr(recovery.sqlite3, "connect", spy)
+    recovery.verify_integrity(db)
+    assert seen and "mode=ro" in seen[0][0] and seen[0][1] is True
+
+
+def test_f7_corrupt_binary_no_orphan(tmp_path):
+    target = tmp_path / "target.db"
+    conn = sqlite3.connect(str(target))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+    payload = b"SQLite format 3\x00" + os.urandom(100)
+    backup = tmp_path / "corrupt.gz"
+    with gzip.open(backup, "wb") as f:
+        f.write(payload)
+    tmp = target.with_suffix(".restore.tmp.db")
+    with pytest.raises(Exception):
+        recovery.restore_backup(backup, db_path=target)
+    assert not tmp.exists()
+
+
+def test_f8_emergency_restore_raises_live_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("MNEMOSYNE_ALLOW_LIVE_RESTORE", raising=False)
+    data = tmp_path / "data"
+    data.mkdir(parents=True)
+    db = data / "mnemosyne.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE t(a)")
+    conn.commit()
+    conn.close()
+    backup = recovery.create_backup(db_path=db, backup_dir=tmp_path / "backups")
+    with pytest.raises(RuntimeError) as exc:
+        recovery.emergency_restore(backup_dir=tmp_path / "backups", db_path=db)
+    assert "Refusing to restore over the live database" in str(exc.value)
+    assert "All backups failed integrity check" not in str(exc.value)
