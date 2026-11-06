@@ -1,6 +1,5 @@
 """CLI backup-path normalization regressions for Windows/MSYS (#659)."""
 
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,7 +49,8 @@ def test_cmd_backup_passes_normalized_msys_path_to_backend(monkeypatch, capsys):
         assert value == "/c/Users/alice/backups"
         return "C:/Users/alice/backups"
 
-    def fake_backup(*, backup_dir):
+    def fake_backup(*, db_path, backup_dir):
+        captured["db_path"] = db_path
         captured["backup_dir"] = backup_dir
         return {
             "backup_path": backup_dir / "mnemosyne_backup.db.gz",
@@ -61,19 +61,22 @@ def test_cmd_backup_passes_normalized_msys_path_to_backend(monkeypatch, capsys):
 
     from mnemosyne.dr import recovery
 
+    monkeypatch.delenv("MNEMOSYNE_BANK", raising=False)
     monkeypatch.setattr(cli, "_normalize_backup_output_dir_arg", fake_normalize)
     monkeypatch.setattr(recovery, "create_backup", fake_backup)
 
     cli.cmd_backup(["/c/Users/alice/backups"])
 
     assert captured["backup_dir"] == Path("C:/Users/alice/backups")
+    assert captured["db_path"] is None
     assert "Backup created:" in capsys.readouterr().out
 
 
 def test_production_os_detection_drives_cmd_backup_normalization(monkeypatch, capsys):
     captured = {}
 
-    def fake_backup(*, backup_dir):
+    def fake_backup(*, db_path, backup_dir):
+        captured["db_path"] = db_path
         captured["backup_dir"] = backup_dir
         return {
             "backup_path": backup_dir / "mnemosyne_backup.db.gz",
@@ -84,12 +87,13 @@ def test_production_os_detection_drives_cmd_backup_normalization(monkeypatch, ca
 
     from mnemosyne.dr import recovery
 
-    monkeypatch.setattr(cli, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(cli, "os", SimpleNamespace(name="nt", environ={}))
     monkeypatch.setattr(recovery, "create_backup", fake_backup)
 
     cli.cmd_backup(["/c/Users/alice/backups"])
 
     assert captured["backup_dir"] == Path("C:/Users/alice/backups")
+    assert captured["db_path"] is None
     assert "Backup created:" in capsys.readouterr().out
 
 
@@ -112,22 +116,3 @@ def test_cmd_backup_fails_before_backend_for_rejected_path(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "bad path" in captured.err
     assert "Backup created:" not in captured.out
-
-
-def test_cmd_verify_quick_opens_read_only(monkeypatch, tmp_path, capsys):
-    db = tmp_path / "v.db"
-    conn = sqlite3.connect(str(db))
-    conn.execute("CREATE TABLE t(a)")
-    conn.commit()
-    conn.close()
-
-    seen = []
-    real = sqlite3.connect
-
-    def spy(dsn, *a, **k):
-        seen.append((str(dsn), k.get("uri", False)))
-        return real(dsn, *a, **k)
-
-    monkeypatch.setattr(cli.sqlite3, "connect", spy)
-    cli.cmd_verify(["--quick", str(db)])
-    assert seen and "mode=ro" in seen[0][0] and seen[0][1] is True

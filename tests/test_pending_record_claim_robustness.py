@@ -66,7 +66,15 @@ def test_non_enoent_oserror_raises_pending_claim_error(tmp_path: Path, exc: OSEr
     original = Path.rename
     Path.rename = boom  # type: ignore[method-assign]
     try:
-        with pytest.raises(PendingClaimError) as ei:
+        # Assert on the exception class bound to the FUNCTION, not the one this
+        # module imported. Other tests in this suite purge `hermes_memory_provider`
+        # from sys.modules and re-import it, so the package can be loaded twice
+        # in one session; the two PendingClaimError classes are then distinct
+        # objects and pytest.raises(PendingClaimError) — bound at OUR import
+        # time — does not catch the one raised by the function under test.
+        # Reading the class off the function's own globals is immune to that.
+        expected = _claim_pending_record.__globals__['PendingClaimError']
+        with pytest.raises(expected) as ei:
             _claim_pending_record(record)
     finally:
         Path.rename = original  # type: ignore[method-assign]
@@ -85,7 +93,8 @@ def test_failed_claim_creates_no_claim_file(tmp_path: Path) -> None:
     original = Path.rename
     Path.rename = boom  # type: ignore[method-assign]
     try:
-        with pytest.raises(PendingClaimError):
+        expected = _claim_pending_record.__globals__['PendingClaimError']
+        with pytest.raises(expected):
             _claim_pending_record(record)
     finally:
         Path.rename = original  # type: ignore[method-assign]
@@ -115,7 +124,8 @@ def test_unreadable_directory_raises_pending_claim_error(tmp_path: Path) -> None
     record.write_text("{}", encoding="utf-8")
     d.chmod(stat.S_IRUSR | stat.S_IXUSR)  # r-x: no write -> rename must fail
     try:
-        with pytest.raises(PendingClaimError):
+        expected = _claim_pending_record.__globals__['PendingClaimError']
+        with pytest.raises(expected):
             _claim_pending_record(record)
     finally:
         d.chmod(stat.S_IRWXU)

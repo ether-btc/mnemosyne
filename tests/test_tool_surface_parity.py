@@ -72,16 +72,6 @@ def test_plugin_yaml_tools_all_have_schemas():
         for k, v in vars(tool_schemas).items()
         if k.endswith("_SCHEMA") and isinstance(v, dict) and "name" in v
     }
-    # plugin.yaml is the Hermes *provider's* declaration: provider-native
-    # tools (mnemosyne_apply_pending, mnemosyne_model_card/refresh,
-    # mnemosyne_recall_diagnostics, mnemosyne_task_progress) are registered in
-    # hermes_memory_provider, not in mnemosyne's MCP tool_schemas, so a
-    # declared tool is valid when it exists in either registry.
-    from hermes_memory_provider import MnemosyneMemoryProvider
-
-    _provider = MnemosyneMemoryProvider()
-    known |= {s["name"] for s in _provider.get_tool_schemas()}
-
     declared = _plugin_yaml_tools()
     assert declared, "could not parse provides_tools from plugin.yaml"
     unknown = [t for t in declared if t not in known]
@@ -132,12 +122,15 @@ def test_generated_docs_match_the_code():
     tools = gen._collect_tools()
     env_map, defaults, restart = gen._collect_config()
     gen._validate_descriptions(env_map)
-    effective = gen._scan_effective_defaults(env_map, defaults)
+    effective, conflicts = gen._scan_effective_defaults(
+        env_map, defaults,
+        roots=("mnemosyne", "hermes_memory_provider", "integrations"),
+    )
 
     expected = {
         "docs/api/tool-schema.mdx": gen._render_tool_schema(tools, version),
         "docs/api/configuration.mdx": gen._render_config(
-            env_map, defaults, restart, version, effective
+            env_map, defaults, restart, version, effective, conflicts
         ),
     }
     for rel, want in expected.items():

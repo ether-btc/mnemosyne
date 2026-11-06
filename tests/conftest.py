@@ -7,6 +7,17 @@ between tests, and that default-disable the local LLM so tests don't
 make real CPU inference calls when a model is available on disk.
 """
 
+import os
+import sys
+
+# Scrub deployment env BEFORE any test module imports mnemosyne.core.beam:
+# the module-level RECALL_CONTENT_CAP constant resolves at
+# first import, so a deployment-exported value baked in during collection
+# (alphabetical order controls which file imports first) would otherwise make
+# default-behavior tests environment-dependent. Tests that want custom values
+# set them explicitly on the resolved module attributes.
+os.environ.pop("MNEMOSYNE_RECALL_CONTENT_CAP", None)
+
 import pytest
 
 
@@ -68,6 +79,13 @@ def _close_cached_connections():
         _llm_backends_mod._backend = None
     except Exception:
         pass
+
+    # The root Hermes provider keeps a process-global lease count for that
+    # registry (#1119). Many provider tests initialize without shutdown, so a
+    # leaked lease would stop a later final owner from clearing the backend.
+    _root_provider = sys.modules.get("hermes_memory_provider")
+    if _root_provider is not None and hasattr(_root_provider, "_host_llm_owner_count"):
+        _root_provider._host_llm_owner_count = 0
 
     # Same reasoning for the modality registry, which is also a process-global.
     # This reset ships in the PR that introduces the registry: a later one is
