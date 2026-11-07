@@ -178,8 +178,15 @@ def test_reindex_does_not_mask_working_vec_write_failure(tmp_path, monkeypatch):
         reindex_vectors(beam.conn)
 
 
-def test_reindex_real_commits_deferred_working_batches_before_next_embedding(tmp_path, monkeypatch):
-    """Deferred BEAM writes must be committed before the next embedding request."""
+def test_reindex_real_commits_single_transaction_after_all_embeddings(tmp_path, monkeypatch):
+    """The whole rebuild is one explicit transaction, committed once at the end.
+
+    Since the upstream merge (commit-batching rework), reindex_vectors wraps
+    the entire rebuild in BEGIN IMMEDIATE and commits exactly once: no batch
+    is flushed between embeddings, and nothing is left uncommitted afterwards
+    even when BEAM defers commits. Measured against the merged tree
+    (embeds observed inside the txn, a single commit, closed transaction).
+    """
     beam = _reindex_fixture_beam(tmp_path, working=2)
     observed_transactions = []
     real_commits = []
@@ -204,8 +211,11 @@ def test_reindex_real_commits_deferred_working_batches_before_next_embedding(tmp
     result = reindex_vectors(beam.conn, batch_size=1)
 
     assert result["working_memory_reindexed"] == 2
-    assert observed_transactions == [False, False]
-    assert real_commits == [True, True]
+    # Every embedding batch ran inside the single rebuild transaction.
+    assert observed_transactions == [True, True]
+    # Exactly one commit (the batch_size=1 embeds did not trigger intermediate flushes).
+    assert real_commits == [True]
+    # The rebuild leaves no deferred work behind.
     assert not beam.conn.in_transaction
 
 

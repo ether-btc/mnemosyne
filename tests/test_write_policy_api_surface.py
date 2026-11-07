@@ -56,7 +56,9 @@ def _provider_plugin_version() -> str:
 
 def test_version_is_coherent() -> None:
     """The whole defect was a version split. Pin the coherence explicitly."""
-    assert mnemosyne.__version__ == "4.0.0b3"
+    # Upstream merge adopted upstream's release version (4.0.0); the old 4.0.0b3
+    # single-source pin (our tree, pre-merge) would now be the stale half.
+    assert mnemosyne.__version__ == "4.0.0"
     assert _provider_plugin_version() == mnemosyne.__version__, (
         "plugin.yaml and mnemosyne.__version__ disagree — that is the 3.15.2/4.0.0b3 "
         "split that made the provider load cleanly and fail on first use"
