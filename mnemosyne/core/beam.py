@@ -4696,7 +4696,9 @@ def reindex_vectors(conn: sqlite3.Connection, *, batch_size: int = 64,
     # default row_factory yields plain tuples; the row reads below index by
     # column name, so adopt sqlite3.Row indexing unless the caller set a
     # custom factory (which we must not silently override).
-    if getattr(conn, "row_factory", None) is None:
+    # Only probe real sqlite3.Connection objects: test doubles / validating
+    # proxies must not have any attribute touched before validation.
+    if type(conn) is sqlite3.Connection and conn.row_factory is None:
         conn.row_factory = sqlite3.Row
     if isinstance(batch_size, bool):
         raise ValueError("batch_size must be a positive integer")

@@ -38,6 +38,7 @@ provides_tools:
   - mnemosyne_shared_recall
   - mnemosyne_shared_forget
   - mnemosyne_shared_stats
+  - mnemosyne_remember_media
 provides_hooks:
   - pre_llm_call
   - on_session_start
