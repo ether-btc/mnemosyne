@@ -56,10 +56,15 @@ def _provider_plugin_version() -> str:
 
 def test_version_is_coherent() -> None:
     """The whole defect was a version split. Pin the coherence explicitly."""
-    # Upstream merge adopted upstream's release version (4.0.0); the old 4.0.0b3
-    # single-source pin (our tree, pre-merge) would now be the stale half.
-    assert mnemosyne.__version__ == "4.0.0"
-    assert _provider_plugin_version() == mnemosyne.__version__, (
+    # Do NOT pin a literal release number: upstream bumps it on every release,
+    # so a literal fails on every pull for a reason that has nothing to do with
+    # this test. The defect guarded here is the provider/core SPLIT, not the
+    # number; assert the number is well-formed and let coherence do the work.
+    version = mnemosyne.__version__
+    assert version and version[0].isdigit() and version.count(".") >= 2, (
+        f"unexpected version string {version!r} — expected a dotted release version"
+    )
+    assert _provider_plugin_version() == version, (
         "plugin.yaml and mnemosyne.__version__ disagree — that is the 3.15.2/4.0.0b3 "
         "split that made the provider load cleanly and fail on first use"
     )
