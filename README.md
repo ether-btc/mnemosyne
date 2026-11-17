@@ -162,8 +162,10 @@ mnemosyne mcp --transport streamable-http --port 8080  # Streamable HTTP (native
 # Direct memory ops
 mnemosyne store "User likes dark mode"
 mnemosyne recall "preferences"
+mnemosyne recall "preferences" --preview  # Explicit 150-character display preview
 mnemosyne stats
 mnemosyne sleep                         # Run consolidation
+mnemosyne diagnose --python /path/to/python  # Check a specific runtime interpreter
 
 # Export / import
 mnemosyne export backup.json
@@ -172,6 +174,14 @@ mnemosyne import backup.json
 # Sync (bidirectional memory sync between instances)
 mnemosyne sync --db-path /path/to/mnemosyne.db --remote https://my-vps:8765
 ```
+
+Human-readable `recall` output reads the current full content of selected
+working-memory, episodic-memory and MEMORIA hits. Ranking and scores stay the
+same; public `recall()` results, JSON output and cached payloads retain their
+configured content cap. `--preview` displays 150 characters and the full length
+when available. If a source is unavailable, its prefix has changed, or its hit
+type cannot be expanded, the CLI labels the remaining recall preview and reports
+the full length as unknown. These are current reads, not historical snapshots.
 
 ---
 
@@ -343,6 +353,12 @@ Full reference: [docs/configuration.md](docs/configuration.md)
 
 ### Language Support
 
+The Russian lexical fallback folds case and `ё`/`е` spelling when selecting
+candidates and scoring inflections (for example, `свеклы` can match `Свёкла`).
+Stored text is preserved. The fallback still averages scores over query words
+and uses the normal lexical admission gate; this does not guarantee admission
+for multi-word paraphrases or cross-language queries.
+
 Default embeddings are English-optimized (`bge-small-en-v1.5`). For **non-English or multilingual** recall, swap the model:
 
 ```bash
@@ -363,6 +379,8 @@ See [docs/configuration.md#custom-embedding-models](docs/configuration.md#custom
 ## Hermes Plugin
 
 When used with Hermes Agent, Mnemosyne exposes provider tools for the memory lifecycle, lifecycle hooks for automatic context injection, and MCP support.
+
+The packaged `hermes mnemosyne` CLI uses the provider's database under `HERMES_HOME/mnemosyne/data`, even when `MNEMOSYNE_DATA_DIR` points elsewhere. Profile-isolated commands select the active profile bank below that root; `doctor` reports its selected database. Standalone Core commands still honor `MNEMOSYNE_DATA_DIR`, and the packaged CLI uses the Core resolver when `HERMES_HOME` is unset. Existing stores are not moved or merged.
 
 `mnemosyne_resolve_conflicts` remains gated off by default. Its `dry_run`
 argument defaults to `false` (apply): use `dry_run=true` for deterministic
