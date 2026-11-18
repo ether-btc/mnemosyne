@@ -9,6 +9,7 @@ make real CPU inference calls when a model is available on disk.
 
 import os
 import sys
+import tempfile
 
 # Scrub deployment env BEFORE any test module imports mnemosyne.core.beam:
 # the module-level RECALL_CONTENT_CAP constant resolves at
@@ -18,7 +19,48 @@ import sys
 # set them explicitly on the resolved module attributes.
 os.environ.pop("MNEMOSYNE_RECALL_CONTENT_CAP", None)
 
+# --- One fastembed model per session, not one per test ----------------------
+# The local embedding model is a 66 MB download, and the suite rewrites
+# HERMES_HOME per test, so a cache path derived from HERMES_HOME re-downloads
+# the model for EVERY test (a 60-test battery wrote ~4 GB and filled the root
+# filesystem). Pin the cache to ONE directory for the whole session: an
+# operator's MNEMOSYNE_FASTEMBED_CACHE_DIR / FASTEMBED_CACHE_PATH wins,
+# otherwise a stable per-host directory is used.
+#
+# The pin is applied at import time because mnemosyne.core.embeddings resolves
+# the cache directory when the module is imported, and the suite re-imports it
+# per test -- a fixture alone would land after the first resolution.
+
+
+def _shared_fastembed_cache_dir() -> str:
+    """The one directory this session keeps the fastembed model in."""
+    for var in ("MNEMOSYNE_FASTEMBED_CACHE_DIR", "FASTEMBED_CACHE_PATH"):
+        value = os.environ.get(var)
+        if value:
+            return value
+    root = "/var/tmp" if os.path.isdir("/var/tmp") else tempfile.gettempdir()
+    uid = getattr(os, "getuid", lambda: 0)()
+    return os.path.join(root, f"mnemosyne-fastembed-cache-{uid}")
+
+
+SHARED_FASTEMBED_CACHE_DIR = _shared_fastembed_cache_dir()
+os.environ["MNEMOSYNE_FASTEMBED_CACHE_DIR"] = SHARED_FASTEMBED_CACHE_DIR
+os.environ.setdefault("FASTEMBED_CACHE_PATH", SHARED_FASTEMBED_CACHE_DIR)
+
 import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _pin_fastembed_cache_for_the_session():
+    """Keep the fastembed model cache at ONE directory for the whole session.
+
+    Re-asserts the import-time pin so a test that cleared the variable cannot
+    leak a per-test cache path into the next test, and yields the directory so
+    a test can assert against it.
+    """
+    os.environ["MNEMOSYNE_FASTEMBED_CACHE_DIR"] = SHARED_FASTEMBED_CACHE_DIR
+    os.environ.setdefault("FASTEMBED_CACHE_PATH", SHARED_FASTEMBED_CACHE_DIR)
+    yield SHARED_FASTEMBED_CACHE_DIR
 
 
 def _close_cached_connections():

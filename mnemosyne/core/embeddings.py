@@ -193,6 +193,11 @@ _IMPORTING = False
 # separate ~/.hermes directory when a user relocates HERMES_HOME (e.g. to
 # ~/.config/hermes). Matches the HERMES_HOME handling already used elsewhere
 # in the package (see mcp_tools.py).
+#
+# FASTEMBED_CACHE_PATH (fastembed's own variable) is honoured because the
+# model is a 66 MB download: a cache path derived from a per-test HERMES_HOME
+# re-downloads it for every test, so a 60-test run wrote ~4 GB. One shared
+# directory keeps one copy per host instead.
 def _cfg(key, default=None):
     """Read one config value with the documented config > env > default order."""
     try:
@@ -218,15 +223,31 @@ def _configured_api_url() -> str:
     return str(value or "").strip()
 
 
-_FASTEMBED_CACHE_DIR = (
-    _cfg("fastembed_cache_dir")
-    or os.environ.get("MNEMOSYNE_FASTEMBED_CACHE_DIR")
-    or os.path.join(
+def _resolve_fastembed_cache_dir() -> str:
+    """The directory that holds the downloaded fastembed model.
+
+    Resolution order (most explicit first):
+
+    1. ``fastembed_cache_dir`` in the Mnemosyne config
+    2. ``MNEMOSYNE_FASTEMBED_CACHE_DIR``
+    3. ``FASTEMBED_CACHE_PATH`` (fastembed's own variable)
+    4. ``<HERMES_HOME>/cache/fastembed`` (the per-home default)
+    """
+    configured = _cfg("fastembed_cache_dir")
+    if configured:
+        return str(configured)
+    for var in ("MNEMOSYNE_FASTEMBED_CACHE_DIR", "FASTEMBED_CACHE_PATH"):
+        value = os.environ.get(var)
+        if value:
+            return value
+    return os.path.join(
         os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
         "cache",
         "fastembed",
     )
-)
+
+
+_FASTEMBED_CACHE_DIR = _resolve_fastembed_cache_dir()
 
 # --- OpenAI-compatible API ---
 # Mnemosyne embedding config is independent of general OpenRouter/OpenAI settings.
