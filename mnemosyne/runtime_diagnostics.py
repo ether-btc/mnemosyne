@@ -154,6 +154,12 @@ def collect_runtime_diagnostics(
         if not version:
             version = importlib.metadata.version("mnemosyne-memory")
         add("package", "mnemosyne_version", "OK", str(version))
+        # Which core file actually loaded. Three "installed" versions can coexist (plugin
+        # tree, source clone, the environment venv's dist) and only this one runs, so a
+        # version number without its path is ambiguous when debugging an upgrade.
+        loaded_from = getattr(mnemosyne, "__file__", None)
+        if loaded_from:
+            add("package", "mnemosyne_loaded_from", "OK", str(loaded_from))
     except Exception:
         add("package", "mnemosyne_version", "ERROR", "package version unavailable")
 
