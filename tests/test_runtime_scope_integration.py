@@ -12,17 +12,14 @@ from mnemosyne.doctor import RuntimeDiagnosticsAdapter, _sanitize_runtime_diagno
 
 
 
-# Measured 2026-11-20: these three cases need an adapter that reports
-# runtime_scope="provider_runtime". The only 3.11 venv that has pytest carries
-# mnemosyne_hermes 0.7.1, which reports "cli_interpreter"; the runtime env venvs carry
-# 0.7.7 but have no pytest; the system interpreter has neither. Not a code regression
-# (identical on the merge base) — a version-skew in the test environment.
+# Measured 2026-11-20 (see reason string): contract change between the legacy provider and 0.7.7.
 XFAIL_MNEMOSYNE_HERMES = pytest.param(
     "mnemosyne_hermes",
     marks=pytest.mark.xfail(
         strict=False,
-        reason="needs mnemosyne_hermes>=0.7.7 (provider_runtime scope); "
-               "pytest host venv has 0.7.1 which reports cli_interpreter",
+        reason="mnemosyne_hermes>=0.7 enforces a bound Hermes home: the test's legacy "
+               "`provider._beam = None` raises RuntimeError('no binding for the current home'). "
+               "Measured on 0.7.7 in a runtime env venv; the hermes_memory_provider variant passes.",
     ),
 )
 
